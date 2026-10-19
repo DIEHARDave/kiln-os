@@ -1,0 +1,31 @@
+#!/bin/sh
+# The board, with stock's tools (this printer's own copies in
+# /data/ad5x/vendor, filled by S06ad5x-modules / ad5x-vendor), as the main
+# OS's S07ad5x-board: PC11 heartbeat every second (stock sys_start.sh), then
+# the display: framebuffer on, the recovery logo, backlight on. The UI
+# (S80ad5x-recovery-ui) takes the screen over when it is installed.
+# /data/ad5x/recovery/logo.jpg (800x480 baseline JPEG) replaces the logo.
+case "$1" in
+start)
+	ad5x-vendor dir tools >/dev/null || {
+		echo "board: no stock board tools (ad5x-vendor status): no heartbeat, no logo"
+		ad5x-bootlog "  no board tools"; exit 0; }
+	( while true; do
+		cmd_gpio set_func pc11 output0 >/dev/null 2>&1
+		sleep 1
+		cmd_gpio set_func pc11 output1 >/dev/null 2>&1
+		sleep 1
+	done ) &
+	ad5x-bootlog "  heartbeat started"
+	if [ -e /dev/fb0 ]; then
+		cmd_fb enable /dev/fb0 >/dev/null 2>&1 &
+		logo=/usr/share/ad5x/recovery-logo.jpg
+		[ -f /data/ad5x/recovery/logo.jpg ] && logo=/data/ad5x/recovery/logo.jpg
+		cmd_jpeg_display $logo >/dev/null 2>&1
+		sleep 0.5
+		echo 1 > /sys/class/backlight/backlight_gpio0/brightness 2>/dev/null
+		ad5x-bootlog "  display enabled, logo $logo"
+	fi
+	;;
+esac
+exit 0

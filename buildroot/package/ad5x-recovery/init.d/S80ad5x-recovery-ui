@@ -1,0 +1,25 @@
+#!/bin/sh
+# Touch UI hook: starts /usr/bin/ad5x-recovery-ui (package ad5x-recovery-ui,
+# LVGL on /dev/fb0 and evdev) when it is installed, and restarts it if it
+# exits. It reads progress from SWUpdate's socket (/tmp/swupdateprog) and
+# calls the ad5x-* tools (docs/recovery-os.md). Log: /run/ad5x/ui.log.
+UI=/usr/bin/ad5x-recovery-ui
+PIDFILE=/var/run/ad5x-recovery-ui.pid
+case "$1" in
+start)
+	[ -x $UI ] || { echo "ui: $UI not installed"; exit 0; }
+	mkdir -p /run/ad5x
+	start-stop-daemon -S -b -m -p $PIDFILE -x /bin/sh -- -c \
+		"while true; do $UI >> /run/ad5x/ui.log 2>&1; echo \"ui exited: \$?\" >> /run/ad5x/ui.log; sleep 2; done"
+	echo "ui: started"
+	;;
+stop)
+	start-stop-daemon -K -p $PIDFILE 2>/dev/null && rm -f $PIDFILE
+	killall ad5x-recovery-ui 2>/dev/null
+	true
+	;;
+restart)
+	"$0" stop; sleep 1; "$0" start
+	;;
+esac
+exit 0

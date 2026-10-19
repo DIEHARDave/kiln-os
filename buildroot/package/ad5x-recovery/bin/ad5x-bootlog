@@ -1,0 +1,15 @@
+#!/bin/sh
+# Recovery OS boot trace (see /etc/init.d/rcS): appends a line with the
+# uptime to /run/ad5x-boot.log and copies the log into the ota partition at
+# 128 KiB, where it survives a reset. The main OS keeps its own trace at
+# 64 KiB, which stays readable after a failed main boot lands here:
+#   main:     dd if=/dev/mmcblk0p5 bs=1024 skip=64 count=8 | tr -d '\0'
+#   recovery: dd if=/dev/mmcblk0p5 bs=1024 skip=128 count=8 | tr -d '\0'
+. /usr/lib/ad5x-recovery/recovery.sh
+trace=$(rc_part ota) || exit 0
+[ "$(rc_slot)" = A ] || exit 0
+mkdir -p /run
+echo "$(cut -d' ' -f1 /proc/uptime) $*" >> /run/ad5x-boot.log
+{ cat /run/ad5x-boot.log; head -c 8192 /dev/zero; } | head -c 8192 | \
+	dd of="$trace" bs=1024 seek=128 conv=notrunc 2>/dev/null
+sync

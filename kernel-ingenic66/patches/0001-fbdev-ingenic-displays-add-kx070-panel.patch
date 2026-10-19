@@ -1,0 +1,21 @@
+diff -ruN a/module_drivers/drivers/video/fbdev/ingenic/displays/Kconfig b/module_drivers/drivers/video/fbdev/ingenic/displays/Kconfig
+--- a/module_drivers/drivers/video/fbdev/ingenic/displays/Kconfig	2026-10-17 06:02:53.597726771 -0400
++++ b/module_drivers/drivers/video/fbdev/ingenic/displays/Kconfig	2026-10-17 06:02:53.598585274 -0400
+@@ -250,3 +250,9 @@
+ 	depends on FB_INGENIC_DISPLAYS_STAGE
+     help
+         lcd panel JD9365DA, for ingenicfb drivers
++
++config STAGE_KX070
++	tristate "lvds lcd kx070 800x480 (Flashforge AD5X)"
++	depends on FB_INGENIC_DISPLAYS_STAGE
++	help
++		Flashforge AD5X 7" 800x480 LVDS (VESA) panel, for ingenicfb drivers.
+diff -ruN a/module_drivers/drivers/video/fbdev/ingenic/displays/Makefile b/module_drivers/drivers/video/fbdev/ingenic/displays/Makefile
+--- a/module_drivers/drivers/video/fbdev/ingenic/displays/Makefile	2026-10-17 06:02:53.597748710 -0400
++++ b/module_drivers/drivers/video/fbdev/ingenic/displays/Makefile	2026-10-17 06:02:53.598408171 -0400
+@@ -39,3 +39,4 @@
+ obj-$(CONFIG_STAGE_JYM1019603281BC) += panel-jym1019603281bc.o
+ obj-$(CONFIG_STAGE_JD9365DA) += panel-jd9365da.o
+ obj-$(CONFIG_STAGE_ZC50289HSHD02) += panel-zc50289hshd02.o
++obj-$(CONFIG_STAGE_KX070) += panel-kx070.o

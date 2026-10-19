@@ -1,0 +1,94 @@
+#!/bin/sh
+# Install and refresh the printer's editable macros from the image's
+# templates (docs/config-layout.md). Run at every boot by S05ad5x-data.
+#
+# usage: ad5x-config-templates [TEMPLATE_DIR [CONFIG_DIR]]
+#   TEMPLATE_DIR  default /usr/share/ad5x/defaults (its macros/*.cfg)
+#   CONFIG_DIR    default /data/ad5x/printer_data/config
+#
+# CONFIG_DIR/.ad5x-templates.json records, per file, the sha256 of the
+# template it was last copied from. For each template macros/<name>.cfg:
+#   - no file, never installed: copied;
+#   - no file, installed before: the user deleted it, left alone;
+#   - template unchanged since the copy: the file is never touched, edited
+#     or not;
+#   - template changed, file unedited (still the old template): replaced;
+#   - template changed, file edited: kept as <name>.cfg.bak-<date>, then
+#     replaced, and a line added to CONFIG_DIR/config-updates.txt (Klipper
+#     shows it at start, CONFIG_BACKUPS lists it);
+#   - file already equal to the new template: only recorded;
+#   - file present but not in the record (record lost): recorded as it
+#     is, left alone.
+# Only macros/*.cfg are templates: printer.cfg, unit.cfg, local.cfg,
+# plugins.cfg, variables.cfg, ad5x-tuning.cfg, moonraker.conf are never
+# replaced. Ownership is left to the caller (S05 chowns the tree).
+tdir=${1:-/usr/share/ad5x/defaults}
+cdir=${2:-/data/ad5x/printer_data/config}
+man=$cdir/.ad5x-templates.json
+notice=$cdir/config-updates.txt
+
+sha() { sha256sum "$1" | cut -d' ' -f1; }
+# Recorded hash for a key ("macros/x.cfg") from the manifest
+recorded() {
+	[ -f "$man" ] || return 0
+	k=$(printf '%s' "$1" | sed 's/[.[\*^$/]/\\&/g')
+	sed -n "s/^ *\"$k\": *\"\([0-9a-f]*\)\".*/\1/p" "$man" | head -n 1
+}
+stamp() { date +%Y%m%d-%H%M%S 2>/dev/null || echo 0; }
+
+[ -d "$tdir/macros" ] || exit 0
+mkdir -p "$cdir/macros" || exit 1
+rec=$(mktemp "$cdir/.ad5x-templates.XXXXXX") || exit 1
+# Keep entries of templates the image no longer ships
+if [ -f "$man" ]; then
+	sed -n 's/^ *"\([^"]*\)": *"\([0-9a-f]*\)".*/\1 \2/p' "$man" |
+	while read -r k h; do
+		[ -f "$tdir/$k" ] || echo "$k $h"
+	done >> "$rec"
+fi
+for t in "$tdir"/macros/*.cfg; do
+	[ -f "$t" ] || continue
+	key=macros/${t##*/}
+	dst=$cdir/$key
+	new=$(sha "$t")
+	old=$(recorded "$key")
+	keep=$new
+	if [ ! -e "$dst" ]; then
+		if [ -z "$old" ]; then
+			cp "$t" "$dst.tmp" && mv "$dst.tmp" "$dst" &&
+				echo "ad5x-config: $key created"
+		else
+			keep=$old
+		fi
+	elif [ -n "$old" ] && [ "$old" != "$new" ]; then
+		cur=$(sha "$dst")
+		if [ "$cur" = "$new" ]; then
+			:
+		elif [ "$cur" = "$old" ]; then
+			cp "$t" "$dst.tmp" && mv "$dst.tmp" "$dst" &&
+				echo "ad5x-config: $key updated"
+		else
+			bak=$dst.bak-$(stamp)
+			n=1
+			while [ -e "$bak" ]; do
+				bak=${dst}.bak-$(stamp)-$n
+				n=$((n + 1))
+			done
+			if cp -p "$dst" "$bak" && cp "$t" "$dst.tmp" &&
+					mv "$dst.tmp" "$dst"; then
+				echo "$(date '+%Y-%m-%d %H:%M' 2>/dev/null) $key: replaced by the new version; your edited copy is ${bak#"$cdir"/}" >> "$notice"
+				echo "ad5x-config: $key updated, edited copy kept as ${bak##*/}"
+			else
+				keep=$old
+			fi
+		fi
+	fi
+	echo "$key $keep" >> "$rec"
+done
+{
+	echo "{"
+	sort "$rec" | awk '{ printf "%s  \"%s\": \"%s\"", (NR > 1 ? ",\n" : ""), $1, $2 } END { print "" }'
+	echo "}"
+} > "$man.tmp" && mv "$man.tmp" "$man"
+rm -f "$rec"
+exit 0

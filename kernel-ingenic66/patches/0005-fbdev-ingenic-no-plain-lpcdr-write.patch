@@ -1,0 +1,45 @@
+From: AD5X Open OS
+Subject: [PATCH] fbdev: ingenic: no plain LPCDR write in tft_cfg_init on X2600
+
+tft_cfg_init() read-modify-wrote CPM LPCDR (pixel clock) without CE to
+set the pixel clock invert bit. On the X2600 that write, even with an
+unchanged value, wedges the running pixel clock: the DPU TFT stage never
+starts on a cold boot and the panel stays in its self-test. Write it
+only when the bit changes, with CE set and BUSY waited for.
+
+diff --git a/module_drivers/drivers/video/fbdev/ingenic/fb_stage_wip/dpu_ctrl.c b/module_drivers/drivers/video/fbdev/ingenic/fb_stage_wip/dpu_ctrl.c
+index 27ece3c6f..fbc748b66 100644
+--- a/module_drivers/drivers/video/fbdev/ingenic/fb_stage_wip/dpu_ctrl.c
++++ b/module_drivers/drivers/video/fbdev/ingenic/fb_stage_wip/dpu_ctrl.c
+@@ -943,12 +943,31 @@ void tft_cfg_init(struct dpu_ctrl *dctrl, struct tft_config *tft_config)
+ 	uint32_t lcd_cgu;
+ 
+ 	lcd_cgu = *(volatile unsigned int *)(0xb0000064);
++#ifdef CONFIG_SOC_X2600
++	/*
++	 * AD5X: a plain write to LPCDR (no CE, here with an unchanged value)
++	 * wedges the running pixel clock on the X2600: the DPU's TFT stage
++	 * never starts on a cold boot (by hand the next DPU read hangs the
++	 * CPU). Only touch the invert bit when it changes, and then with CE
++	 * set and BUSY waited for, as the CGU divider driver does.
++	 */
++	if (!!(lcd_cgu & (0x1 << 26)) != !!tft_config->pix_clk_inv) {
++		int t = 10000;
++
++		lcd_cgu ^= (0x1 << 26);
++		*(volatile unsigned int *)(0xb0000064) = lcd_cgu | (0x1 << 29);
++		while ((*(volatile unsigned int *)(0xb0000064) & (0x1 << 28)) && --t)
++			udelay(1);
++		*(volatile unsigned int *)(0xb0000064) = lcd_cgu & ~(0x1 << 29);
++	}
++#else
+ 	if (tft_config->pix_clk_inv) {
+ 		lcd_cgu |= (0x1 << 26);
+ 	} else {
+ 		lcd_cgu &= ~(0x1 << 26);
+ 	}
+ 	*(volatile unsigned int *)(0xb0000064) = lcd_cgu;
++#endif
+ 
+ 	tft_cfg = reg_read(dctrl, DC_TFT_CFG);
+ 	if (tft_config->de_dl) {

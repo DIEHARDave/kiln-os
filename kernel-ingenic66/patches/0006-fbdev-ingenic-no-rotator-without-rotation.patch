@@ -1,0 +1,27 @@
+From: AD5X Open OS
+Subject: [PATCH] fbdev: ingenic: no rotator setup without rotation on X2600
+
+Probe always ran rot_ctrl_init() for the RDMA path, even at angle 0,
+where the rotator is never started. On a cold X2600 touching the
+rotator keeps the DPU from starting its TFT stage (by hand the rotator
+writes hang the chip). Stock never uses the rotator. Only set it up
+when a rotation is configured.
+
+diff --git a/module_drivers/drivers/video/fbdev/ingenic/fb_stage_wip/ingenicfb.c b/module_drivers/drivers/video/fbdev/ingenic/fb_stage_wip/ingenicfb.c
+index d49f68b2a..934ffb8c6 100644
+--- a/module_drivers/drivers/video/fbdev/ingenic/fb_stage_wip/ingenicfb.c
++++ b/module_drivers/drivers/video/fbdev/ingenic/fb_stage_wip/ingenicfb.c
+@@ -1466,7 +1466,12 @@ static int ingenicfb_do_probe(struct platform_device *pdev, struct lcd_panel *pa
+ #ifdef CONFIG_ROT_INGENIC
+ 		if (fb->var.bits_per_pixel != 32) {
+ 			dev_err(&pdev->dev, "Rotate bits_per_pixel: %d failed,should be 32\n", fb->var.bits_per_pixel);
+-		} else {
++		} else if (fbdev->rot_angle > 0) {
++			/*
++			 * AD5X: leave the rotator alone without rotation (as
++			 * stock): touching it on a cold X2600 hangs the chip
++			 * or keeps the DPU from ever starting its TFT stage.
++			 */
+ 			rot_ctrl_init(dctrl, 0, ROT_MODE_RDMA_MANUAL);
+ 		}
+ #endif

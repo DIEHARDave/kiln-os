@@ -1,0 +1,123 @@
+#!/bin/sh
+# Write partition images back to the eMMC, with checks and read-back.
+#
+# usage: ad5x-restore [--dry-run] [--i-know] [--set-flag A|B] [--reboot] SRC PART...
+#   SRC    a backup directory from ad5x-backup (NAME.img or NAME.img.000...,
+#          SHA256SUMS), or any directory holding the files named below
+#   PART   a GPT name (kernel rootfs kernel2 rootfs2 ota usershare userdata)
+#          or "boot" (first MiB of the disk): writes SRC/NAME.img;
+#          NAME=FILE writes FILE (relative to SRC) instead
+#   --set-flag A|B  point the boot flag at slot A or B after every write
+#          checked out (e.g. B after restoring kernel2 + rootfs2)
+#   --reboot       reboot when done
+#   --i-know       allow writing the running slot (kernel, rootfs: this
+#          recovery system, p1/p2) and "boot". A broken boot loader or slot A
+#          can only be repaired with Ingenic's USB boot tools.
+#   --dry-run      checks only, nothing is written
+#
+# Checks before writing: the image fits, its sha256 matches SHA256SUMS (if
+# listed there), rootfs* images are squashfs and kernel* images uImages
+# (unless --i-know), the GPT entry agrees with the SPL table, the partition
+# isn't mounted (userdata: /data is unmounted first). After writing, the
+# partition is read back and compared. Last line on success: restore: OK
+. /usr/lib/ad5x-recovery/recovery.sh
+
+dry= iknow= flag= reboot_after=
+while [ $# -gt 0 ]; do
+	case "$1" in
+	--dry-run) dry=1 ;;
+	--i-know) iknow=1 ;;
+	--set-flag) flag=$2; shift
+		case "$flag" in A|B) ;; *) rc_die "--set-flag A or B" ;; esac ;;
+	--reboot) reboot_after=1 ;;
+	-h|--help) sed -n '2,25p' "$0"; exit 0 ;;
+	-*) sed -n '2,25p' "$0" >&2; exit 2 ;;
+	*) break ;;
+	esac
+	shift
+done
+[ $# -ge 2 ] || { sed -n '2,25p' "$0" >&2; exit 2; }
+SRC=$1; shift
+[ -d "$SRC" ] || rc_die "no directory $SRC"
+slot=$(rc_slot)
+
+# Resolve and check everything before writing anything
+plan=
+for a in "$@"; do
+	n=${a%%=*}
+	if [ "$a" != "$n" ]; then f=${a#*=}; else f=$n.img; fi
+	case "$f" in /*) ;; *) f=$SRC/$f ;; esac
+	case " $RC_PARTS boot " in *" $n "*) ;; *) rc_die "unknown partition '$n'" ;; esac
+	dev=$(rc_dev $n) || rc_die "no partition '$n' on this disk"
+	psize=$(rc_bytes $n)
+	if [ -f "$f" ]; then
+		files=$f
+	elif [ -f "$f.000" ]; then
+		files=$(ls "$f".[0-9][0-9][0-9] | sort)
+	else
+		rc_die "no image $f"
+	fi
+	size=0; for x in $files; do size=$((size + $(rc_fsize "$x"))); done
+	[ "$size" -le "$psize" ] || rc_die "$n: image $size bytes, partition $psize"
+	sha=$(cat $files | sha256sum | cut -d' ' -f1)
+	want=$(awk -v f="${f##*/}" '$2 == f || $2 == "*" f { print $1; exit }' "$(dirname "$f")/SHA256SUMS" 2>/dev/null)
+	if [ -n "$want" ]; then
+		[ "$want" = "$sha" ] || rc_die "$n: ${f##*/} sha256 $sha, SHA256SUMS says $want"
+		ck="sha256 matches SHA256SUMS"
+	else
+		ck="not in a SHA256SUMS (sha256 $sha)"
+	fi
+	case "$n" in
+	rootfs|kernel|boot)
+		[ -n "$iknow" ] || rc_die "$n is the recovery system itself (slot A) or the boot loader; refusing without --i-know"
+		echo "restore: WARNING writing $n (--i-know)" ;;
+	esac
+	case "$n:$slot" in rootfs2:B|kernel2:B)
+		rc_die "$n is the running slot" ;;
+	esac
+	if [ -z "$iknow" ]; then
+		case "$n" in
+		rootfs*) [ "$(cat $files | head -c 4)" = hsqs ] || rc_die "$n: ${f##*/} is not a squashfs image" ;;
+		kernel*) [ "$(cat $files | head -c 4 | od -An -t x1 | tr -d ' \n')" = 27051956 ] ||
+			rc_die "$n: ${f##*/} is not a uImage" ;;
+		esac
+	fi
+	[ "$n" = boot ] || rc_spl_ok $n || rc_die "$n: GPT entry differs from the SPL table"
+	if rc_mounted "$dev"; then
+		mp=$(rc_mountpoint_of "$dev")
+		[ -n "$iknow" ] && [ "$mp" = / ] || [ "$n" = userdata ] ||
+			rc_die "$n is mounted at $mp"
+	fi
+	if [ "$n" = userdata ]; then
+		case "$(readlink -f "$f")" in "$AD5X_DATA"/*)
+			rc_die "userdata can't be restored from userdata itself ($f)" ;; esac
+	fi
+	echo "plan: $n <- ${f##*/} ($size bytes, $ck) -> $dev"
+	plan="$plan $n|$dev|$size|$sha|$(echo $files | tr ' ' '|')"
+done
+[ -n "$flag" ] && echo "plan: then boot flag -> slot $flag"
+[ -n "$dry" ] && { echo "restore: dry run, nothing written"; exit 0; }
+
+for p in $plan; do
+	n=$(echo "$p" | cut -d'|' -f1); dev=$(echo "$p" | cut -d'|' -f2)
+	size=$(echo "$p" | cut -d'|' -f3); sha=$(echo "$p" | cut -d'|' -f4)
+	files=$(echo "$p" | cut -d'|' -f5- | tr '|' ' ')
+	if [ "$n" = userdata ] && rc_mounted "$dev"; then
+		echo "restore: unmounting $(rc_mountpoint_of "$dev")"
+		umount "$(rc_mountpoint_of "$dev")" || rc_die "can't unmount userdata (in use)"
+	fi
+	echo "restore: writing $n ($dev)"
+	cat $files | dd of="$dev" bs=1M conv=fsync 2>/dev/null || rc_die "$n: write failed"
+	sync
+	rc_drop_caches
+	got=$(rc_sha "$dev" "$size")
+	[ "$got" = "$sha" ] || rc_die "$n: read-back $got differs from the image $sha"
+	echo "restore: $n OK $sha"
+done
+if [ -n "$flag" ]; then
+	rc_set_flag $flag || rc_die "setting the boot flag failed"
+	echo "restore: boot flag $(rc_read_flag)"
+fi
+echo "restore: OK"
+[ -n "$reboot_after" ] && { sync; reboot; }
+exit 0

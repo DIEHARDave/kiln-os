@@ -1,0 +1,8 @@
+config BR2_PACKAGE_PYTHON_STREAMING_FORM_DATA
+	bool "python-streaming-form-data"
+	select BR2_PACKAGE_PYTHON_AIOFILES # runtime
+	help
+	  Streaming parser for multipart/form-data (Moonraker file
+	  uploads). smart_open (S3/GCS targets) is not included.
+
+	  https://github.com/siddhantgoel/streaming-form-data

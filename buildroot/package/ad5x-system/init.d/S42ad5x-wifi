@@ -1,0 +1,16 @@
+#!/bin/sh
+# Wi-Fi client from /data/ad5x/wpa_supplicant.conf, when it exists.
+CONF=/data/ad5x/wpa_supplicant.conf
+case "$1" in
+start)
+	[ -f $CONF ] || { echo "ad5x-wifi: no $CONF"; exit 0; }
+	wpa_supplicant -B -i wlan0 -c $CONF -P /var/run/wpa_supplicant.pid
+	udhcpc -b -i wlan0 -p /var/run/udhcpc.wlan0.pid >/dev/null
+	;;
+stop)
+	for p in udhcpc.wlan0 wpa_supplicant; do
+		[ -f /var/run/$p.pid ] && kill "$(cat /var/run/$p.pid)"
+	done
+	;;
+esac
+exit 0

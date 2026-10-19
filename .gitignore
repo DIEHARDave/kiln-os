@@ -1,0 +1,14 @@
+# Buildroot source checkout, downloads and build output (buildroot/README.md)
+buildroot/src/
+buildroot/dl/
+buildroot/output/
+buildroot/output-recovery/
+
+# Stock firmware downloads, MCU builds and backups stay local (firmware/)
+firmware/
+
+# Release artifacts (tools/release.sh)
+dist/
+
+__pycache__/
+*.pyc

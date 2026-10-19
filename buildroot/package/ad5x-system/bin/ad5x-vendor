@@ -1,0 +1,231 @@
+#!/bin/sh
+# Vendor files: the Flashforge/Ingenic driver modules and board tools this
+# system needs on the stock kernel, kept on the printer's own data partition
+# (/data/ad5x/vendor), never in our images (docs/install.md, "Vendor files").
+#
+# usage: ad5x-vendor status                 vendor=ok|missing|damaged, dir=, source=
+#        ad5x-vendor verify                 check SHA256SUMS (exit 1 if not ok)
+#        ad5x-vendor ensure                 verify; if not ok, populate from what
+#                                           is on the printer (see below)
+#        ad5x-vendor populate [SRC]         (re)fill it from SRC, or search
+#        ad5x-vendor extract ROOT DEST [DESC] copy the files from a stock root tree
+#                                           ROOT into DEST (used by the installer)
+#        ad5x-vendor dir modules|tools      where to load them from (image or /data)
+#
+# Layout of /data/ad5x/vendor: module_driver/ (stock /module_driver as is),
+# bin/ (cmd_gpio cmd_fb cmd_jpeg_display), lib/ (libhardware2.so libutils2.so
+# libjpeg.so.9), MANIFEST (source, date), SHA256SUMS. The tools run with our
+# libc and their own libraries (/usr/bin/cmd_* wrappers set LD_LIBRARY_PATH).
+#
+# Sources, in this order (populate without SRC, and ensure):
+#   1. this image's own copies (private builds that bundle them)
+#   2. a slot (rootfs/rootfs2) that holds the stock system (mounted read-only)
+#   3. the stock system saved by the installer / ad5x-update --replace-stock:
+#      /data/ad5x/stock/rootfs.squashfs (unsquashfs: the kernel has no loop)
+#   4. a slot holding an older AD5X image that still bundled them
+# SRC may be a stock root directory, a squashfs file or a block device.
+# Works with stock's BusyBox too (the installer runs it on stock).
+#
+# Test overrides: AD5X_DATA (default /data), AD5X_SYS, AD5X_DEV, AD5X_RUN,
+# AD5X_ROOT (the running root, default /).
+: "${AD5X_DATA:=/data}" "${AD5X_SYS:=/sys}" "${AD5X_DEV:=/dev}" "${AD5X_RUN:=/run/ad5x}"
+: "${AD5X_ROOT:=}"
+V=$AD5X_DATA/ad5x/vendor
+TOOLS="cmd_gpio cmd_fb cmd_jpeg_display"
+LIBS="libhardware2.so libutils2.so libjpeg.so.9"
+# What a usable set must hold (the rest of module_driver comes along as is)
+NEED="module_driver/driver_default_init_script.sh module_driver/utils.ko
+module_driver/gpio_backlight.ko module_driver/tsc2007_touch.ko
+module_driver/soc_mac_driver.ko module_driver/soc_fb.ko bin/cmd_gpio
+bin/cmd_fb bin/cmd_jpeg_display lib/libhardware2.so lib/libutils2.so lib/libjpeg.so.9"
+
+say() { echo "ad5x-vendor: $*"; }
+die() { echo "ad5x-vendor: $*" >&2; exit 1; }
+blog() { command -v ad5x-bootlog >/dev/null 2>&1 && ad5x-bootlog "  vendor: $*" 2>/dev/null; true; }
+
+part() {	# GPT name -> device
+	for u in "$AD5X_SYS"/class/block/*/uevent; do
+		grep -qx "PARTNAME=$1" "$u" 2>/dev/null || continue
+		echo "$AD5X_DEV/$(sed -n 's/^DEVNAME=//p' "$u")"; return 0
+	done
+	return 1
+}
+
+# Stock root tree (or an image that bundled the files) -> DEST. The image
+# kept the tools in /usr/lib/ad5x/stock-tools/{bin,lib}.
+extract() {	# ROOT DEST
+	r=$1 d=$2
+	[ -f "$r/module_driver/driver_default_init_script.sh" ] || { say "no module_driver in $r"; return 1; }
+	rm -rf "$d"; mkdir -p "$d/bin" "$d/lib" || return 1
+	cp -a "$r/module_driver" "$d/module_driver" || return 1
+	st=$r/usr/lib/ad5x/stock-tools
+	for t in $TOOLS; do
+		if [ -f "$st/bin/$t" ]; then cp "$st/bin/$t" "$d/bin/$t"
+		else cp "$r/usr/bin/$t" "$d/bin/$t"
+		fi || { say "no $t in $r"; return 1; }
+		chmod 755 "$d/bin/$t"
+	done
+	for l in $LIBS; do
+		src=
+		for c in "$st/lib/$l" "$r/usr/lib/$l" "$r/lib/$l"; do
+			[ -e "$c" ] && { src=$c; break; }
+		done
+		# a symlink inside a mounted tree may point at an absolute path:
+		# resolve it relative to ROOT
+		if [ -L "$src" ]; then
+			t=$(readlink "$src")
+			case "$t" in /*) src=$r$t ;; *) src=${src%/*}/$t ;; esac
+		fi
+		[ -f "$src" ] && cp "$src" "$d/lib/$l" || { say "no $l in $r"; return 1; }
+	done
+	for _n in $NEED; do [ -s "$d/$_n" ] || { say "$_n missing after copy"; return 1; }; done
+	( cd "$d" && find module_driver bin lib -type f | sort | xargs sha256sum > SHA256SUMS ) || return 1
+	return 0
+}
+
+verify() {	# DIR (default $V): complete and unchanged
+	d=${1:-$V}
+	[ -f "$d/SHA256SUMS" ] || return 1
+	for _n in $NEED; do grep -q "  $_n\$" "$d/SHA256SUMS" || return 1; done
+	( cd "$d" && sha256sum -c SHA256SUMS >/dev/null 2>&1 )
+}
+
+# Copy from ROOT into $V, atomically (DEST.new, then rename)
+install_from() {	# ROOT DESCRIPTION
+	mkdir -p "$AD5X_DATA/ad5x" || return 1
+	_new=$V.new
+	extract "$1" "$_new" || { rm -rf "$_new"; return 1; }
+	{
+		echo "source=$2"
+		echo "date=$(date -u '+%Y-%m-%d %H:%M:%S UTC')"
+		echo "kernel=$(uname -r 2>/dev/null)"
+		echo "vermagic=$(tr '\0' '\n' < "$_new/module_driver/utils.ko" 2>/dev/null | sed -n 's/^vermagic=//p' | head -1)"
+		echo "note=Flashforge/Ingenic files copied from this printer's own firmware; not part of Kiln OS releases"
+	} > "$_new/MANIFEST"
+	verify "$_new" || { rm -rf "$_new"; say "copy from $2 failed its check"; return 1; }
+	rm -rf "$V.old"
+	[ -d "$V" ] && mv "$V" "$V.old"
+	mv "$_new" "$V" && rm -rf "$V.old" && sync
+	say "populated $V from $2"
+	blog "populated from $2"
+	return 0
+}
+
+is_stock_tree() { [ -f "$1/etc/ota_bin/ota_local_method.sh" ] || { [ ! -f "$1/etc/ad5x-release" ] && [ -d "$1/module_driver" ]; }; }
+
+M=$AD5X_RUN/vendor-src
+try_dir() {	# DIR DESCRIPTION
+	[ -d "$1/module_driver" ] && install_from "$1" "$2"
+}
+try_dev() {	# DEV DESCRIPTION [stock|bundled]
+	dev=$1 ok=1
+	[ -n "$dev" ] && [ -e "$dev" ] || return 1
+	[ "$(head -c 4 "$dev" 2>/dev/null)" = hsqs ] || return 1
+	# never a mounted slot, nor the running root (shown as /dev/root)
+	grep -q "^$dev " /proc/mounts 2>/dev/null && return 1
+	r=$(sed -n 's/.*root=\([^ ]*\).*/\1/p' "${AD5X_CMDLINE:-/proc/cmdline}" 2>/dev/null)
+	[ -n "$r" ] && [ "${dev##*/}" = "${r##*/}" ] && return 1
+	mkdir -p "$M"
+	mount -t squashfs -o ro "$dev" "$M" 2>/dev/null || return 1
+	case $3 in
+	stock) is_stock_tree "$M" && try_dir "$M" "$2" && ok=0 ;;
+	bundled) [ -f "$M/etc/ad5x-release" ] && try_dir "$M" "$2" && ok=0 ;;
+	esac
+	umount "$M"
+	return $ok
+}
+try_squashfs_file() {	# FILE DESCRIPTION
+	f=$1
+	[ -f "$f" ] && [ "$(head -c 4 "$f")" = hsqs ] || return 1
+	command -v unsquashfs >/dev/null || { say "no unsquashfs, can't read $f"; return 1; }
+	x=$AD5X_DATA/ad5x/.vendor-unpack
+	rm -rf "$x"
+	# only what we need; the libraries may be symlinks into versioned files
+	unsquashfs -n -d "$x" "$f" module_driver usr/bin/cmd_gpio usr/bin/cmd_fb \
+		usr/bin/cmd_jpeg_display usr/lib/libhardware2.so usr/lib/libutils2.so \
+		'usr/lib/libjpeg.so*' lib/libhardware2.so lib/libutils2.so >/dev/null 2>&1 ||
+		unsquashfs -n -d "$x" "$f" >/dev/null 2>&1 || { rm -rf "$x"; return 1; }
+	rc=1
+	try_dir "$x" "$2" && rc=0
+	rm -rf "$x"
+	return $rc
+}
+
+populate_auto() {
+	# 1. this image's own copies (private builds)
+	r=${AD5X_ROOT:-}
+	if [ -d "$r/module_driver" ] && [ -d "$r/usr/lib/ad5x/stock-tools/bin" ]; then
+		try_dir "${r:-/}" "this image (bundled at build time)" && return 0
+	fi
+	# 2. a slot holding stock
+	for p in rootfs rootfs2; do
+		try_dev "$(part $p)" "stock system in $p" stock && return 0
+	done
+	# 3. the saved stock system
+	try_squashfs_file "$AD5X_DATA/ad5x/stock/rootfs.squashfs" "saved stock system ($AD5X_DATA/ad5x/stock/rootfs.squashfs)" && return 0
+	# 4. an older AD5X image in a slot that still bundled them
+	for p in rootfs rootfs2; do
+		try_dev "$(part $p)" "older AD5X image in $p" bundled && return 0
+	done
+	return 1
+}
+
+missing_msg() {
+	say "NO VENDOR FILES: $V is missing or damaged and nothing on this printer"
+	say "  could fill it (no stock slot, no $AD5X_DATA/ad5x/stock/rootfs.squashfs)."
+	say "  Display, touch, backlight and Ethernet stay off; Wi-Fi may still work."
+	say "  Fix: copy a stock root's files with 'ad5x-vendor populate SRC'"
+	say "  (SRC = a stock rootfs.squashfs or its unpacked tree), see docs/install.md."
+	blog "MISSING (no source)"
+}
+
+cmd=$1; [ $# -gt 0 ] && shift
+case "$cmd" in
+status)
+	src=$(sed -n 's/^source=//p' "$V/MANIFEST" 2>/dev/null)
+	if verify; then st=ok; elif [ -d "$V" ]; then st=damaged; else st=missing; fi
+	echo "vendor=$st"; echo "dir=$V"; echo "source=$src"
+	echo "image_bundled=$([ -d "${AD5X_ROOT:-}/module_driver" ] && echo yes || echo no)"
+	[ $st = ok ]
+	;;
+verify)
+	verify && { say "ok ($V)"; exit 0; }
+	say "not ok ($V)"; exit 1
+	;;
+ensure)
+	verify && exit 0
+	[ -d "$V" ] && say "$V fails its check, filling it again"
+	populate_auto && exit 0
+	missing_msg; exit 1
+	;;
+populate)
+	if [ -z "$1" ]; then populate_auto && exit 0; missing_msg; exit 1; fi
+	s=$1
+	if [ -d "$s" ]; then try_dir "$s" "$s" || die "no stock files in $s"
+	elif [ -b "$s" ]; then try_dev "$s" "$s" stock || try_dev "$s" "$s" bundled || die "no stock files in $s"
+	else try_squashfs_file "$s" "$s" || die "no stock files in $s"
+	fi
+	;;
+extract)
+	[ $# -ge 2 ] || die "usage: ad5x-vendor extract ROOT DEST [DESCRIPTION]"
+	extract "$1" "$2.new" || { rm -rf "$2.new"; die "extract from $1 failed"; }
+	{ echo "source=${3:-$1}"; echo "date=$(date -u '+%Y-%m-%d %H:%M:%S UTC')"
+	  echo "note=Flashforge/Ingenic files copied from this printer's own firmware; not part of Kiln OS releases"; } > "$2.new/MANIFEST"
+	verify "$2.new" || { rm -rf "$2.new"; die "check of $2.new failed"; }
+	rm -rf "$2.old"; [ -d "$2" ] && mv "$2" "$2.old"
+	mv "$2.new" "$2" && rm -rf "$2.old" && sync
+	say "extracted to $2 ($(wc -l < "$2/SHA256SUMS") files)"
+	;;
+dir)
+	r=${AD5X_ROOT:-}
+	case "$1" in
+	modules) if [ -d "$r/module_driver" ]; then echo "$r/module_driver"
+		elif verify; then echo "$V/module_driver"; else exit 1; fi ;;
+	tools) if [ -d "$r/usr/lib/ad5x/stock-tools/bin" ]; then echo "$r/usr/lib/ad5x/stock-tools"
+		elif [ -x "$V/bin/cmd_gpio" ]; then echo "$V"; else exit 1; fi ;;
+	*) die "dir modules|tools" ;;
+	esac
+	;;
+-h|--help|"") sed -n '2,30p' "$0"; [ -n "$cmd" ] ;;
+*) sed -n '2,30p' "$0" >&2; exit 2 ;;
+esac

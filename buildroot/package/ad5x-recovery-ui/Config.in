@@ -1,0 +1,17 @@
+config BR2_PACKAGE_AD5X_RECOVERY_UI
+	bool "ad5x-recovery-ui"
+	depends on BR2_USE_MMU # fork
+	depends on BR2_TOOLCHAIN_HAS_THREADS
+	select BR2_PACKAGE_AD5X_LVGL
+	help
+	  Touch screen UI of the AD5X recovery OS (LVGL v9 on the
+	  800x480 framebuffer, evdev touch): boot the main OS, install
+	  .swu updates with SWUpdate's progress, back up / restore the
+	  eMMC to and from a USB stick, restore stock, network/SSH info,
+	  logs. Runs the recovery OS's ad5x-* tools (see
+	  docs/recovery-os.md); started by S80ad5x-recovery-ui.
+	  Source in the repo's recovery-ui/.
+
+comment "ad5x-recovery-ui needs a toolchain w/ threads"
+	depends on BR2_USE_MMU
+	depends on !BR2_TOOLCHAIN_HAS_THREADS

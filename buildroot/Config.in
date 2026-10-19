@@ -1,0 +1,28 @@
+menu "AD5X"
+
+config BR2_AD5X_BUNDLE_VENDOR
+	bool "Bundle Flashforge/Ingenic files (private builds only)"
+	help
+	  Copy the stock driver modules (/module_driver), stock's board
+	  tools and libraries (cmd_gpio, cmd_fb, cmd_jpeg_display,
+	  libhardware2, libutils2, libjpeg.so.9) and the stock kernel
+	  from the local, git-ignored firmware download into the image
+	  and images/. Off (the default) gives a vendor-free image for
+	  release: the printer then uses its own copies in
+	  /data/ad5x/vendor (ad5x-vendor, docs/install.md). The
+	  environment variable AD5X_VENDOR_FREE=1 (or 0) overrides this.
+
+endmenu
+
+source "$BR2_EXTERNAL_AD5X_PATH/package/klipper/Config.in"
+source "$BR2_EXTERNAL_AD5X_PATH/package/moonraker/Config.in"
+source "$BR2_EXTERNAL_AD5X_PATH/package/fluidd/Config.in"
+source "$BR2_EXTERNAL_AD5X_PATH/package/helixscreen/Config.in"
+source "$BR2_EXTERNAL_AD5X_PATH/package/python-inotify-simple/Config.in"
+source "$BR2_EXTERNAL_AD5X_PATH/package/python-libnacl/Config.in"
+source "$BR2_EXTERNAL_AD5X_PATH/package/python-streaming-form-data/Config.in"
+source "$BR2_EXTERNAL_AD5X_PATH/package/ad5x-system/Config.in"
+source "$BR2_EXTERNAL_AD5X_PATH/package/ad5x-kernel66/Config.in"
+source "$BR2_EXTERNAL_AD5X_PATH/package/ad5x-recovery/Config.in"
+source "$BR2_EXTERNAL_AD5X_PATH/package/ad5x-lvgl/Config.in"
+source "$BR2_EXTERNAL_AD5X_PATH/package/ad5x-recovery-ui/Config.in"

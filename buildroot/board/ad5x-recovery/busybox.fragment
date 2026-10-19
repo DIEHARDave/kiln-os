@@ -1,0 +1,3 @@
+# Recovery OS BusyBox additions (on top of Buildroot's default config)
+# cpio -o: ad5x-zip-to-swu builds the .swu archive from a .zip update
+CONFIG_FEATURE_CPIO_O=y

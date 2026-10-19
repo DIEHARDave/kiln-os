@@ -1,0 +1,131 @@
+#!/bin/sh
+# Main OS updates go through the recovery OS in slot A (docs/recovery-os.md):
+#
+#   ad5x-update [--reboot] FILE.swu|FILE.zip|-
+#       Stage an update (.swu or .zip from tools/make_swu.sh) in /data/ad5x/update, point
+#       the boot flag at recovery and (with --reboot) reboot. Recovery checks
+#       the sha256s, installs slot B, verifies it and boots it.
+#
+#   ad5x-update --install-recovery [--replace-stock] [--reboot] IMAGE|- [SHA256]
+#       One-time: write the recovery OS (buildroot/output-recovery/images/
+#       rootfs.squashfs) into slot A, verify it, keep the kernel. Only from
+#       slot B, only an image marked /etc/ad5x-recovery. --replace-stock is
+#       needed while slot A still holds stock; its root and kernel are saved
+#       to /data/ad5x/stock first (ad5x-restore-stock puts them back).
+#
+#   -   read the file from stdin (e.g. piped over ssh)
+set -e
+. /usr/lib/ad5x/slot.sh
+
+die() { echo "ad5x-update: $*" >&2; exit 1; }
+usage() { sed -n '2,19p' "$0"; exit ${1:-2}; }
+
+mode=swu reboot_after= replace_stock=
+while [ $# -gt 0 ]; do
+	case "$1" in
+	--install-recovery) mode=recovery ;;
+	--replace-stock) replace_stock=1 ;;
+	--reboot) reboot_after=1 ;;
+	-h|--help) usage 0 ;;
+	-*) [ "$1" = - ] && break; die "unknown option $1" ;;
+	*) break ;;
+	esac
+	shift
+done
+[ $# -ge 1 ] || usage
+FILE=$1 WANT=$2
+
+[ "$SLOT" = B ] || die "run from the main OS in slot B (this is slot '${SLOT:-?}')"
+AROOT=$(rootfs_of A) AKERN=$(kernel_of A) BKERN=$(kernel_of B)
+MNT=/run/ad5x-target
+mkdir -p $MNT
+
+slot_a_holds() {
+	holds=unknown
+	if mount -t squashfs -o ro $AROOT $MNT 2>/dev/null; then
+		if [ -f $MNT/etc/ad5x-recovery ]; then holds=recovery
+		elif [ -f $MNT/etc/ad5x-release ]; then holds=main
+		elif [ -d $MNT/usr/prog ] || [ -f $MNT/etc/ota_bin/ota_local_method.sh ]; then holds=stock
+		fi
+		umount $MNT
+	fi
+	echo $holds
+}
+
+STAGE=/data/ad5x/update
+mkdir -p $STAGE
+
+if [ $mode = swu ]; then
+	[ "$(slot_a_holds)" = recovery ] || \
+		die "slot A doesn't hold the recovery OS; install it first (--install-recovery)"
+	name=$(basename "$FILE")
+	[ "$FILE" = - ] && name=update-$(date +%Y%m%d%H%M%S)
+	tmp=$STAGE/.incoming
+	if [ "$FILE" = - ]; then cat > $tmp; else cp "$FILE" $tmp; fi
+	magic=$(head -c 6 $tmp)
+	zipmagic=$(head -c 4 $tmp | od -An -t x1 | tr -d ' \n')
+	if [ "$magic" = 070701 ] || [ "$magic" = 070702 ]; then ext=swu
+	elif [ "$zipmagic" = 504b0304 ]; then ext=zip
+	else rm -f $tmp; die "not an update file (.swu cpio or .zip)"
+	fi
+	name=${name%.swu}; name=${name%.zip}.$ext
+	mv $tmp $STAGE/$name.part
+	if [ -n "$WANT" ]; then
+		have=$(sha256sum < $STAGE/$name.part | cut -d' ' -f1)
+		[ "$have" = "$WANT" ] || { rm -f $STAGE/$name.part; die "sha256 $have, expected $WANT"; }
+	fi
+	mv $STAGE/$name.part $STAGE/$name && sync
+	set_flag A
+	echo "staged $STAGE/$name; boot flag on recovery ($(read_flag))"
+	echo "recovery installs it, then boots the main OS again"
+	if [ -n "$reboot_after" ]; then sync; reboot; else echo "reboot to install"; fi
+	exit 0
+fi
+
+# --install-recovery
+grep -q "^$AROOT " /proc/mounts && die "$AROOT is mounted"
+if [ "$FILE" = - ]; then cat > $STAGE/recovery.squashfs; FILE=$STAGE/recovery.squashfs; fi
+[ -f "$FILE" ] || die "no image $FILE"
+SIZE=$(wc -c < "$FILE")
+HAVE=$(sha256sum "$FILE" | cut -d' ' -f1)
+[ -z "$WANT" ] || [ "$HAVE" = "$WANT" ] || die "image sha256 $HAVE, expected $WANT"
+[ "$(head -c 4 "$FILE")" = hsqs ] || die "not a squashfs image"
+PSIZE=$(( $(cat /sys/class/block/${AROOT#/dev/}/size) * 512 ))
+[ "$SIZE" -le "$PSIZE" ] || die "image $SIZE bytes, slot $PSIZE"
+holds=$(slot_a_holds)
+echo "slot A holds: $holds; recovery image $SIZE bytes, sha256 $HAVE"
+case $holds in
+recovery|unknown) ;;
+main) die "slot A holds a main OS, not stock or recovery: refusing" ;;
+stock)
+	[ -n "$replace_stock" ] || die "slot A holds stock; add --replace-stock (saves it to /data/ad5x/stock first)"
+	B=/data/ad5x/stock
+	mkdir -p $B
+	used=$(od -An -t u8 -j 40 -N 8 $AROOT | tr -d ' ')
+	echo "saving stock root ($used bytes) and kernel to $B"
+	head -c $used $AROOT > $B/rootfs.squashfs
+	cat $AKERN > $B/kernel.img
+	sync
+	( cd $B && sha256sum rootfs.squashfs kernel.img > SHA256SUMS )
+	[ "$(head -c $used $AROOT | sha256sum | cut -d' ' -f1)" = \
+	  "$(sha256sum < $B/rootfs.squashfs | cut -d' ' -f1)" ] || die "stock backup check failed"
+	echo "stock saved: $(tr '\n' ' ' < $B/SHA256SUMS)"
+	;;
+esac
+echo "writing recovery to $AROOT"
+dd if="$FILE" of=$AROOT bs=1M conv=fsync 2>/dev/null
+sync
+echo 3 > /proc/sys/vm/drop_caches
+RB=$(head -c $SIZE $AROOT | sha256sum | cut -d' ' -f1)
+[ "$RB" = "$HAVE" ] || die "read-back $RB differs from the image"
+[ "$(slot_a_holds)" = recovery ] || die "slot A doesn't mount as the recovery OS after writing"
+if ! cmp -s $BKERN $AKERN; then
+	echo "copying the main kernel to $AKERN"
+	cat $BKERN > $AKERN && sync
+	cmp -s $BKERN $AKERN || die "kernel copy differs"
+fi
+[ "$FILE" = $STAGE/recovery.squashfs ] && rm -f "$FILE"
+echo "recovery OS installed in slot A; boot flag unchanged ($(read_flag))"
+echo "to test it: echo ota:kernel > $(part ota); reboot  (ad5x-boot-main returns)"
+[ -n "$reboot_after" ] && { set_flag A; sync; reboot; }
+exit 0

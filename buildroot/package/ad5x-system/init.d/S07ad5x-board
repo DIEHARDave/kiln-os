@@ -1,0 +1,73 @@
+#!/bin/sh
+# Installed system: what stock's own start-up does for the board:
+# - the board heartbeat: PC11 toggled every second (stock sys_start.sh);
+# - the display: framebuffer enabled, the boot logo shown (/data/ad5x/logo.jpg
+#   if it exists, else /usr/share/ad5x/logo.jpg, 800x480 JPEG), backlight
+#   on (stock S10jpeg_display_shell). HelixScreen takes the screen over.
+# Stock kernel: with stock's tools (from this printer's firmware,
+# /data/ad5x/vendor; see ad5x-vendor and S06ad5x-modules; /usr/bin/cmd_*
+# are wrappers). Our kernel: sysfs GPIO and the backlight class; the logo
+# is written to /dev/fb0 with Python/PIL (the framebuffer is on from boot).
+# In USB test mode stock has already done both.
+. /usr/lib/ad5x/slot.sh
+. /usr/lib/ad5x/kernel.sh
+
+# sysfs GPIO number of PC11: base of the chip labelled GPC + 11
+pc11_sysfs() {
+	for c in /sys/class/gpio/gpiochip*; do
+		[ "$(cat $c/label 2>/dev/null)" = GPC ] && { echo $(( $(cat $c/base) + 11 )); return 0; }
+	done
+	return 1
+}
+
+case "$1" in
+start)
+	[ -n "$SLOT" ] || [ $KERNEL = own ] || exit 0
+	if [ $KERNEL = own ]; then
+		n=$(pc11_sysfs) || { echo "board: no GPC gpiochip: no heartbeat"; exit 0; }
+		[ -d /sys/class/gpio/gpio$n ] || echo $n > /sys/class/gpio/export
+		echo out > /sys/class/gpio/gpio$n/direction
+		( while true; do
+			echo 0 > /sys/class/gpio/gpio$n/value; sleep 1
+			echo 1 > /sys/class/gpio/gpio$n/value; sleep 1
+		done ) &
+		ad5x-bootlog "  heartbeat started (gpio$n)"
+		# boot logo straight into the framebuffer (XRGB8888, 800x480,
+		# frame 0), then the backlight; in the background (Python + PIL
+		# take a second or two, HelixScreen starts much later)
+		logo=/usr/share/ad5x/logo.jpg
+		[ -f /data/ad5x/logo.jpg ] && logo=/data/ad5x/logo.jpg
+		( python3 -c 'import sys
+from PIL import Image
+im = Image.open(sys.argv[1]).convert("RGB").resize((800, 480))
+with open("/dev/fb0", "wb") as f:
+    f.write(im.tobytes("raw", "BGRX"))' $logo >/dev/null 2>&1 &&
+			echo 0,0 > /sys/class/graphics/fb0/pan 2>/dev/null
+		  for b in /sys/class/backlight/*; do
+			[ -f $b/brightness ] && cat $b/max_brightness > $b/brightness
+		  done ) &
+		ad5x-bootlog "  logo $logo"
+		exit 0
+	fi
+	ad5x-vendor dir tools >/dev/null || {
+		echo "board: no stock board tools (ad5x-vendor status): no heartbeat, no logo"
+		ad5x-bootlog "  no board tools"; exit 0; }
+	( while true; do
+		cmd_gpio set_func pc11 output0 >/dev/null 2>&1
+		sleep 1
+		cmd_gpio set_func pc11 output1 >/dev/null 2>&1
+		sleep 1
+	done ) &
+	ad5x-bootlog "  heartbeat started"
+	if [ -e /dev/fb0 ]; then
+		cmd_fb enable /dev/fb0 >/dev/null 2>&1 &
+		logo=/usr/share/ad5x/logo.jpg
+		[ -f /data/ad5x/logo.jpg ] && logo=/data/ad5x/logo.jpg
+		cmd_jpeg_display $logo >/dev/null 2>&1
+		sleep 0.5
+		echo 1 > /sys/class/backlight/backlight_gpio0/brightness 2>/dev/null
+		ad5x-bootlog "  display enabled, logo $logo"
+	fi
+	;;
+esac
+exit 0

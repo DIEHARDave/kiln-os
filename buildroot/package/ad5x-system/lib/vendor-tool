@@ -1,0 +1,13 @@
+#!/bin/sh
+# /usr/bin/cmd_gpio, cmd_fb, cmd_jpeg_display link here: stock's board
+# tools (Flashforge/Ingenic), run with their own libraries. They are not in
+# our images: they come from this printer's firmware, kept in
+# /data/ad5x/vendor (ad5x-vendor); private builds may still bundle them in
+# /usr/lib/ad5x/stock-tools, which is preferred then.
+t=${0##*/}
+for d in /usr/lib/ad5x/stock-tools /data/ad5x/vendor; do
+	[ -x "$d/bin/$t" ] || continue
+	LD_LIBRARY_PATH=$d/lib exec "$d/bin/$t" "$@"
+done
+echo "$t: stock board tool not available (no /data/ad5x/vendor; see ad5x-vendor status)" >&2
+exit 127

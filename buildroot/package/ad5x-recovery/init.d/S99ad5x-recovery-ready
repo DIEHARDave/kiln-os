@@ -1,0 +1,11 @@
+#!/bin/sh
+# Start-up finished. The boot flag is left as it is: a successful update
+# has already pointed it at the main OS (slot B).
+case "$1" in
+start)
+	mkdir -p /run/ad5x
+	date > /run/ad5x/ready
+	echo "recovery: ready ($(cat /etc/ad5x-release))"
+	;;
+esac
+exit 0

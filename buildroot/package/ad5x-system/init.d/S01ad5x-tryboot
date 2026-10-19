@@ -1,0 +1,15 @@
+#!/bin/sh
+# "Try once": first thing at boot, point the boot flag at the OTHER slot
+# (the previous, known-good system); S99ad5x-booted points it back at this
+# slot once start-up has finished. A system (or update) that fails after
+# this point comes back up on the other slot at the next power cycle.
+# Does nothing in USB test mode.
+. /usr/lib/ad5x/slot.sh
+case "$1" in
+start)
+	[ -n "$SLOT" ] || exit 0
+	set_flag $OTHER
+	echo "tryboot: running slot $SLOT; boot flag on slot $OTHER until start-up completes"
+	;;
+esac
+exit 0

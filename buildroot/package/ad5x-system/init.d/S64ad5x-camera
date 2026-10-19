@@ -1,0 +1,64 @@
+#!/bin/sh
+# USB cameras: one ustreamer per UVC camera, behind nginx as /webcam/ (first
+# camera), /webcam2/, ... (stream: /webcam/?action=stream or /webcam/stream,
+# snapshot: /webcam/snapshot). The camera's own MJPEG is passed through
+# (--encoder=HW), so the CPU only copies frames.
+#
+# /data/ad5x/camera.conf (optional, shell syntax):
+#   CAMERA=off            no cameras
+#   RESOLUTION=1280x720   all cameras (default 1280x720)
+#   FPS=15                all cameras (default 15)
+#   RESOLUTION_2=640x480  camera 2 only (same for FPS_2, ...)
+USTREAMER=/usr/bin/ustreamer
+CONF=/data/ad5x/camera.conf
+RUN=/run/ad5x-camera
+BASE_PORT=8090
+
+# Capture nodes of UVC cameras, in USB port order: index 0 of each
+# interface (index 1 is the metadata node)
+cameras() {
+	for v in /sys/class/video4linux/video*; do
+		[ -e "$v" ] || continue
+		[ "$(cat $v/index 2>/dev/null)" = 0 ] || continue
+		drv=$(basename "$(readlink -f $v/device/driver)" 2>/dev/null)
+		[ "$drv" = uvcvideo ] || continue
+		echo "$(readlink -f $v/device) /dev/$(basename $v)"
+	done | sort | cut -d' ' -f2
+}
+
+start() {
+	[ -x $USTREAMER ] || exit 0
+	CAMERA=on RESOLUTION=1280x720 FPS=15
+	[ -f $CONF ] && . $CONF
+	[ "$CAMERA" = off ] && { echo "camera: off ($CONF)"; exit 0; }
+	mkdir -p $RUN
+	n=0
+	for dev in $(cameras); do
+		n=$((n + 1))
+		port=$((BASE_PORT + n - 1))
+		eval res=\${RESOLUTION_$n:-$RESOLUTION}
+		eval fps=\${FPS_$n:-$FPS}
+		start-stop-daemon -S -b -m -p $RUN/$n.pid -x $USTREAMER -- \
+			--device=$dev --host=127.0.0.1 --port=$port \
+			--format=MJPEG --encoder=HW --resolution=$res \
+			--desired-fps=$fps --persistent \
+			--drop-same-frames=30 --log-level=0
+		echo "camera $n: $dev ${res}@${fps} on /webcam$([ $n -gt 1 ] && echo $n)/"
+	done
+	[ $n -gt 0 ] || echo "camera: none found"
+}
+
+stop() {
+	for p in $RUN/*.pid; do
+		[ -f "$p" ] || continue
+		start-stop-daemon -K -p $p -q
+		rm -f $p
+	done
+}
+
+case "$1" in
+start) start ;;
+stop) stop ;;
+restart) stop; sleep 1; start ;;
+esac
+exit 0

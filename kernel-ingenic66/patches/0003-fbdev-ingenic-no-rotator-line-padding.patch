@@ -1,0 +1,21 @@
+From: AD5X Open OS
+Subject: [PATCH] fbdev: ingenic: no rotator line padding on the AD5X
+
+The rotator support pads every framebuffer line to the next 512-byte
+multiple (3584 bytes for 800 px at 32 bpp). The AD5X never rotates, and
+userspace (LVGL) derives bits per pixel from the stride, so the padded
+stride left HelixScreen without a draw buffer.
+
+diff --git a/module_drivers/drivers/video/fbdev/ingenic/fb_stage_wip/x2600_rotate.h b/module_drivers/drivers/video/fbdev/ingenic/fb_stage_wip/x2600_rotate.h
+index cde97a9b5..bd84767aa 100644
+--- a/module_drivers/drivers/video/fbdev/ingenic/fb_stage_wip/x2600_rotate.h
++++ b/module_drivers/drivers/video/fbdev/ingenic/fb_stage_wip/x2600_rotate.h
+@@ -138,7 +138,7 @@ static inline int rotator_aligned_size(int sz)
+ {
+ 	//#define CEIL_ALIGN(size,aligned)  ((size + aligned - 1) / aligned * aligned)
+ #define CEIL_ALIGN(size,aligned)  (((size) / aligned + 1) * aligned)
+-#ifdef CONFIG_ROT_INGENIC
++#if 0	/* AD5X: never rotates; userspace derives bpp from the stride */
+ 	return CEIL_ALIGN(sz, 512);
+ #else
+ 	return sz;

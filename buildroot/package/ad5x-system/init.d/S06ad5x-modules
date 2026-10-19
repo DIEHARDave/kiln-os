@@ -1,0 +1,70 @@
+#!/bin/sh
+# Load the stock kernel's out-of-tree drivers (display, touch, ADC, I2C,
+# Ethernet, PWM, watchdog...) the way stock does: utils and the backlight
+# first (stock S10jpeg_display_shell), then the default driver script
+# (stock S11module_driver_default). Each step goes into the boot trace.
+#
+# The drivers are Flashforge/Ingenic files and are not in our images: they
+# come from this printer's own firmware, kept in /data/ad5x/vendor.
+# "ad5x-vendor ensure" checks that copy and, if it is missing or damaged,
+# fills it from what is on the printer (a slot holding stock, the stock
+# system saved in /data/ad5x/stock, or an older image that bundled them).
+# A private build that bundles /module_driver uses that instead.
+# On our own kernel (6.6) every driver is built in: nothing to load.
+# (shared with the recovery OS, which always runs the stock kernel)
+KERNEL=stock
+[ -f /usr/lib/ad5x/kernel.sh ] && . /usr/lib/ad5x/kernel.sh
+case "$1" in
+start)
+	if [ $KERNEL = own ]; then
+		echo "ad5x-modules: kernel $(uname -r) has its drivers built in"
+		exit 0
+	fi
+	if grep -q '^soc_fb ' /proc/modules; then
+		echo "ad5x-modules: drivers already loaded"
+		exit 0
+	fi
+	# also in a private build, so /data/ad5x/vendor is there for a later
+	# vendor-free update
+	ad5x-bootlog "  vendor files"
+	ad5x-vendor ensure
+	md=$(ad5x-vendor dir modules)
+	[ -n "$md" ] && [ -f "$md/driver_default_init_script.sh" ] || {
+		echo "ad5x-modules: NO DRIVERS (see 'ad5x-vendor status'); display, touch and Ethernet stay off"
+		ad5x-bootlog "  no drivers"
+		md=
+	}
+	if [ -n "$md" ]; then
+		cd "$md" || exit 0
+		for s in utils.sh gpio_backlight.sh $(sed -n 's/^sh \(.*\.sh\)$/\1/p' driver_default_init_script.sh); do
+			ad5x-bootlog "  module ${s%.sh}"
+			sh $s
+		done
+		# The touchscreen, loaded by stock's app_startup.sh (not the default
+		# driver script), with stock's parameters.
+		ad5x-bootlog "  module tsc2007_touch"
+		insmod "$md/tsc2007_touch.ko" tsc_irq_gpio=PC07 \
+			tsc_power_on_gpio=-1 tsc_regulator_name=-1 tsc_i2c_bus=0 \
+			tsc_i2c_addr=0x48 tsc_x_plate_ohms=660 tsc_max_rt=600 tsc_fuzzx=0 \
+			tsc_fuzzy=0 tsc_fuzzz=0 tsc_poll_period=0 tsc_x_coords_max=800 \
+			tsc_y_coords_max=480 tsc_xy_coords_exchange=0 tsc_x_coords_flip=0 \
+			tsc_y_coords_flip=1 tsc_x_actrue_min=0 tsc_x_actrue_max=4096 \
+			tsc_y_actrue_min=0 tsc_y_actrue_max=4096
+		cd /
+	fi
+	# Wi-Fi (RTL8821CU), also from stock's app_startup.sh: the driver is on
+	# stock's settings partition (usershare, /usr/prog/modules).
+	if ! grep -q '^8821cu ' /proc/modules; then
+		us=$(for u in /sys/class/block/*/uevent; do
+			grep -qx "PARTNAME=usershare" "$u" && sed -n 's/^DEVNAME=//p' "$u"; done)
+		mkdir -p /run/usershare
+		if [ -n "$us" ] && mount -t ext4 -o ro /dev/$us /run/usershare; then
+			ad5x-bootlog "  module 8821cu"
+			[ -f /run/usershare/modules/8821cu.ko ] && \
+				insmod /run/usershare/modules/8821cu.ko power_on=PB07
+			umount /run/usershare
+		fi
+	fi
+	;;
+esac
+exit 0

@@ -1,0 +1,34 @@
+From: AD5X Open OS
+Subject: [PATCH] fbdev: ingenic: clock the X2600 rotator before writing it
+
+rot_ctrl_init() wrote ROT_INT_MASK and ROT_QOS_CTRL before enabling
+gate_rot. On a cold X2600 that access wedges the DPU/rotator bus: the
+read DMA never starts and the TFT stays idle (by hand via /dev/mem the
+same write hangs the CPU). Enable the clock first.
+
+diff --git a/module_drivers/drivers/video/fbdev/ingenic/fb_stage_wip/x2600_rotate.c b/module_drivers/drivers/video/fbdev/ingenic/fb_stage_wip/x2600_rotate.c
+index 5d091fa61..9b16bf005 100644
+--- a/module_drivers/drivers/video/fbdev/ingenic/fb_stage_wip/x2600_rotate.c
++++ b/module_drivers/drivers/video/fbdev/ingenic/fb_stage_wip/x2600_rotate.c
+@@ -175,6 +175,13 @@ int rot_ctrl_init(struct dpu_ctrl *dctrl, int angle, enum rot_mode mode)
+ 
+ 		goto err_clk;
+ 	}
++	/*
++	 * AD5X: clock the rotator before touching its registers. Written
++	 * while gate_rot is still off (as before) the access wedges the
++	 * DPU/rotator bus on a cold X2600: the DPU's read DMA then never
++	 * starts and the TFT stays idle (by hand the write hangs the CPU).
++	 */
++	clk_prepare_enable(dctrl->rot_clk);
+ 	ROT_WRITE_REG(ROT_INT_MASK, ROT_GSA_MASK | ROT_EOF_MASK | ROT_SOF_MASK | ROT_FA_MASK);
+ 
+ 	ROT_WRITE_REG(ROT_QOS_CTRL, QOS_FIX_EN | QOS_FIX_3);//设置固定最高优先级
+@@ -201,7 +208,6 @@ int rot_ctrl_init(struct dpu_ctrl *dctrl, int angle, enum rot_mode mode)
+ 		ret = -EINVAL;
+ 	}
+ 
+-	clk_prepare_enable(dctrl->rot_clk);
+ 	if (mode == ROT_MODE_WDMA_AUTO) {
+ 		rot_alloc_buf(dctrl);
+ 	} else if (mode == ROT_MODE_RDMA_MANUAL) {

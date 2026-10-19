@@ -1,0 +1,12 @@
+config BR2_PACKAGE_AD5X_SYSTEM
+	bool "ad5x-system"
+	depends on BR2_INIT_BUSYBOX
+	depends on BR2_PACKAGE_PYTHON3
+	select BR2_PACKAGE_PYTHON_SERIAL
+	# unsquashfs: vendor files from the saved stock root (ad5x-vendor)
+	select BR2_PACKAGE_SQUASHFS
+	select BR2_PACKAGE_SQUASHFS_LZO
+	help
+	  AD5X start-up: data partition, the stock kernel's driver modules,
+	  Wi-Fi, the eboard bootloader handshake (tools/boot_eboard.py) and
+	  the Klipper service.

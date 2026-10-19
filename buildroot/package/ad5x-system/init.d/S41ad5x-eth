@@ -1,0 +1,27 @@
+#!/bin/sh
+# Wired network: the MAC stock assigns (usershare /MAC, stock /usr/prog/MAC),
+# then DHCP or a static address from /data/ad5x/network.conf (see
+# /usr/lib/ad5x/network.sh). In USB test mode stock has already done this.
+case "$1" in
+start)
+	[ -n "$AD5X_USB" ] && exit 0
+	for u in /sys/class/block/*/uevent; do
+		grep -qx "PARTNAME=usershare" "$u" 2>/dev/null || continue
+		dev=/dev/$(sed -n 's/^DEVNAME=//p' "$u")
+		mkdir -p /tmp/usershare
+		if mount -t ext4 -o ro "$dev" /tmp/usershare; then
+			mac=$(cat /tmp/usershare/MAC 2>/dev/null)
+			umount /tmp/usershare
+		fi
+	done
+	ifconfig eth0 down
+	[ -n "$mac" ] && ifconfig eth0 hw ether "$mac"
+	ifconfig eth0 up
+	. /usr/lib/ad5x/network.sh
+	net_up eth0
+	;;
+stop)
+	[ -f /var/run/udhcpc.eth0.pid ] && kill "$(cat /var/run/udhcpc.eth0.pid)"
+	;;
+esac
+exit 0

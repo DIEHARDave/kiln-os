@@ -1,0 +1,48 @@
+#!/bin/sh
+# Mount the printer's data partition (GPT "userdata", stock /usr/data) at
+# /data, read-write: SSH host keys, the update drop folder, logs. A failed
+# mount gets one e2fsck -p and a second try; without it /data is a tmpfs.
+# Root login: stock's root password (usershare /etc/shadow, bound over our
+# /etc/shadow, as the main OS does); keys in /data/ad5x/ssh/authorized_keys.
+. /usr/lib/ad5x-recovery/recovery.sh
+case "$1" in
+start)
+	dev=$(rc_part userdata)
+	if grep -q ' /data ' /proc/mounts; then
+		echo "data: /data already mounted"
+	elif [ -n "$dev" ] && { mount -t ext4 -o noatime "$dev" /data ||
+		{ echo "data: mount failed, e2fsck -p $dev"; e2fsck -p "$dev"
+		  mount -t ext4 -o noatime "$dev" /data; }; }; then
+		echo "data: $dev on /data"
+	else
+		echo "data: no usable userdata partition, tmpfs on /data (nothing is kept)"
+		mount -t tmpfs -o mode=0755 tmpfs /data
+	fi
+	mkdir -p /data/ad5x/ssh/hostkeys /data/ad5x/update /data/ad5x/recovery
+	chmod 700 /data/ad5x/ssh
+	us=$(rc_part usershare)
+	mkdir -p /tmp/usershare
+	if [ -n "$us" ] && mount -t ext4 -o ro "$us" /tmp/usershare; then
+		hash=$(sed -n 's/^root:\([^:]*\):.*/\1/p' /tmp/usershare/etc/shadow 2>/dev/null)
+		umount /tmp/usershare
+	fi
+	if [ -n "$hash" ] && ! grep -q ' /etc/shadow ' /proc/mounts; then
+		mkdir -p /run/ad5x
+		sed "s|^root:[^:]*:|root:$hash:|" /etc/shadow > /run/ad5x/shadow
+		chmod 600 /run/ad5x/shadow
+		mount --bind /run/ad5x/shadow /etc/shadow
+		echo "data: root password from stock's settings"
+	else
+		echo "data: no stock root password; SSH by key only (/data/ad5x/ssh/authorized_keys)"
+	fi
+	# SSH host keys kept on /data (/etc/dropbear -> /var/run/dropbear), the
+	# same keys as the main OS.
+	mkdir -p /run/dropbear
+	grep -q ' /run/dropbear ' /proc/mounts || \
+		mount --bind /data/ad5x/ssh/hostkeys /run/dropbear
+	;;
+stop)
+	umount /data 2>/dev/null
+	;;
+esac
+exit 0

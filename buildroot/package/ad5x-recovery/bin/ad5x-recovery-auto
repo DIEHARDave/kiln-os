@@ -1,0 +1,76 @@
+#!/bin/sh
+# Boot-time actions of the recovery OS (started by S85ad5x-auto, log
+# /run/ad5x/auto.log), in this order:
+# 1. /data/ad5x/update/*.swu and *.zip (oldest first): installed with ad5x-swu-apply;
+#    each file is then renamed to *.swu.done or *.swu.failed; the result
+#    goes to /data/ad5x/update/last.log. Success: reboot into the main OS.
+# 2. USB sticks (mounted at /run/ad5x/usb): if a partition of the stick
+#    holds a file "ad5x-autoupdate", the .swu/.zip files in its top directory are
+#    installed the same way (the stick isn't changed; result in last.log and
+#    ad5x-autoupdate.log on the stick). Without the marker they are only
+#    offered (ad5x-usb list, the UI). A stick image is installed once: its
+#    sha256 goes to /data/ad5x/update/applied.list and it is skipped after
+#    (no update loop when the new main OS fails and lands back here).
+# 3. USB rescue markers: "ad5x-rescue-flash" -> ad5x-usb-rescue flash,
+#    "ad5x-rescue-boot" -> ad5x-usb-rescue boot.
+# On a failure the recovery OS stays up. Writes /run/ad5x/auto.done.
+. /usr/lib/ad5x-recovery/recovery.sh
+UPD=$AD5X_DATA/ad5x/update
+LOG=$UPD/last.log
+mkdir -p "$UPD" "$AD5X_RUN"
+rm -f "$AD5X_RUN/auto.done"
+trap 'date > "$AD5X_RUN/auto.done"' EXIT
+log() { echo "$(date '+%Y-%m-%d %H:%M:%S') $*" | tee -a "$LOG"; }
+
+apply() {	# FILE [USB-LOG]
+	log "applying $1"
+	ad5x-bootlog "auto: apply ${1##*/}"
+	out=$(ad5x-swu-apply "$1" 2>&1); rc=$?
+	echo "$out" | tail -n 30 >> "$LOG"
+	[ -n "$2" ] && { echo "$(date) ${1##*/}"; echo "$out" | tail -n 30; } >> "$2" 2>/dev/null
+	if [ $rc -eq 0 ]; then log "OK ${1##*/}: boot flag $(rc_read_flag)"; else log "FAILED ${1##*/}"; fi
+	return $rc
+}
+done_reboot() {
+	log "rebooting into the main OS"
+	ad5x-usb umount >/dev/null 2>&1
+	sync; sleep 2; reboot
+	exit 0
+}
+
+# 1. Update drop folder on userdata
+for f in $(ls -tr "$UPD"/*.swu "$UPD"/*.zip 2>/dev/null); do
+	if apply "$f"; then
+		mv "$f" "$f.done"; done_reboot
+	else
+		mv "$f" "$f.failed"
+	fi
+done
+
+# 2./3. USB sticks (usb-storage needs a few seconds after power-on)
+list=$(ad5x-usb mount 8)
+[ -n "$list" ] && echo "$list"
+echo "$list" | grep ' autoupdate=1' | while read -r line; do
+	m=$(echo "$line" | tr ' ' '\n' | sed -n 's/^mnt=//p')
+	for s in $(echo "$line" | tr ' ' '\n' | sed -n 's/^swu=//p' | tr ',' ' '); do
+		sum=$(sha256sum "$m/$s" | cut -d' ' -f1)
+		if grep -q "^$sum " "$UPD/applied.list" 2>/dev/null; then
+			log "skipping $m/$s: installed before ($sum)"
+			continue
+		fi
+		echo "$sum $s $(date)" >> "$UPD/applied.list"
+		apply "$m/$s" "$m/ad5x-autoupdate.log" && { touch "$AD5X_RUN/auto.reboot"; break; }
+	done
+	[ -f "$AD5X_RUN/auto.reboot" ] && break
+done
+if [ -f "$AD5X_RUN/auto.reboot" ]; then
+	rm -f "$AD5X_RUN/auto.reboot"; done_reboot
+fi
+if echo "$list" | grep -q ' rescue_flash=1'; then
+	log "USB rescue: flash"
+	ad5x-usb-rescue flash >> "$LOG" 2>&1 || log "USB rescue flash FAILED"
+elif echo "$list" | grep -q ' rescue_boot=1'; then
+	log "USB rescue: boot"
+	ad5x-usb-rescue boot >> "$LOG" 2>&1 || log "USB rescue boot FAILED"
+fi
+exit 0

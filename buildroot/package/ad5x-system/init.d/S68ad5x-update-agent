@@ -1,0 +1,121 @@
+#!/bin/sh
+# Installs updates that Moonraker downloaded (components/kiln_os.py,
+# docs/updates.md). Moonraker runs as klipper and can't stage an update,
+# restart services or reboot; it puts the checked file in
+# /data/ad5x/kiln-update and writes "install" (file name, sha256). This
+# root loop picks it up and refuses while a print runs:
+#   kiln-os-*-update.zip     staged with ad5x-update (boot flag on the
+#                            recovery OS), reboot; the recovery installs it
+#   klipper-*.tar.gz,        daily package: unpacked into /data/ad5x/apps/
+#   moonraker-*.tar.gz       NAME (lib/apps.sh), service restarted
+# Result for Moonraker in "status", log in /data/ad5x/kiln-update/agent.log.
+D=/data/ad5x/kiln-update
+PID=/run/ad5x-update-agent.pid
+LOG=$D/agent.log
+. /usr/lib/ad5x/apps.sh
+
+log() { echo "$(date '+%F %T') $*" >> $LOG; }
+
+printing() {
+	wget -q -T 5 -O- 'http://127.0.0.1:7125/printer/objects/query?print_stats=state' \
+		2>/dev/null | grep -q -E '"state": *"(printing|paused)"'
+}
+
+# install_app FILE SHA256: a daily Klipper/Moonraker package
+install_app() {
+	local f=$1 sum=$2 name new have
+	name=${f%%-*}
+	new=$APPS/.new-$name
+	have=$(sha256sum "$D/$f" | cut -d' ' -f1)
+	if [ "$have" != "$sum" ]; then
+		rm -f "$D/$f"; log "$f: sha256 mismatch"
+		echo "failed: damaged download" > $D/status; return
+	fi
+	rm -rf "$new"; mkdir -p "$new"
+	if ! tar -xzf "$D/$f" -C "$new" ||
+	   ! grep -qx "name=$name" "$new/kiln-app" 2>/dev/null ||
+	   [ ! -f "$new/$(app_sub $name)/.version" ]; then
+		rm -rf "$new" "$D/$f"; log "$f: not a $name package"
+		echo "failed: not a $name package" > $D/status; return
+	fi
+	rm -f "$D/$f"
+	chown -R klipper:klipper "$new"
+	rm -rf "$APPS/.old-$name"
+	[ -d "$APPS/$name" ] && mv "$APPS/$name" "$APPS/.old-$name"
+	mv "$new" "$APPS/$name" && rm -rf "$APPS/.old-$name"
+	sync
+	log "$name $(cat "$APPS/$name/$(app_sub $name)/.version") installed; runs from $(app_root $name)"
+	if [ "$name" = moonraker ]; then
+		# Moonraker is the one asking: answer first, then restart it
+		echo "restarting moonraker" > $D/status
+		sleep 2
+		/etc/init.d/S62moonraker restart >> $LOG 2>&1
+	else
+		/etc/init.d/S61klipper restart >> $LOG 2>&1
+		echo "restarted klipper" > $D/status
+	fi
+}
+
+agent() {
+	while :; do
+		if [ -f $D/install ]; then
+			f=$(sed -n 1p $D/install)
+			sum=$(sed -n 2p $D/install)
+			rm -f $D/install
+			case "$f" in
+			kiln-os-*-update.zip) ;;
+			klipper-*.tar.gz|moonraker-*.tar.gz)
+				if printing; then
+					log "refused $f: printing"
+					echo "refused: a print is running" > $D/status
+				else
+					install_app "$f" "$sum"
+				fi
+				f= ;;
+			*) log "ignored request for '$f'"; echo "failed: bad request" > $D/status; f= ;;
+			esac
+			if [ -n "$f" ] && printing; then
+				log "refused $f: printing"
+				echo "refused: a print is running" > $D/status
+			elif [ -n "$f" ]; then
+				log "staging $f"
+				if ad5x-update "$D/$f" "$sum" >> $LOG 2>&1; then
+					rm -f "$D/$f"
+					log "staged, rebooting"
+					echo "rebooting" > $D/status
+					sync
+					sleep 2
+					reboot
+					exit 0
+				fi
+				rm -f "$D/$f"
+				log "ad5x-update failed"
+				echo "failed: ad5x-update, see $LOG" > $D/status
+			fi
+		fi
+		sleep 3
+	done
+}
+
+case "$1" in
+start)
+	mkdir -p $D $APPS
+	chown klipper:klipper $D
+	chmod 755 $D $APPS
+	# The read token for a private update server (root's copy is fine;
+	# Moonraker reads it as klipper)
+	[ -f /data/ad5x/kiln-os.token ] &&
+		chown root:klipper /data/ad5x/kiln-os.token &&
+		chmod 640 /data/ad5x/kiln-os.token
+	rm -f $D/install $D/status
+	start-stop-daemon -S -b -m -p $PID -x /bin/sh -- $0 run
+	;;
+run)
+	agent
+	;;
+stop)
+	start-stop-daemon -K -p $PID
+	rm -f $PID
+	;;
+esac
+exit 0

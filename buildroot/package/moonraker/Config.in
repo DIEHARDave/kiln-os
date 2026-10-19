@@ -1,0 +1,19 @@
+config BR2_PACKAGE_MOONRAKER
+	bool "moonraker"
+	depends on BR2_PACKAGE_PYTHON3
+	select BR2_PACKAGE_PYTHON3_PYEXPAT # xml (dbus-fast introspection)
+	select BR2_PACKAGE_PYTHON3_SQLITE # database
+	select BR2_PACKAGE_PYTHON_TORNADO
+	select BR2_PACKAGE_PYTHON_PILLOW
+	select BR2_PACKAGE_PYTHON_DISTRO
+	select BR2_PACKAGE_PYTHON_JINJA2
+	select BR2_PACKAGE_PYTHON_SERIAL
+	select BR2_PACKAGE_PYTHON_DBUS_FAST
+	select BR2_PACKAGE_PYTHON_INOTIFY_SIMPLE
+	select BR2_PACKAGE_PYTHON_LIBNACL
+	select BR2_PACKAGE_PYTHON_STREAMING_FORM_DATA
+	help
+	  Moonraker, the API server for Klipper (web front ends,
+	  slicer uploads), with the AD5X moonraker.conf as default.
+
+	  https://github.com/Arksine/moonraker

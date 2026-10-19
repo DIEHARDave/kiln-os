@@ -1,0 +1,25 @@
+#!/bin/sh
+# The touch screen in the browser, with touch: ad5x-fbstream on
+# 127.0.0.1:8092, nginx /screen/ (page), /screen/?action=stream,
+# /screen/?action=snapshot. Fluidd shows it as the "Screen" camera.
+# /data/ad5x/screen.conf (optional): SCREEN=off, FPS=2, QUALITY=70.
+BIN=/usr/bin/ad5x-fbstream
+PID=/run/ad5x-screen.pid
+CONF=/data/ad5x/screen.conf
+case "$1" in
+start)
+	[ -x $BIN ] || exit 0
+	SCREEN=on FPS=2 QUALITY=70
+	[ -f $CONF ] && . $CONF
+	[ "$SCREEN" = off ] && exit 0
+	start-stop-daemon -S -b -m -p $PID -x $BIN -- -p 8092 -f $FPS -q $QUALITY
+	;;
+stop)
+	start-stop-daemon -K -p $PID -q
+	rm -f $PID
+	;;
+restart)
+	$0 stop; sleep 1; $0 start
+	;;
+esac
+exit 0

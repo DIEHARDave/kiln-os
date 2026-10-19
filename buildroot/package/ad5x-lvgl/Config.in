@@ -1,0 +1,9 @@
+config BR2_PACKAGE_AD5X_LVGL
+	bool
+	help
+	  LVGL v9 sources (pinned release tarball), for this tree's
+	  LVGL programs (ad5x-recovery-ui). Nothing is installed: each
+	  program compiles LVGL with its own lv_conf.h from
+	  $(AD5X_LVGL_DIR).
+
+	  https://lvgl.io

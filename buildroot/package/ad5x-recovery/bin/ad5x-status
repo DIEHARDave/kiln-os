@@ -1,0 +1,53 @@
+#!/bin/sh
+# Recovery OS state for scripts and the touch UI: one key=value per line,
+# values to the end of the line (may contain spaces).
+#
+# usage: ad5x-status [--slots]
+#   --slots  also mount and identify both slots (slot_a=, slot_b=; slower)
+#
+# Keys: release, slot, root, flag, flag_at_boot, net_mode (dhcp|static),
+# net_if, net_ip (address/prefix, empty without a link), ssh (running|stopped),
+# swupdate (running|stopped), web_port, ui (running|absent|stopped),
+# update_pending (.swu files waiting in /data/ad5x/update), update_last (last
+# line of /data/ad5x/update/last.log), auto (running|done), stock_saved
+# (yes|no: /data/ad5x/stock), vendor (ok|missing|damaged: the printer's own
+# drivers in /data/ad5x/vendor), usb (count of mounted USB partitions; details:
+# ad5x-usb list), data (mounted|tmpfs), main_trace (last line of the main
+# OS's boot trace in the ota partition: how far its last start-up got).
+. /usr/lib/ad5x-recovery/recovery.sh
+running() { pidof "$1" >/dev/null && echo running || echo stopped; }
+echo "release=$(cat /etc/ad5x-release 2>/dev/null)"
+echo "slot=$(rc_slot)"
+echo "root=$(rc_root)"
+echo "flag=$(rc_read_flag)"
+echo "flag_at_boot=$(cat "$AD5X_RUN/flag-at-boot" 2>/dev/null)"
+MODE=dhcp IFACE=
+[ -f "$AD5X_DATA/ad5x/network.conf" ] && . "$AD5X_DATA/ad5x/network.conf" 2>/dev/null
+[ "$MODE" = static ] || MODE=dhcp
+echo "net_mode=$MODE"
+ifc=${IFACE:-eth0}
+ip=$(ip -4 addr show dev "$ifc" 2>/dev/null | awk '/inet / { print $2; exit }')
+if [ -z "$ip" ]; then
+	ip=$(ip -4 addr show dev wlan0 2>/dev/null | awk '/inet / { print $2; exit }')
+	[ -n "$ip" ] && ifc=wlan0
+fi
+echo "net_if=$ifc"
+echo "net_ip=$ip"
+echo "ssh=$(running dropbear)"
+echo "swupdate=$(running swupdate)"
+echo "web_port=8080"
+if [ -x /usr/bin/ad5x-recovery-ui ]; then echo "ui=$(running ad5x-recovery-ui)"; else echo "ui=absent"; fi
+echo "update_pending=$(ls "$AD5X_DATA"/ad5x/update/*.swu 2>/dev/null | tr '\n' ' ')"
+echo "update_last=$(tail -n 1 "$AD5X_DATA/ad5x/update/last.log" 2>/dev/null)"
+[ -f "$AD5X_RUN/auto.done" ] && echo "auto=done" || echo "auto=running"
+[ -f "$AD5X_DATA/ad5x/stock/rootfs.squashfs" ] && echo "stock_saved=yes" || echo "stock_saved=no"
+echo "vendor=$(AD5X_DATA=$AD5X_DATA ad5x-vendor status 2>/dev/null | sed -n 's/^vendor=//p')"
+echo "usb=$(rc_usb_mounts | wc -l | tr -d ' ')"
+fs=$(awk '$2 == "/data" { print $3; exit }' "$AD5X_MOUNTS")
+[ "$fs" = ext4 ] && echo "data=mounted" || echo "data=tmpfs"
+o=$(rc_part ota) && echo "main_trace=$(dd if="$o" bs=1024 skip=64 count=8 2>/dev/null | tr -d '\0' | tail -n 1)"
+if [ "$1" = --slots ]; then
+	echo "slot_a=$(rc_slot_holds rootfs)"
+	echo "slot_b=$(rc_slot_holds rootfs2)"
+fi
+exit 0

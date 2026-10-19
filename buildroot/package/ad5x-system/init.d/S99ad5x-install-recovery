@@ -1,0 +1,37 @@
+#!/bin/sh
+# Last step of a first install from stock (docs/install.md, tools/install/
+# ad5x-install.sh): when stock ran from slot A, the installer could only
+# write this main OS into slot B; it left the recovery image in
+# /data/ad5x/install/recovery.squashfs (+ recovery.sha256). After this main
+# OS has started completely (S99ad5x-booted has pointed the flag at it), it
+# writes the recovery OS into slot A with "ad5x-update --install-recovery
+# --replace-stock" (stock's root and kernel saved to /data/ad5x/stock first,
+# read-back check, slot A keeps the printer's own kernel). At most 3 tries;
+# log in /data/ad5x/install/install.log.
+. /usr/lib/ad5x/slot.sh
+I=/data/ad5x/install
+case "$1" in
+start)
+	[ "$SLOT" = B ] && [ -f $I/recovery.squashfs ] && [ -f $I/recovery.sha256 ] || exit 0
+	[ "$(read_flag)" = ota:kernel2 ] || { echo "install-recovery: start-up not complete, later"; exit 0; }
+	n=$(cat $I/recovery.tries 2>/dev/null || echo 0)
+	if [ "$n" -ge 3 ]; then
+		echo "install-recovery: gave up after 3 tries, see $I/install.log"
+		exit 0
+	fi
+	echo $((n + 1)) > $I/recovery.tries
+	(
+		echo "=== $(date) main OS: writing the recovery OS into slot A (try $((n + 1)))"
+		if ad5x-update --install-recovery --replace-stock $I/recovery.squashfs \
+				"$(cut -d' ' -f1 $I/recovery.sha256)"; then
+			rm -f $I/recovery.squashfs $I/recovery.sha256 $I/recovery.tries
+			echo "state=done" > $I/state
+			echo "install-recovery: OK, installation complete"
+		else
+			echo "install-recovery: FAILED (slot A unchanged or not verified; tried again at the next boot)"
+		fi
+	) >> $I/install.log 2>&1 &
+	echo "install-recovery: writing the recovery OS into slot A in the background ($I/install.log)"
+	;;
+esac
+exit 0

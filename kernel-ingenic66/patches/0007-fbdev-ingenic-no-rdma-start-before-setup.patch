@@ -1,0 +1,34 @@
+From: AD5X Open OS
+Subject: [PATCH] fbdev: ingenic: no RDMA start from pan before probe started it
+
+register_framebuffer() makes fbcon pan the screen before probe has run
+dpu_ctrl_setup() (display interface, TFT timings, output route) and
+filled in the RDMA descriptors. dpu_ctrl_rdma_change() then started the
+RDMA right away ("[rdma] last frame [0] still in changing!"). On a cold
+X2600 that RDMA hangs as working (DC_ST 0x9), never fetches, cannot be
+stopped, and the TFT stage never starts: the panel stays in its
+no-signal self-test. It only worked when another driver had left the
+TFT running. Only remember the frame until probe has started the RDMA.
+
+diff --git a/module_drivers/drivers/video/fbdev/ingenic/fb_stage_wip/dpu_ctrl.c b/module_drivers/drivers/video/fbdev/ingenic/fb_stage_wip/dpu_ctrl.c
+--- a/module_drivers/drivers/video/fbdev/ingenic/fb_stage_wip/dpu_ctrl.c
++++ b/module_drivers/drivers/video/fbdev/ingenic/fb_stage_wip/dpu_ctrl.c
+@@ -1469,6 +1469,18 @@
+ 
+ int dpu_ctrl_rdma_change(struct dpu_ctrl *dctrl, int frame)
+ {
++	/*
++	 * AD5X: register_framebuffer() pans (fbcon) before probe has run
++	 * dpu_ctrl_setup() and started the RDMA. Starting the RDMA here then
++	 * runs it into an unconfigured DPU: on a cold X2600 it hangs as
++	 * "working" (DC_ST 0x9), never fetches, cannot be stopped, and the
++	 * TFT stage never starts. Only remember the frame until probe's
++	 * dpu_ctrl_rdma_start() has run (work_in_rdma).
++	 */
++	if (!dctrl->work_in_rdma) {
++		dctrl->rdma_last_frame = frame;
++		return 0;
++	}
+ 	/* TODO: 可能改变的内容，包括格式，大小等。这里只是切换frame, 什么时候真正切换还不一定.*/
+ 	/*如果此时正处于直通显示, 需要停止直通，切换到rdma通道.*/
+ #ifdef CONFIG_ROT_INGENIC

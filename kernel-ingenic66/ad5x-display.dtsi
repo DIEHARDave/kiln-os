@@ -1,0 +1,65 @@
+// SPDX-License-Identifier: GPL-2.0
+/*
+ * AD5X display: X2600 DPU -> LVDS (DSI/LVDS combo PHY) -> 800x480 "KX070".
+ *
+ * DEVIATION: stock keeps the dpu node disabled and drives the screen with
+ * the out-of-tree soc_fb.ko + lcd_kx070.ko. Facts recovered from those
+ * binaries (firmware/ff-repo/stock5x/module_driver/):
+ *  - lcd_kx070 lcdc_data: lcd_mode 7, which soc_fb's jzfb_register_lcd
+ *    handles as LVDS (no parallel RGB pins are requested in that mode;
+ *    PB4-PB31 stay free for UART3/4/5, PB7 Wi-Fi power, PB11 key, ...).
+ *  - LVDS config words {0,1,1,1,1}: soc_fb programs DSI_PHY_LVDS_REG0C
+ *    with bit5 (24-bit), no bit4 (=> VESA/SPWG, not JEIDA), bits 2..0
+ *    clear (sync/DE polarity) - i.e. the SDK's LCD_TYPE_LVDS_VESA,
+ *    COLOR_CODE_24BIT, h/v/de_polarity = 0.
+ *  - Timings: 800x480@60, HBP 88 HFP 40 HSW 48, VBP 35 VFP 13 VSW 3,
+ *    108 x 64 mm. Pixel clock 976*531*60 = 31.1 MHz; the SDK LVDS PLL
+ *    table needs an exact entry, so the panel driver uses 31.0 MHz.
+ *  - No panel power/reset GPIOs (gpio_lcd_* = -1); backlight is PC14
+ *    (gpio-backlight in ad5x.dts).
+ * Timings live in the C panel driver (SDK convention): ad5x/panel-kx070.c.
+ */
+
+&dpu {
+	status = "okay";
+	/* stock soc_fb: srdma_enable=1 srdma_frames=2, mixer/rot off */
+	ingenic,disable-rdma-fb = <0>;
+	ingenic,rot_angle = <0>;
+	/* composer fb export state (layout as SDK x2660 KD050 RGB example) */
+	ingenic,layer-exported = <1 0 0 0>;
+	ingenic,layer-frames   = <2 2 2 2>;
+	ingenic,layer-framesize = <800 480>, <800 480>, <800 480>, <800 480>;
+	layer,color_mode        = <0 0 0 0>;
+	layer,src-size          = <800 480>, <800 480>, <800 480>, <800 480>;
+	layer,target-size       = <800 480>, <800 480>, <800 480>, <800 480>;
+	layer,target-pos        = <0 0>, <0 0>, <0 0>, <0 0>;
+	layer,enable            = <1 0 0 0>;
+	ingenic,logo-pan-layer  = <0>;
+
+	port {
+		dpu_out_ep: endpoint {
+			remote-endpoint = <&panel_kx070_ep>;
+		};
+	};
+};
+
+/ {
+	display-dpi {
+		compatible = "simple-bus";
+		#address-cells = <1>;
+		#size-cells = <1>;
+		ranges;
+
+		panel_kx070: panel-kx070 {
+			compatible = "ingenic,kx070";
+			status = "okay";
+			/* no ingenic,rst-gpio / vdd-en-gpio / lcd-pwm-gpio: stock has none */
+
+			port {
+				panel_kx070_ep: endpoint {
+					remote-endpoint = <&dpu_out_ep>;
+				};
+			};
+		};
+	};
+};

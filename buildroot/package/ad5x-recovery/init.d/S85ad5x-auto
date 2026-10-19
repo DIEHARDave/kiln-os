@@ -1,0 +1,17 @@
+#!/bin/sh
+# Automatic actions at boot, in the background (the console and SSH stay
+# usable): ad5x-recovery-auto applies /data/ad5x/update/*.swu, then a USB
+# stick's .swu if the stick has an "ad5x-autoupdate" file, then a USB rescue
+# marker ("ad5x-rescue-boot" / "ad5x-rescue-flash"). See
+# docs/recovery-os.md. A file /data/ad5x/recovery/noauto skips all of it.
+case "$1" in
+start)
+	if [ -e /data/ad5x/recovery/noauto ]; then
+		echo "auto: /data/ad5x/recovery/noauto present, skipped"
+		exit 0
+	fi
+	setsid /usr/bin/ad5x-recovery-auto </dev/null >> /run/ad5x/auto.log 2>&1 &
+	echo "auto: started (log /run/ad5x/auto.log)"
+	;;
+esac
+exit 0

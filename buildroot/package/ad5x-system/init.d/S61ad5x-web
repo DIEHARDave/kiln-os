@@ -1,0 +1,60 @@
+#!/bin/sh
+# Fluidd that Moonraker can update (moonraker-updates.conf): a copy of the
+# image's Fluidd in /data/ad5x/web/fluidd, made when it is missing, broken
+# or older than the image's (so a Kiln OS update never brings an older
+# Fluidd back). Before Moonraker (S62), which checks the copy at its
+# start; nginx (S63) serves it, or the image's own if there is no copy.
+# Back to the image's version: delete /data/ad5x/web/fluidd and reboot.
+IMG=/usr/share/fluidd
+WEB=/data/ad5x/web
+F=$WEB/fluidd
+
+# Version from release_info.json ("v1.37.6" -> 1.37.6)
+ver() {
+	sed -n 's/.*"version" *: *"v\{0,1\}\([^"]*\)".*/\1/p' \
+		"$1/release_info.json" 2>/dev/null
+}
+
+# True when version $1 is older than $2 (numeric, dot by dot)
+older() {
+	awk -v a="$1" -v b="$2" 'BEGIN {
+		na = split(a, x, "."); nb = split(b, y, ".")
+		n = na > nb ? na : nb
+		for (i = 1; i <= n; i++) {
+			if (x[i] + 0 < y[i] + 0) exit 0
+			if (x[i] + 0 > y[i] + 0) exit 1
+		}
+		exit 1
+	}'
+}
+
+root_conf() {
+	mkdir -p /run/nginx
+	echo "root $1;" > /run/nginx/fluidd-root.conf
+}
+
+case "$1" in
+start)
+	[ -f $IMG/index.html ] || exit 0
+	if mkdir -p $WEB 2>/dev/null; then
+		chown klipper:klipper $WEB
+		have=$(ver $F)
+		want=$(ver $IMG)
+		if [ ! -f $F/index.html ] || [ -z "$have" ] || older "$have" "$want"; then
+			echo "web: Fluidd ${want:-?} from the image (was ${have:-none})"
+			rm -rf $F.new
+			if cp -a $IMG $F.new && chown -R klipper:klipper $F.new; then
+				rm -rf $F && mv $F.new $F
+			else
+				rm -rf $F.new
+			fi
+		fi
+	fi
+	if [ -f $F/index.html ]; then
+		root_conf $F
+	else
+		root_conf $IMG
+	fi
+	;;
+esac
+exit 0

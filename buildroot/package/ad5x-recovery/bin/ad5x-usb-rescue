@@ -1,0 +1,108 @@
+#!/bin/sh
+# USB rescue: run a whole system from a USB stick, or flash slot B from it.
+# The boot loader only ever boots the eMMC, so this is the way to bring up
+# a system that isn't on the printer.
+#
+# usage: ad5x-usb-rescue boot [--dry-run] [DEV]
+#        ad5x-usb-rescue flash [--dry-run] [--no-reboot] [DIR]
+#
+# boot: DEV (default: the first USB ext4 partition with /etc/ad5x-release,
+#   e.g. usb-test.img's AD5XROOT) is mounted read-only and its own start-up
+#   (/etc/init.d/rcS, AD5X_USB=1 "USB test mode") runs in a chroot, as
+#   board/ad5x/usb/flashforge_init.sh does on stock: /dev, /proc, /sys,
+#   /data (userdata) and usershare (read-only, /tmp/usershare) are shared;
+#   the recovery's drivers, network, SSH (port 22) and SWUpdate (8080) stay
+#   up; the recovery UI is stopped so the stick's UI gets the screen. Get a
+#   shell in it: chroot /run/ad5x/rescue-root /bin/sh. Reboot to leave.
+#
+# flash: DIR (default: the top directory of the stick partition holding the
+#   "ad5x-rescue-flash" marker) holds rootfs.squashfs and optionally a
+#   kernel (kernel.img, xImage or uImage) and SHA256SUMS. They are written
+#   to slot B (rootfs2, kernel2) with ad5x-restore (checks, read-back), the
+#   boot flag is pointed at slot B, then reboot. Unsigned: physical access
+#   is the trust here (signed updates: put a .swu on the stick instead).
+#
+# At boot (S85ad5x-auto) the markers "ad5x-rescue-boot" or
+# "ad5x-rescue-flash" in the top directory of a stick partition pick one.
+. /usr/lib/ad5x-recovery/recovery.sh
+
+cmd=$1; [ $# -gt 0 ] && shift
+case "$cmd" in -h|--help) sed -n '2,28p' "$0"; exit 0 ;; esac
+dry= noreboot=
+while [ $# -gt 0 ]; do
+	case "$1" in
+	--dry-run) dry=1 ;;
+	--no-reboot) noreboot=1 ;;
+	-h|--help) sed -n '2,28p' "$0"; exit 0 ;;
+	-*) sed -n '2,28p' "$0" >&2; exit 2 ;;
+	*) break ;;
+	esac
+	shift
+done
+ARG=$1
+field() { echo "$2" | tr ' ' '\n' | sed -n "s/^$1=//p"; }
+
+case "$cmd" in
+boot)
+	[ -n "$dry" ] || ad5x-usb mount 5 >/dev/null
+	if [ -n "$ARG" ]; then
+		dev=$ARG
+		line=$(ad5x-usb list | grep "^dev=$dev ")
+	else
+		line=$(ad5x-usb list | grep ' rescue_root=1' | head -1)
+		dev=$(field dev "$line")
+	fi
+	[ -n "$dev" ] || rc_die "no USB ext4 partition with /etc/ad5x-release"
+	src=$(field mnt "$line")
+	[ -n "$src" ] && [ -f "$src/etc/ad5x-release" ] || rc_die "$dev holds no /etc/ad5x-release"
+	echo "rescue: $dev: $(cat "$src/etc/ad5x-release")"
+	[ -x "$src/etc/init.d/rcS" ] || rc_die "$dev has no /etc/init.d/rcS"
+	[ -n "$dry" ] && { echo "rescue: dry run, would chroot into $dev"; exit 0; }
+	R=$AD5X_RUN/rescue-root
+	mkdir -p "$R"
+	umount "$src" && rmdir "$src"
+	mount -t ext4 -o ro,noatime "$dev" "$R" || rc_die "can't mount $dev"
+	/etc/init.d/S80ad5x-recovery-ui stop >/dev/null 2>&1
+	mount --bind /dev "$R/dev"
+	mount -t devpts devpts "$R/dev/pts" 2>/dev/null
+	mount -t proc proc "$R/proc"
+	mount -t sysfs sysfs "$R/sys"
+	mount -t tmpfs -o mode=1777 tmpfs "$R/tmp"
+	mount -t tmpfs -o mode=0755,nosuid,nodev tmpfs "$R/run"
+	mount --bind "$AD5X_DATA" "$R/data"
+	cp /run/resolv.conf "$R/run/resolv.conf" 2>/dev/null
+	mkdir -p "$R/tmp/usershare"
+	us=$(rc_part usershare) && mount -t ext4 -o ro "$us" "$R/tmp/usershare"
+	echo "rescue: starting $dev's init scripts (log $AD5X_RUN/rescue.log)"
+	ad5x-bootlog "usb rescue boot $dev"
+	AD5X_USB=1 setsid chroot "$R" /etc/init.d/rcS </dev/null >> "$AD5X_RUN/rescue.log" 2>&1 &
+	echo "rescue: running; reboot to leave"
+	;;
+flash)
+	if [ -n "$ARG" ]; then
+		DIR=$ARG
+	else
+		[ -n "$dry" ] || ad5x-usb mount 5 >/dev/null
+		DIR=	# the partition holding the marker
+		for m in $(rc_usb_mounts); do
+			[ -e "$m/ad5x-rescue-flash" ] && { DIR=$m; break; }
+		done
+	fi
+	[ -n "$DIR" ] && [ -f "$DIR/rootfs.squashfs" ] || rc_die "no rootfs.squashfs in '${DIR:-a stick with ad5x-rescue-flash}'"
+	set -- rootfs2=rootfs.squashfs
+	for k in kernel.img xImage uImage; do
+		[ -f "$DIR/$k" ] && { set -- kernel2=$k "$@"; break; }
+	done
+	opts="--set-flag B"
+	[ -n "$dry" ] && opts="$opts --dry-run"
+	echo "rescue: flashing slot B from $DIR: $*"
+	ad5x-bootlog "usb rescue flash $DIR"
+	ad5x-restore $opts "$DIR" "$@" || exit 1
+	[ -n "$dry$noreboot" ] && exit 0
+	ad5x-usb umount
+	echo "rescue: rebooting into slot B"
+	sync; reboot
+	;;
+*)
+	sed -n '2,28p' "$0" >&2; exit 2 ;;
+esac

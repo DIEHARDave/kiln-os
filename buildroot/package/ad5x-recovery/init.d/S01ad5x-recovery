@@ -1,0 +1,31 @@
+#!/bin/sh
+# Recovery OS, first script: note why we are here and publish the
+# partitions by GPT name.
+# - The boot flag is NOT changed: it already points at this slot (A).
+#   "ota:kernel" here usually means the main OS (slot B) didn't finish its
+#   start-up (its S01 points the flag at A, its S99 back at B) or someone
+#   chose recovery. Saved in /run/ad5x/flag-at-boot for ad5x-status.
+# - /dev/disk/by-partlabel/<GPT name> links (mdev doesn't make them), used
+#   by the .swu images (sw-description). Only for partitions whose GPT entry
+#   agrees with the SPL's built-in table, and never rootfs2/kernel2 when they
+#   are the running root (they can't be: the SPL boots this slot from p2).
+. /usr/lib/ad5x-recovery/recovery.sh
+case "$1" in
+start)
+	mkdir -p "$AD5X_RUN"
+	rc_read_flag > "$AD5X_RUN/flag-at-boot"
+	slot=$(rc_slot)
+	echo "recovery: running slot ${slot:-?} ($(rc_root)), boot flag '$(cat "$AD5X_RUN/flag-at-boot")'"
+	mkdir -p "$AD5X_DEV/disk/by-partlabel"
+	for n in $RC_PARTS; do
+		dev=$(rc_part $n) || continue
+		if ! rc_spl_ok $n; then
+			echo "recovery: GPT entry $n differs from the SPL table; no link"
+			continue
+		fi
+		case "$n:$slot" in rootfs2:B|kernel2:B) continue ;; esac
+		ln -sfn "../../${dev##*/}" "$AD5X_DEV/disk/by-partlabel/$n"
+	done
+	;;
+esac
+exit 0

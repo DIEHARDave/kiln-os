@@ -1,0 +1,24 @@
+config BR2_PACKAGE_AD5X_KERNEL66
+	bool "ad5x-kernel66"
+	help
+	  Our 6.6 kernel (Ingenic's X2600 SDK kernel with the AD5X device
+	  tree and patches, kernel-ingenic66/) and chainload.ko, which starts
+	  it from the printer's stock 5.10 kernel at boot when chosen with
+	  "ad5x-kernel own" (S00ad5x-kernel). Installed in
+	  /usr/lib/ad5x/kernel66; the boot slots keep the stock kernel.
+
+	  Needs a checkout of the Ingenic SDK (see kernel-ingenic66/README.md)
+	  and the 5.10 header tree for chainload.ko
+	  (kernel-ingenic66/chainload/setup.sh).
+
+if BR2_PACKAGE_AD5X_KERNEL66
+
+config BR2_PACKAGE_AD5X_KERNEL66_SDK
+	string "Ingenic 6.6 SDK checkout"
+	default "$(HOME)/workspace/ingenic-sdk-6.6"
+
+config BR2_PACKAGE_AD5X_KERNEL66_KDIR510
+	string "linux-5.10.186 tree for chainload.ko"
+	default "$(HOME)/workspace/chainload-build/linux-5.10.186"
+
+endif

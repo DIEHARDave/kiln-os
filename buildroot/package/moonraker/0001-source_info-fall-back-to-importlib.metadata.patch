@@ -1,0 +1,26 @@
+source_info: fall back to the standard library importlib.metadata
+
+The importlib_metadata backport is not packaged for the AD5X image; on
+Python 3.10 and later the standard library module has the same classes.
+
+Upstream: not submitted (AD5X open OS)
+
+--- a/moonraker/utils/source_info.py
++++ b/moonraker/utils/source_info.py
+@@ -13,7 +13,15 @@
+ import json
+ import logging
+ from dataclasses import dataclass
+-from importlib_metadata import Distribution, PathDistribution, PackageMetadata
++try:
++    from importlib_metadata import (
++        Distribution, PathDistribution, PackageMetadata
++    )
++except ImportError:
++    # Python 3.10+ standard library
++    from importlib.metadata import (
++        Distribution, PathDistribution, PackageMetadata
++    )
+ from .exceptions import ServerError
+ 
+ # Annotation imports

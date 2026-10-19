@@ -1,0 +1,10 @@
+{
+  "name": "zmod-compat",
+  "description": "zMod's slicer and console macros (START_PRINT, END_PRINT, _GOTO_TRASH, ...) on this system",
+  "version": "1.1.0",
+  "author": "ad5x-open",
+  "url": "docs/zmod-compat.md",
+  "requires_os": "1.0",
+  "requires": [],
+  "conflicts": []
+}

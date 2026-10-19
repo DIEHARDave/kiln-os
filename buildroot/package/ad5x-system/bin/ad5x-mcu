@@ -1,0 +1,270 @@
+#!/bin/sh
+# The boards' Klipper firmware (docs/mcu-flashing.md, "Automatic updates").
+#
+# Kiln OS needs mainline Klipper on the mainboard and on the toolhead board
+# (eboard), at the version this image was tested against
+# (/usr/share/ad5x/mcu/VERSION, from klipper/mcu-dicts/FLASHED). At every
+# start (S60ad5x-eboard) "boot" checks both and flashes the ones that differ,
+# with Flashforge's own flashing tools from this printer (NationsCommand,
+# IAPCommand: copied from stock's control directory on the usershare
+# partition to /data/ad5x/vendor/mcu, never part of our images):
+#   - mainboard: Klipper "identify" on ttyS2; any other answer (or none):
+#     NationsCommand through the chip's ROM bootloader (BOOT0/NRST over GPIO),
+#     verified, then identified again;
+#   - eboard: only its bootloader can write it, and that waits only right
+#     after power-on ("Ready" on ttyS5). If it waits and the last eboard
+#     flash on record isn't this version: IAPCommand, then start it ('A').
+#     If its application already runs (a warm restart) with another
+#     version: the screen asks for a power-cycle; the next start flashes it.
+# Before writing a board, stock's own board update is armed (Update and
+# UpdateM in stock's control directory): Kiln OS never runs it, but if stock
+# ever starts again (a failed first start, ad5x-restore-stock) it flashes
+# Flashforge's images back by itself.
+# When both boards run this version, /data/ad5x/klipper.enable is created
+# once (S61klipper starts Klipper only with it).
+#
+# usage: ad5x-mcu boot                 at start-up (S60ad5x-eboard)
+#        ad5x-mcu status               versions on the boards and wanted (not
+#                                      while Klipper runs: it holds the ports)
+#        ad5x-mcu flash-mainboard      flash the mainboard now (refused while
+#                                      Klipper runs)
+#        ad5x-mcu arm-stock            arm stock's own board update
+#        ad5x-mcu tools                copy the flashing tools from stock
+# /data/ad5x/mcu.disable: "boot" only starts the eboard, flashes nothing.
+# Log: /data/ad5x/mcu/log.
+#
+# Test overrides: AD5X_DATA (/data), AD5X_SYS (/sys), AD5X_DEV (/dev),
+# AD5X_RUN (/run/ad5x), AD5X_MCU_FW (/usr/share/ad5x/mcu),
+# AD5X_USERSHARE (a directory holding stock's PROGRAM/ instead of mounting
+# the usershare partition), AD5X_SCREENS (/usr/share/ad5x/screens),
+# AD5X_KERNEL (stock|own).
+: "${AD5X_DATA:=/data}" "${AD5X_SYS:=/sys}" "${AD5X_DEV:=/dev}" "${AD5X_RUN:=/run/ad5x}"
+: "${AD5X_MCU_FW:=/usr/share/ad5x/mcu}" "${AD5X_SCREENS:=/usr/share/ad5x/screens}"
+ST=$AD5X_DATA/ad5x/mcu
+TOOLS=$AD5X_DATA/ad5x/vendor/mcu
+LOG=$ST/log
+MB=$AD5X_DEV/ttyS2
+EB=$AD5X_DEV/ttyS5
+WANT=$(cat "$AD5X_MCU_FW/VERSION" 2>/dev/null)
+
+say() { echo "ad5x-mcu: $*"; echo "$(date '+%F %T') $*" >> "$LOG" 2>/dev/null; }
+blog() { command -v ad5x-bootlog >/dev/null 2>&1 && ad5x-bootlog "  mcu: $*" 2>/dev/null; true; }
+ver() {	# PORT -> the version its firmware reports, empty if none answers
+	ad5x-mcu-version --port "$1" --baud 230400 --timeout "${2:-3}" 2>/dev/null
+}
+kernel() {
+	[ -n "$AD5X_KERNEL" ] && { echo "$AD5X_KERNEL"; return; }
+	case "$(uname -r)" in 5.10.*) echo stock ;; *) echo own ;; esac
+}
+show() {	# screen NAME or a JPEG path (best effort; HelixScreen starts later)
+	case "$1" in /*) f=$1 ;; *) f=$AD5X_SCREENS/$1.jpg ;; esac
+	echo "$(date '+%F %T') screen ${f##*/}" >> "$LOG" 2>/dev/null
+	[ -f "$f" ] && [ -e "$AD5X_DEV/fb0" ] || return 0
+	if [ "$(kernel)" = stock ]; then
+		cmd_jpeg_display "$f" >/dev/null 2>&1
+	else
+		python3 -c 'import sys
+from PIL import Image
+im = Image.open(sys.argv[1]).convert("RGB").resize((800, 480))
+with open(sys.argv[2], "wb") as f:
+    f.write(im.tobytes("raw", "BGRX"))' "$f" "$AD5X_DEV/fb0" >/dev/null 2>&1
+	fi
+	true
+}
+klippy_running() {	# Klipper holds both ports: asking a board would break its link
+	ps w 2>/dev/null | grep -v grep | grep -q "klippy/klippy.py"
+}
+part() {	# GPT name -> device
+	for u in "$AD5X_SYS"/class/block/*/uevent; do
+		grep -qx "PARTNAME=$1" "$u" 2>/dev/null || continue
+		echo "$AD5X_DEV/$(sed -n 's/^DEVNAME=//p' "$u")"; return 0
+	done
+	return 1
+}
+
+# Stock's control directory (the newest version dir, as stock's own
+# app_startup.sh picks it) on the usershare partition, mounted at $US.
+US=
+us_mount() {	# ro|rw
+	if [ -n "$AD5X_USERSHARE" ]; then US=$AD5X_USERSHARE; return 0; fi
+	dev=$(part usershare) || { say "no usershare partition"; return 1; }
+	US=$AD5X_RUN/usershare
+	mkdir -p "$US"
+	umount "$US" 2>/dev/null
+	mount -t ext4 -o "$1" "$dev" "$US" 2>/dev/null || { say "can't mount $dev ($1)"; return 1; }
+}
+us_umount() { [ -n "$AD5X_USERSHARE" ] || { sync; umount "$US" 2>/dev/null; }; }
+control_dir() {
+	best=
+	for d in "$US"/PROGRAM/control/[0-9]*; do
+		[ -d "$d" ] || continue
+		v=${d##*/}
+		if [ -z "$best" ] || [ "$(printf '%s\n%s\n' "${best##*/}" "$v" |
+			awk -F. '{ k = sprintf("%06d%06d%06d", $1, $2, $3); print k " " $0 }' |
+			sort | tail -1 | cut -d' ' -f2)" = "$v" ]; then
+			best=$d
+		fi
+	done
+	[ -n "$best" ] && echo "$best"
+}
+
+tools() {	# make sure $TOOLS has NationsCommand and IAPCommand
+	[ -x "$TOOLS/NationsCommand" ] && [ -x "$TOOLS/IAPCommand" ] && return 0
+	us_mount ro || return 1
+	c=$(control_dir)
+	if [ -z "$c" ] || [ ! -f "$c/NationsCommand" ] || [ ! -f "$c/IAPCommand" ]; then
+		say "no flashing tools in stock's control directory (${c:-none} on usershare)"
+		us_umount; return 1
+	fi
+	mkdir -p "$TOOLS"
+	cp "$c/NationsCommand" "$c/IAPCommand" "$TOOLS/" &&
+		chmod 755 "$TOOLS/NationsCommand" "$TOOLS/IAPCommand" &&
+		( cd "$TOOLS" && sha256sum NationsCommand IAPCommand > SHA256SUMS )
+	rc=$?
+	us_umount
+	[ $rc = 0 ] && say "flashing tools copied from stock ${c##*/}"
+	return $rc
+}
+
+arm_stock() {	# stock's own board update at its next start
+	us_mount rw || return 1
+	c=$(control_dir)
+	if [ -z "$c" ]; then
+		say "no stock control directory on usershare: stock can't restore the boards itself"
+		us_umount; return 1
+	fi
+	ok=1
+	for f in AD5X.bin ADM_App.hex run.sh; do
+		[ -f "$c/$f" ] || { say "stock control ${c##*/}: $f missing"; ok=; }
+	done
+	if [ -n "$ok" ] && [ -f "$c/md5sum.list" ]; then
+		( cd "$c" && grep -E ' (\./)?(AD5X\.bin|ADM_App\.hex)$' md5sum.list | md5sum -c -s - ) ||
+			{ say "stock control ${c##*/}: images don't match md5sum.list"; ok=; }
+	fi
+	touch "$c/Update" "$c/UpdateM"
+	rc=$?
+	us_umount
+	[ $rc = 0 ] || { say "couldn't arm stock's board update"; return 1; }
+	if [ -n "$ok" ]; then
+		say "armed stock's board update (${c##*/}): stock restores its board firmware when it starts"
+	else
+		say "armed stock's board update (${c##*/}), but its images look incomplete"
+	fi
+}
+
+flash_mainboard() {
+	tools || return 1
+	w=$(mktemp -d)	# NationsCommand deletes ./UpdateM: run it where there is none
+	say "mainboard: flashing $WANT (NationsCommand)"
+	( cd "$w" && "$TOOLS/NationsCommand" -c -d --pn "$MB" --fn "$AD5X_MCU_FW/mainboard.bin" --v -r ) \
+		> "$ST/nations.log" 2>&1
+	rc=$?
+	rm -rf "$w"
+	if [ $rc != 0 ] || ! grep -q "verification succeeded" "$ST/nations.log"; then
+		say "mainboard: flashing failed (exit $rc, $ST/nations.log)"
+		return 1
+	fi
+	sleep 1
+	v=$(ver "$MB")
+	[ "$v" = "$WANT" ] || { say "mainboard: flashed, but it reports '${v:-nothing}'"; return 1; }
+	say "mainboard: $WANT"
+}
+
+flash_eboard() {	# the bootloader must be waiting
+	tools || return 1
+	w=$(mktemp -d)	# IAPCommand deletes ./Update
+	say "eboard: flashing $WANT (IAPCommand)"
+	( cd "$w" && "$TOOLS/IAPCommand" "$AD5X_MCU_FW/eboard.hex" "$EB" ) > "$ST/iap.log" 2>&1
+	rc=$?
+	rm -rf "$w"
+	# exit 0 with "Update :HD" means nothing was written
+	if [ $rc != 0 ] || ! grep -q "STM32Write: success" "$ST/iap.log" || grep -q "HD" "$ST/iap.log"; then
+		say "eboard: flashing failed (exit $rc, $ST/iap.log)"
+		rm -f "$ST/eboard"
+		return 1
+	fi
+	echo "$WANT" > "$ST/eboard"
+}
+
+boot() {
+	mkdir -p "$ST"
+	if [ -f "$AD5X_DATA/ad5x/mcu.disable" ]; then
+		say "mcu.disable: no board updates"
+		boot_eboard --port "$EB"; return 0
+	fi
+	[ -n "$WANT" ] || { say "no firmware in $AD5X_MCU_FW"; boot_eboard --port "$EB"; return 1; }
+	armed=
+	arm() {	# before the first write: tools present, stock's way back armed
+		[ -z "$armed" ] || return 0
+		tools || return 1
+		arm_stock; armed=1; show mcu-updating
+	}
+	failed=
+	# Mainboard: can be flashed at any time
+	mv=$(ver "$MB")
+	if [ "$mv" != "$WANT" ]; then
+		say "mainboard runs '${mv:-nothing}', want $WANT"
+		{ arm && flash_mainboard; } || failed=1
+	fi
+	# Eboard: in its bootloader only right after power-on
+	if boot_eboard --port "$EB" --listen 2>/dev/null; then
+		if [ "$(cat "$ST/eboard" 2>/dev/null)" != "$WANT" ]; then
+			{ arm && flash_eboard; } || failed=1
+		fi
+		boot_eboard --port "$EB" || say "eboard: no start after 'A'"
+	fi
+	ev=$(ver "$EB")
+	if [ "$ev" = "$WANT" ]; then
+		echo "$WANT" > "$ST/eboard"
+	else
+		rm -f "$ST/eboard"	# flash it at the next power-on
+		say "eboard runs '${ev:-nothing}', want $WANT: needs a power-cycle"
+		[ -n "$failed" ] || failed=power
+	fi
+	mv=$(ver "$MB" 1)
+	if [ -z "$failed" ] && [ "$mv" = "$WANT" ]; then
+		blog "boards on $WANT"
+		if [ ! -f "$ST/klipper-enabled" ]; then
+			touch "$AD5X_DATA/ad5x/klipper.enable" "$ST/klipper-enabled"
+			say "both boards on $WANT: Klipper enabled"
+		fi
+		if [ -n "$armed" ]; then	# back to the boot logo
+			l=/usr/share/ad5x/logo.jpg
+			[ -f "$AD5X_DATA/ad5x/logo.jpg" ] && l=$AD5X_DATA/ad5x/logo.jpg
+			show "$l"
+		fi
+		return 0
+	fi
+	if [ "$failed" = power ]; then
+		show mcu-powercycle; blog "eboard needs a power-cycle"
+	else
+		show mcu-failed; blog "board update failed (ad5x-mcu status)"
+	fi
+	return 1
+}
+
+status() {
+	echo "want=${WANT:-?}"
+	if klippy_running; then
+		echo "mainboard=(in use by Klipper)"
+		echo "eboard=(in use by Klipper)"
+	else
+		echo "mainboard=$(ver "$MB" 2)"
+		echo "eboard=$(ver "$EB" 2)"
+	fi
+	echo "eboard_flashed=$(cat "$ST/eboard" 2>/dev/null)"
+	if [ -x "$TOOLS/NationsCommand" ]; then echo "tools=ok"; else echo "tools=missing"; fi
+	[ -f "$AD5X_DATA/ad5x/mcu.disable" ] && echo "disabled=1"
+	true
+}
+
+case "$1" in
+boot) boot ;;
+status) status ;;
+flash-mainboard)
+	klippy_running && { echo "ad5x-mcu: Klipper runs: /etc/init.d/S61klipper stop first" >&2; exit 1; }
+	mkdir -p "$ST"; [ -n "$WANT" ] && tools && arm_stock && flash_mainboard ;;
+arm-stock) mkdir -p "$ST"; arm_stock ;;
+tools) mkdir -p "$ST"; tools ;;
+*) sed -n '2,38p' "$0"; exit 2 ;;
+esac

@@ -1,0 +1,10 @@
+{
+  "name": "nopoop",
+  "description": "No printer purge at colour changes when the file's slicer purges (zMod use_trash_on_print 0 or 2)",
+  "version": "1.0.0",
+  "author": "ad5x-open",
+  "url": "docs/zmod-compat.md",
+  "requires_os": "1.0",
+  "requires": [],
+  "conflicts": []
+}

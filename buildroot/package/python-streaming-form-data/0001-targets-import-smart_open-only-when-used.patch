@@ -1,0 +1,36 @@
+Import smart_open only in the targets that use it
+
+smart_open is needed only by SmartOpenTarget (S3, GCS); Moonraker uses
+the file, value and SHA256 targets. Importing it lazily avoids packaging
+smart_open and its dependencies for the AD5X image.
+
+Upstream: not submitted (AD5X open OS)
+
+--- a/src/streaming_form_data/targets.py
++++ b/src/streaming_form_data/targets.py
+@@ -3,7 +3,6 @@
+ from pathlib import Path
+ from typing import Callable, List, Optional, Union
+ 
+-import smart_open  # type: ignore
+ import aiofiles  # type: ignore
+ 
+ 
+@@ -405,6 +404,8 @@
+         self._fd = None
+ 
+     def on_start(self):
++        import smart_open  # type: ignore
++
+         self._fd = smart_open.open(
+             self._file_path,
+             self._mode,
+@@ -420,6 +421,8 @@
+             self._fd.close()
+ 
+     async def on_start_async(self):
++        import smart_open  # type: ignore
++
+         loop = asyncio.get_running_loop()
+         self._fd = await loop.run_in_executor(
+             None,

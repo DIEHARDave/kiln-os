@@ -1,0 +1,121 @@
+#!/bin/sh
+# Mount the printer's data partition at /data and lay out printer_data.
+# The partition is found by its GPT name ("userdata", stock's /usr/data;
+# stock files there are left alone). No partition: tmpfs, nothing is kept.
+
+find_part() {
+	for u in /sys/class/block/*/uevent; do
+		grep -qx "PARTNAME=$1" "$u" 2>/dev/null || continue
+		sed -n 's/^DEVNAME=//p' "$u"
+		return 0
+	done
+	return 1
+}
+
+case "$1" in
+start)
+	dev=$(find_part userdata)
+	if grep -q ' /data ' /proc/mounts; then
+		echo "ad5x-data: /data already mounted (USB test mode)"
+	elif [ -n "$dev" ] && mount -t ext4 -o noatime "/dev/$dev" /data; then
+		echo "ad5x-data: /dev/$dev on /data"
+	else
+		echo "ad5x-data: no userdata partition, using tmpfs (not kept)"
+		mount -t tmpfs -o mode=0755 tmpfs /data
+	fi
+	pd=/data/ad5x/printer_data
+	mkdir -p $pd/config $pd/logs $pd/gcodes $pd/comms /data/ad5x/ssh
+	# Stock's settings partition (usershare, stock /usr/prog), read-only:
+	# in USB test mode the stick script has bound it at /tmp/usershare,
+	# otherwise mount it there for the steps below.
+	us_mounted=
+	if [ ! -d /tmp/usershare/etc ]; then
+		us=$(find_part usershare)
+		mkdir -p /tmp/usershare
+		[ -n "$us" ] && mount -t ext4 -o ro "/dev/$us" /tmp/usershare \
+			&& us_mounted=1
+	fi
+	# Root login: the same password as stock's (its /etc/shadow on
+	# usershare), so SSH works as before without a password in the image.
+	# SSH keys: /data/ad5x/ssh/authorized_keys.
+	hash=$(sed -n 's/^root:\([^:]*\):.*/\1/p' /tmp/usershare/etc/shadow 2>/dev/null)
+	if [ -n "$hash" ] && ! grep -q ' /etc/shadow ' /proc/mounts; then
+		mkdir -p /run/ad5x
+		sed "s|^root:[^:]*:|root:$hash:|" /etc/shadow > /run/ad5x/shadow
+		chmod 600 /run/ad5x/shadow
+		mount --bind /run/ad5x/shadow /etc/shadow
+		echo "ad5x-data: root password from stock's settings"
+	fi
+	# Per-printer calibration from the stock settings file, once; stock
+	# defaults without it.
+	if [ ! -e $pd/config/unit.cfg ] && [ -f /tmp/usershare/config/Adventurer5M.json ]; then
+		ad5x-unit-cfg /tmp/usershare/config/Adventurer5M.json \
+			-o $pd/config/unit.cfg
+	fi
+	[ -n "$us_mounted" ] && umount /tmp/usershare
+	# SSH host keys kept on /data (the root is read-only; /etc/dropbear
+	# points at /var/run/dropbear), so they don't change at every boot.
+	mkdir -p /data/ad5x/ssh/hostkeys /run/dropbear
+	grep -q ' /run/dropbear ' /proc/mounts || \
+		mount --bind /data/ad5x/ssh/hostkeys /run/dropbear
+	# An old full printer.cfg (before the defaults moved into the image):
+	# keep it and the old ifs.cfg as a backup, carry the SAVE_CONFIG block
+	# (bed mesh etc.) over to the new short printer.cfg.
+	cfg=$pd/config/printer.cfg
+	if [ -f $cfg ] && ! grep -q '/usr/share/ad5x/config/ad5x.cfg' $cfg; then
+		# Numbered: the clock isn't set yet this early in boot.
+		n=1
+		while [ -e $pd/config/backup-full-config-$n ]; do n=$((n + 1)); done
+		bk=$pd/config/backup-full-config-$n
+		mkdir -p $bk
+		mv $cfg $bk/printer.cfg
+		[ -f $pd/config/ifs.cfg ] && mv $pd/config/ifs.cfg $bk/ifs.cfg
+		cp /usr/share/ad5x/defaults/printer.cfg $cfg
+		sed -n '/^#\*# <-* SAVE_CONFIG/,$p' $bk/printer.cfg >> $cfg
+		echo "ad5x-data: printer.cfg converted (old copy in ${bk##*/})"
+	fi
+	# Plugins (docs/plugins.md): which are on lives in the printer's own
+	# plugins.cfg, written once and never changed by the system after
+	# that. It starts from the image's default (zmod-compat, nopoop). A
+	# printer coming from zMod also gets the counterparts of zMod plugins
+	# it used, read from zMod's files on this partition: bambufy (enabled,
+	# or installed once: bambufy_* save variables) -> bambufy-compat.
+	# zMod's recommend is not carried over: it changes the probe speed,
+	# which moves the calibrated Z offset (ENABLE_PLUGIN NAME=recommend,
+	# then re-run the Z offset step).
+	pl=$pd/config/plugins.cfg
+	if [ ! -e $pl ]; then
+		zm=/data/config/mod_data
+		cp /usr/share/ad5x/defaults/plugins.cfg $pl
+		if grep -qs 'plugins/bambufy/' $zm/plugins.cfg \
+				|| grep -qs '^bambufy_' $zm/variables.cfg; then
+			echo '[include /usr/share/ad5x/plugins/bambufy-compat/plugi[n].cfg]' >> $pl
+		fi
+		echo "ad5x-data: plugins.cfg created"
+	fi
+	# Other people's and the user's own plugins (git clones, kept up to
+	# date by Moonraker as user klipper; never touched by system updates)
+	if [ ! -d /data/ad5x/plugins ]; then
+		mkdir -p /data/ad5x/plugins
+		chown klipper:klipper /data/ad5x/plugins
+	fi
+	# First-boot copies of the printer's own files (printer.cfg, unit.cfg
+	# template, local.cfg, moonraker.conf, ...): only when missing, never
+	# replaced after that.
+	for f in /usr/share/ad5x/defaults/*; do
+		[ -f $f ] || continue
+		[ -e $pd/config/${f##*/} ] || cp $f $pd/config/
+	done
+	# The editable macros (macros/*.cfg, docs/config-layout.md): copied
+	# when missing; an update with a changed template replaces them,
+	# keeping an edited copy as <name>.cfg.bak-<date> (config-updates.txt,
+	# CONFIG_BACKUPS in Klipper).
+	ad5x-config-templates /usr/share/ad5x/defaults $pd/config
+	chown -R klipper:klipper $pd
+	chmod 700 /data/ad5x/ssh
+	;;
+stop)
+	umount /data 2>/dev/null
+	;;
+esac
+exit 0

@@ -1,0 +1,122 @@
+#!/usr/bin/env python3
+"""Keep HelixScreen's touch calibration valid on both kernels.
+
+usage: ad5x-touch-units [SETTINGS_JSON] [--kernel stock|own] [--dry-run]
+
+The two kernels report the TSC2007 touch in different units:
+  stock  Flashforge's tsc2007_touch.ko scales the 12-bit readings to the
+         panel (0-800 x 0-480) and flips Y (S06ad5x-modules parameters).
+  own    the 6.6 kernel's tsc2007 reports the raw 0-4095 readings.
+
+HelixScreen stores input.touch_range in device units and an affine
+correction (input.calibration a..f) in screen pixels, applied after the
+range maps the device units to 800x480. This rewrites both for the running
+kernel and records the units in input.ad5x_touch_units ("stock" when
+missing: the calibration was made on the stock kernel). Converting twice
+gives the original values back, so switching kernels keeps one calibration.
+
+Run by S70helixscreen before HelixScreen starts (it must not be running).
+"""
+import json
+import os
+import sys
+
+W, H, RAW = 800, 480, 4096
+
+
+def kernel_now():
+    return "stock" if os.uname().release.startswith("5.10.") else "own"
+
+
+def to_own(r, c):
+    """stock units -> raw units (Y flipped); affine compensates the flip"""
+    r2 = dict(r)
+    r2["min_x"] = r["min_x"] * RAW / W
+    r2["max_x"] = r["max_x"] * RAW / W
+    r2["min_y"] = (H - r["max_y"]) * RAW / H
+    r2["max_y"] = (H - r["min_y"]) * RAW / H
+    return r2, flip_affine(c)
+
+
+def to_stock(r, c):
+    r2 = dict(r)
+    r2["min_x"] = r["min_x"] * W / RAW
+    r2["max_x"] = r["max_x"] * W / RAW
+    r2["min_y"] = H - r["max_y"] * H / RAW
+    r2["max_y"] = H - r["min_y"] * H / RAW
+    return r2, flip_affine(c)
+
+
+def flip_affine(c):
+    """normalised y becomes H - y: X = a x + b (H - y) + c, same for Y.
+    Its own inverse."""
+    if not c or not c.get("valid"):
+        return c
+    c2 = dict(c)
+    c2["b"] = -c["b"]
+    c2["c"] = c["c"] + H * c["b"]
+    c2["e"] = -c["e"]
+    c2["f"] = c["f"] + H * c["e"]
+    return c2
+
+
+def main(argv):
+    path = "/data/ad5x/helixscreen/config/settings.json"
+    want = kernel_now()
+    dry = False
+    args = list(argv)
+    while args:
+        a = args.pop(0)
+        if a == "--kernel":
+            want = args.pop(0)
+        elif a == "--dry-run":
+            dry = True
+        elif a in ("-h", "--help"):
+            print(__doc__)
+            return 0
+        else:
+            path = a
+    if want not in ("stock", "own"):
+        print("ad5x-touch-units: --kernel stock|own", file=sys.stderr)
+        return 2
+    try:
+        with open(path) as f:
+            s = json.load(f)
+    except (OSError, ValueError) as e:
+        print(f"ad5x-touch-units: {path}: {e}", file=sys.stderr)
+        return 1
+    inp = s.get("input", {})
+    r = inp.get("touch_range")
+    have = inp.get("ad5x_touch_units", "stock")
+    if not r or not r.get("valid"):
+        print("ad5x-touch-units: no touch calibration, nothing to do")
+        return 0
+    if have == want:
+        print(f"ad5x-touch-units: calibration already in {want} units")
+        return 0
+    conv = to_own if want == "own" else to_stock
+    r2, c2 = conv(r, inp.get("calibration"))
+    for k in ("min_x", "max_x", "min_y", "max_y"):
+        r2[k] = round(r2[k])
+    inp["touch_range"] = r2
+    if c2 is not None:
+        inp["calibration"] = c2
+    inp["ad5x_touch_units"] = want
+    s["input"] = inp
+    print(f"ad5x-touch-units: {have} -> {want}: "
+          f"X {r2['min_x']}..{r2['max_x']} Y {r2['min_y']}..{r2['max_y']}")
+    if dry:
+        print(json.dumps(inp, indent=2))
+        return 0
+    tmp = path + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(s, f, indent=2)
+        f.write("\n")
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp, path)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

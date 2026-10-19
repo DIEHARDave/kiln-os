@@ -1,0 +1,10 @@
+{
+  "name": "recommend",
+  "description": "zMod's recommended values: slower probing, mesh travel at Z 2, square_corner_velocity 9",
+  "version": "1.0.0",
+  "author": "ad5x-open",
+  "url": "docs/plugins.md",
+  "requires_os": "1.0",
+  "requires": [],
+  "conflicts": []
+}

@@ -1,0 +1,1395 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: ad5xrecon <ad5xrecon@localhost>
+Date: Fri, 16 Oct 2026 14:22:52 -0400
+Subject: [PATCH] wizard: AD5X setup steps (self-check, PID, mesh, shaper, IFS,
+ Z offset, save)
+
+One data-driven wizard step, instantiated for the seven AD5X tuning steps.
+Each drives Klipper's ad5x_setup steps through the API endpoint
+printer.ad5x_setup.control (G-code SETUP_WIZARD_STEP as fallback) and shows
+the ad5x_setup status object (subscribed when Klipper has it). The steps
+appear only with the ad5x preset or an ad5x_setup object; they sit before
+the built-in input shaper step, which the preset keeps skipped. The
+telemetry opt-in step is skipped on these printers.
+
+Upstream: not applicable (AD5X OS specific)
+---
+ include/ui_wizard_ad5x_setup.h           | 175 +++++
+ include/ui_wizard_telemetry.h            |   7 +-
+ include/wizard_step.h                    |  10 +-
+ src/api/moonraker_discovery_sequence.cpp |   9 +
+ src/system/wizard_step.cpp               |  14 +
+ src/ui/ui_wizard.cpp                     |   1 +
+ src/ui/ui_wizard_ad5x_setup.cpp          | 775 +++++++++++++++++++++++
+ src/ui/wizard_step_registry.cpp          |   4 +
+ ui_xml/wizard_ad5x_finish.xml            |  15 +
+ ui_xml/wizard_ad5x_ifs.xml               |  15 +
+ ui_xml/wizard_ad5x_mesh.xml              |  15 +
+ ui_xml/wizard_ad5x_pid.xml               |  15 +
+ ui_xml/wizard_ad5x_selfcheck.xml         |  15 +
+ ui_xml/wizard_ad5x_setup.xml             | 103 +++
+ ui_xml/wizard_ad5x_shaper.xml            |  15 +
+ ui_xml/wizard_ad5x_zoffset.xml           |  15 +
+ 16 files changed, 1201 insertions(+), 2 deletions(-)
+ create mode 100644 include/ui_wizard_ad5x_setup.h
+ create mode 100644 src/ui/ui_wizard_ad5x_setup.cpp
+ create mode 100644 ui_xml/wizard_ad5x_finish.xml
+ create mode 100644 ui_xml/wizard_ad5x_ifs.xml
+ create mode 100644 ui_xml/wizard_ad5x_mesh.xml
+ create mode 100644 ui_xml/wizard_ad5x_pid.xml
+ create mode 100644 ui_xml/wizard_ad5x_selfcheck.xml
+ create mode 100644 ui_xml/wizard_ad5x_setup.xml
+ create mode 100644 ui_xml/wizard_ad5x_shaper.xml
+ create mode 100644 ui_xml/wizard_ad5x_zoffset.xml
+
+diff --git a/include/ui_wizard_ad5x_setup.h b/include/ui_wizard_ad5x_setup.h
+new file mode 100644
+index 0000000..1878754
+--- /dev/null
++++ b/include/ui_wizard_ad5x_setup.h
+@@ -0,0 +1,175 @@
++// SPDX-License-Identifier: GPL-3.0-or-later
++#pragma once
++
++/**
++ * @file ui_wizard_ad5x_setup.h
++ * @brief AD5X tuning steps of the setup wizard (self-check, PID, bed mesh,
++ *        vibration compensation, IFS tuning, Z offset, save)
++ *
++ * One data-driven step class, instantiated once per tuning step. Each step
++ * drives the printer's setup steps (Klipper API `printer.ad5x_setup.control`,
++ * G-code `SETUP_WIZARD_STEP` as fallback) and shows
++ * the `ad5x_setup` Klipper status object (state, message, progress, results,
++ * self-check list, live z offset). The steps exist only for printers that have
++ * that object or carry the `ad5x` preset; every other printer skips them.
++ *
++ * All seven steps share one set of subjects (only one step is on screen at a
++ * time), owned by Ad5xSetupModel together with the status cache and the
++ * Moonraker subscription.
++ */
++
++#include "ui_observer_guard.h"
++#include "ui_subscription_guard.h"
++
++#include "async_lifetime_guard.h"
++#include "json_fwd.h"
++#include "lvgl/lvgl.h"
++#include "subject_managed_panel.h"
++#include "wizard_step.h"
++
++#include <array>
++#include <memory>
++#include <string>
++#include <vector>
++
++namespace helix::ad5x_setup {
++
++/// What the step card shows; drives button visibility through ad5x_setup_view.
++enum class View {
++    Idle = 0,        ///< Not started: Start
++    Running = 1,     ///< Step running: Abort
++    WaitingUser = 2, ///< Z offset print waiting for the user: -/+, Accept, Abort
++    Done = 3,        ///< Finished: results, Run again
++    Failed = 4,      ///< Failed or aborted: message, Retry
++};
++
++/// Static description of one tuning step.
++struct StepSpec {
++    wizard::StepId id;
++    const char* key;            ///< STEP= value and key in `results`
++    const char* component;      ///< XML component (carries the title consts)
++    const char* explanation;    ///< Untranslated explanation shown above the controls
++    bool restarts_klipper;      ///< The step may run SAVE_CONFIG
++};
++
++/// The tuning steps in wizard order.
++const std::vector<StepSpec>& step_specs();
++
++/// Spec for @p id, or nullptr when @p id is not an AD5X tuning step.
++const StepSpec* spec_for(wizard::StepId id);
++
++/// The tuning steps' ids in wizard order (for a targeted wizard session).
++std::vector<wizard::StepId> step_ids();
++
++/// Whether the printer has the AD5X setup steps: the `ad5x` preset is set for
++/// the active printer, or Klipper publishes an `ad5x_setup` object.
++bool available(const wizard::StepContext& ctx);
++
++/// available() with a context built from the live config and API.
++bool available();
++
++/// The card view for one step, from the status object's step/state and what
++/// the screen itself knows (a start in flight, an rpc error).
++View view_for(const std::string& key, const std::string& status_step,
++              const std::string& status_state, bool start_in_flight, bool local_error);
++
++/// Shared subjects, the cached `ad5x_setup` status and the command plumbing.
++class Ad5xSetupModel {
++  public:
++    Ad5xSetupModel() = default;
++    ~Ad5xSetupModel();
++    Ad5xSetupModel(const Ad5xSetupModel&) = delete;
++    Ad5xSetupModel& operator=(const Ad5xSetupModel&) = delete;
++
++    void init_subjects();
++
++    /// Show @p spec's card: subscribe, query the current status, refresh.
++    void activate(const StepSpec* spec);
++    /// The card is going away; abort a step still running on the printer.
++    void deactivate();
++
++    void start();
++    void abort();
++    void adjust(double delta_mm);
++    void accept();
++
++  private:
++    void send(const std::string& action, double delta = 0.0);
++    void send_gcode(const std::string& key, const std::string& action, double delta);
++    json step_options() const;
++    void query_status();
++    void merge_status(const json& delta);
++    void refresh();
++    void update_footer(View view);
++    std::string results_text() const;
++
++    SubjectManager subjects_;
++    lv_subject_t view_{};
++    lv_subject_t is_zoffset_{};
++    lv_subject_t progress_{};
++    lv_subject_t explanation_{};
++    lv_subject_t message_{};
++    lv_subject_t results_{};
++    lv_subject_t zoffset_{};
++    char explanation_buf_[512] = "";
++    char message_buf_[256] = "";
++    char results_buf_[1536] = "";
++    char zoffset_buf_[48] = "";
++    bool subjects_initialized_ = false;
++
++    const StepSpec* active_ = nullptr;
++    json status_ = json::object();
++    bool start_in_flight_ = false;
++    std::string local_error_;
++
++    bool klippy_ready_ = true;
++
++    SubscriptionGuard subscription_;
++    ObserverGuard klippy_observer_;
++    AsyncLifetimeGuard lifetime_;
++};
++
++Ad5xSetupModel& model();
++
++/// Run the AD5X tuning steps again as a targeted wizard session on @p parent
++/// (the settings entry). Does not touch wizard_completed.
++void launch_targeted(lv_obj_t* parent);
++
++/// Open the AD5X steps when Klipper's SETUP_WIZARD announces
++/// `// action:ad5x_setup_wizard`, and drop the start-up flag file it wrote
++/// (HELIX_WIZARD_FLAG_FILE), which this run then answers. Idempotent per client.
++void watch_wizard_requests();
++
++} // namespace helix::ad5x_setup
++
++/**
++ * @class WizardAd5xSetupStep
++ * @brief One AD5X tuning step; behaviour comes from its StepSpec
++ */
++class WizardAd5xSetupStep : public helix::wizard::Step {
++  public:
++    explicit WizardAd5xSetupStep(const helix::ad5x_setup::StepSpec& spec) : spec_(spec) {}
++
++    helix::wizard::StepId id() const override {
++        return spec_.id;
++    }
++    const char* component_name() const override {
++        return spec_.component;
++    }
++    const char* log_name() const override {
++        return "WizardAd5xSetup";
++    }
++    bool should_skip(const helix::wizard::StepContext& ctx) const override;
++
++    void init_subjects() override;
++    void register_callbacks() override;
++    lv_obj_t* create(lv_obj_t* parent) override;
++    void cleanup() override;
++
++  private:
++    const helix::ad5x_setup::StepSpec& spec_;
++    lv_obj_t* root_ = nullptr;
++};
++
++/// The step instance for @p id (one of the AD5X tuning step ids).
++WizardAd5xSetupStep* get_wizard_ad5x_setup_step(helix::wizard::StepId id);
+diff --git a/include/ui_wizard_telemetry.h b/include/ui_wizard_telemetry.h
+index 10c4d7a..309f8c4 100644
+--- a/include/ui_wizard_telemetry.h
++++ b/include/ui_wizard_telemetry.h
+@@ -4,6 +4,10 @@
+ #include "lvgl/lvgl.h"
+ #include "wizard_step.h"
+ 
++namespace helix::ad5x_setup {
++bool available(const helix::wizard::StepContext& ctx); // ui_wizard_ad5x_setup.h
++}
++
+ /**
+  * @class WizardTelemetryStep
+  * @brief Dedicated telemetry opt-in step for preset wizard mode
+@@ -25,7 +29,8 @@ class WizardTelemetryStep : public helix::wizard::Step {
+         return "WizardTelemetry";
+     }
+     bool should_skip(const helix::wizard::StepContext& ctx) const override {
+-        return !ctx.preset.first_run;
++        // AD5X images ship with telemetry off and never ask.
++        return !ctx.preset.first_run || helix::ad5x_setup::available(ctx);
+     }
+ 
+     void init_subjects() override;
+diff --git a/include/wizard_step.h b/include/wizard_step.h
+index f02b9d9..5b223c5 100644
+--- a/include/wizard_step.h
++++ b/include/wizard_step.h
+@@ -22,12 +22,20 @@ enum class StepId {
+     AmsIdentify,
+     LedSelect,
+     FilamentSensor,
++    // AD5X tuning steps (ui_wizard_ad5x_setup.h); skipped on other printers
++    Ad5xSelfcheck,
++    Ad5xPid,
++    Ad5xMesh,
++    Ad5xShaper,
++    Ad5xIfs,
++    Ad5xZoffset,
++    Ad5xFinish,
+     InputShaper,
+     Preferences,
+     Summary,
+     Telemetry,
+ };
+-inline constexpr int STEP_COUNT = 14;
++inline constexpr int STEP_COUNT = 21;
+ 
+ // Plain data needed to decide skips — no LVGL, constructible in tests.
+ struct StepContext {
+diff --git a/src/api/moonraker_discovery_sequence.cpp b/src/api/moonraker_discovery_sequence.cpp
+index f2c9842..8fd0a6d 100644
+--- a/src/api/moonraker_discovery_sequence.cpp
++++ b/src/api/moonraker_discovery_sequence.cpp
+@@ -1463,6 +1463,15 @@ json MoonrakerDiscoverySequence::build_subscription_objects(
+             {"retract_length", "retract_speed", "unretract_extra_length", "unretract_speed"});
+     }
+ 
++    // AD5X setup wizard steps (ui_wizard_ad5x_setup.cpp) read the whole object:
++    // step, state, message, progress, results, checks, pending_save, zoffset.
++    {
++        const auto& objects = hw.printer_objects();
++        if (std::find(objects.begin(), objects.end(), "ad5x_setup") != objects.end()) {
++            subscription_objects["ad5x_setup"] = nullptr;
++        }
++    }
++
+     // Print start macros — only the boolean flags PrintStartCollector reads.
+     // Other variables on these macros (slicer args, profile names, etc.) are
+     // irrelevant to the start-detection logic.
+diff --git a/src/system/wizard_step.cpp b/src/system/wizard_step.cpp
+index 4c1e950..5dbe78a 100644
+--- a/src/system/wizard_step.cpp
++++ b/src/system/wizard_step.cpp
+@@ -25,6 +25,20 @@ const char* to_string(StepId id) {
+         return "LedSelect";
+     case StepId::FilamentSensor:
+         return "FilamentSensor";
++    case StepId::Ad5xSelfcheck:
++        return "Ad5xSelfcheck";
++    case StepId::Ad5xPid:
++        return "Ad5xPid";
++    case StepId::Ad5xMesh:
++        return "Ad5xMesh";
++    case StepId::Ad5xShaper:
++        return "Ad5xShaper";
++    case StepId::Ad5xIfs:
++        return "Ad5xIfs";
++    case StepId::Ad5xZoffset:
++        return "Ad5xZoffset";
++    case StepId::Ad5xFinish:
++        return "Ad5xFinish";
+     case StepId::InputShaper:
+         return "InputShaper";
+     case StepId::Summary:
+diff --git a/src/ui/ui_wizard.cpp b/src/ui/ui_wizard.cpp
+index a316de2..2f5fa79 100644
+--- a/src/ui/ui_wizard.cpp
++++ b/src/ui/ui_wizard.cpp
+@@ -521,6 +521,7 @@ void ui_wizard_container_register_responsive_constants() {
+         "wizard_ams_identify",
+         "wizard_led_select",
+         "wizard_filament_sensor_select",
++        "wizard_ad5x_setup",
+         "wizard_input_shaper",
+         "wizard_language_chooser",
+         "wizard_preferences",
+diff --git a/src/ui/ui_wizard_ad5x_setup.cpp b/src/ui/ui_wizard_ad5x_setup.cpp
+new file mode 100644
+index 0000000..ef16628
+--- /dev/null
++++ b/src/ui/ui_wizard_ad5x_setup.cpp
+@@ -0,0 +1,775 @@
++// SPDX-License-Identifier: GPL-3.0-or-later
++
++#include "ui_wizard_ad5x_setup.h"
++
++#include "ui_button.h"
++#include "ui_emergency_stop.h"
++#include "ui_error_reporting.h"
++#include "ui_event_safety.h"
++#include "ui_modal.h"
++#include "ui_update_queue.h"
++#include "ui_wizard.h"
++
++#include "app_globals.h"
++#include "config.h"
++#include "helix_fs.h"
++#include "i_moonraker_api.h"
++#include "i_moonraker_client.h"
++#include "lvgl/src/others/translation/lv_translation.h"
++#include "observer_factory.h"
++#include "printer_discovery.h"
++#include "printer_state.h"
++#include "static_panel_registry.h"
++
++#include <spdlog/fmt/fmt.h>
++#include <spdlog/spdlog.h>
++
++#include <algorithm>
++#include <cstdlib>
++#include <cstring>
++
++// Wizard footer subjects (defined in ui_wizard.cpp)
++extern lv_subject_t wizard_show_skip;
++extern lv_subject_t connection_test_passed;
++
++namespace helix::ad5x_setup {
++
++namespace {
++
++using wizard::StepId;
++
++/// Every action goes through Klipper's API endpoint, which answers at once
++/// (the step runs in the background) and works while a long command such as
++/// PID_CALIBRATE or M109 holds the G-code lock.
++constexpr const char* CONTROL_METHOD = "printer.ad5x_setup.control";
++constexpr uint32_t CONTROL_TIMEOUT_MS = 30u * 1000u;
++/// G-code fallback for a Moonraker that does not forward the endpoint.
++constexpr const char* GCODE_COMMAND = "SETUP_WIZARD_STEP";
++
++const std::vector<StepSpec> k_specs = {
++    {StepId::Ad5xSelfcheck, "selfcheck", "wizard_ad5x_selfcheck",
++     "Checks the boards, IFS, accelerometer, bed scale, filament sensor and fans, homes, and "
++     "heats nozzle and bed briefly. Fans and heaters each run for about 10 seconds and switch "
++     "off again.",
++     false},
++    {StepId::Ad5xPid, "pid", "wizard_ad5x_pid",
++     "Tunes the heater control: the nozzle at 220 \xC2\xB0"
++     "C with the part fan running, then the bed at 60 \xC2\xB0"
++     "C. Takes 10 to 20 minutes; stay near the printer.",
++     false},
++    {StepId::Ad5xMesh, "mesh", "wizard_ad5x_mesh",
++     "Heats the bed to 60 \xC2\xB0"
++     "C and probes the whole bed to measure its shape. Keep the bed clear. The bed stays warm "
++     "for the Z offset test that follows.",
++     false},
++    {StepId::Ad5xShaper, "shaper", "wizard_ad5x_shaper",
++     "Measures the frame's vibrations with the toolhead accelerometer and sets vibration "
++     "compensation. The printer is loud for a few minutes.",
++     false},
++    {StepId::Ad5xIfs, "ifs", "wizard_ad5x_ifs",
++     "Tunes filament swaps for every loaded IFS slot: the fastest reliable feed speed and the "
++     "load and unload distances. Load filament into the slots you use first.",
++     false},
++    {StepId::Ad5xZoffset, "zoffset", "wizard_ad5x_zoffset",
++     "Heats for the loaded filament, purges and prints a 30 mm test patch at the centre. While "
++     "it prints, press - or + until the lines are flat and just touch each other, then press "
++     "Accept. Start again prints another patch beside it.",
++     false},
++    {StepId::Ad5xFinish, "finish", "wizard_ad5x_finish",
++     "Saves the results to the printer configuration. Klipper restarts and the screen "
++     "reconnects by itself.",
++     true},
++};
++
++/// Result labels for the save step's overview, in wizard order.
++struct ResultLabel {
++    const char* key;
++    const char* label;
++};
++constexpr ResultLabel k_result_labels[] = {
++    {"selfcheck", "Self-check"},      {"pid", "PID"},
++    {"mesh", "Bed mesh"},             {"shaper", "Vibration compensation"},
++    {"ifs", "IFS tuning"},            {"zoffset", "Z offset"},
++    {"finish", "Save"},
++};
++
++std::string str_field(const json& obj, const char* key) {
++    auto it = obj.find(key);
++    if (it == obj.end() || !it->is_string()) {
++        return {};
++    }
++    return it->get<std::string>();
++}
++
++std::string result_string(const json& value) {
++    if (value.is_string()) {
++        return value.get<std::string>();
++    }
++    if (value.is_null()) {
++        return {};
++    }
++    return value.dump();
++}
++
++void copy_if_changed(lv_subject_t* subject, const std::string& text) {
++    const char* cur = lv_subject_get_string(subject);
++    if (!cur || text != cur) {
++        lv_subject_copy_string(subject, text.c_str());
++    }
++}
++
++void set_if_changed(lv_subject_t* subject, int value) {
++    if (lv_subject_get_int(subject) != value) {
++        lv_subject_set_int(subject, value);
++    }
++}
++
++} // namespace
++
++const std::vector<StepSpec>& step_specs() {
++    return k_specs;
++}
++
++const StepSpec* spec_for(wizard::StepId id) {
++    for (const auto& s : k_specs) {
++        if (s.id == id) {
++            return &s;
++        }
++    }
++    return nullptr;
++}
++
++std::vector<wizard::StepId> step_ids() {
++    std::vector<wizard::StepId> ids;
++    for (const auto& s : k_specs) {
++        ids.push_back(s.id);
++    }
++    return ids;
++}
++
++bool available(const wizard::StepContext& ctx) {
++    if (ctx.config && ctx.config->get_preset() == "ad5x") {
++        return true;
++    }
++    if (ctx.api) {
++        const auto& objects = ctx.api->hardware().printer_objects();
++        return std::find(objects.begin(), objects.end(), "ad5x_setup") != objects.end();
++    }
++    return false;
++}
++
++bool available() {
++    wizard::StepContext ctx;
++    ctx.config = Config::get_instance();
++    ctx.api = get_moonraker_api();
++    return available(ctx);
++}
++
++View view_for(const std::string& key, const std::string& status_step,
++              const std::string& status_state, bool start_in_flight, bool local_error) {
++    const bool mine = status_step == key;
++    if (mine && status_state == "running") {
++        return View::Running;
++    }
++    if (mine && status_state == "waiting_user") {
++        return View::WaitingUser;
++    }
++    if (local_error) {
++        return View::Failed;
++    }
++    if (start_in_flight) {
++        // A stale done/failed from an earlier run must not show while the new
++        // run has not reported yet.
++        return View::Running;
++    }
++    if (mine && status_state == "done") {
++        return View::Done;
++    }
++    if (mine && (status_state == "failed" || status_state == "aborted")) {
++        return View::Failed;
++    }
++    return View::Idle;
++}
++
++// ============================================================================
++// Model
++// ============================================================================
++
++Ad5xSetupModel::~Ad5xSetupModel() {
++    lifetime_.invalidate();
++    subscription_.reset();
++    klippy_observer_.reset();
++    subjects_.deinit_all();
++}
++
++void Ad5xSetupModel::init_subjects() {
++    if (subjects_initialized_) {
++        return;
++    }
++    UI_MANAGED_SUBJECT_INT(view_, 0, "ad5x_setup_view", subjects_);
++    UI_MANAGED_SUBJECT_INT(is_zoffset_, 0, "ad5x_setup_is_zoffset", subjects_);
++    UI_MANAGED_SUBJECT_INT(progress_, 0, "ad5x_setup_progress", subjects_);
++    UI_MANAGED_SUBJECT_STRING(explanation_, explanation_buf_, "", "ad5x_setup_explanation",
++                              subjects_);
++    UI_MANAGED_SUBJECT_STRING(message_, message_buf_, "", "ad5x_setup_message", subjects_);
++    UI_MANAGED_SUBJECT_STRING(results_, results_buf_, "", "ad5x_setup_results", subjects_);
++    UI_MANAGED_SUBJECT_STRING(zoffset_, zoffset_buf_, "", "ad5x_setup_zoffset", subjects_);
++    subjects_initialized_ = true;
++}
++
++void Ad5xSetupModel::activate(const StepSpec* spec) {
++    active_ = spec;
++    start_in_flight_ = false;
++    local_error_.clear();
++
++    IMoonrakerAPI* api = get_moonraker_api();
++    if (api) {
++        const auto token = lifetime_.token();
++        // Runs on the WebSocket thread: copy the object out, apply it on the main thread.
++        const SubscriptionId id = api->subscribe_notifications([this, token](const json& note) {
++            auto params = note.find("params");
++            if (params == note.end() || !params->is_array() || params->empty()) {
++                return;
++            }
++            const json& status = (*params)[0];
++            if (!status.is_object()) {
++                return;
++            }
++            auto obj = status.find("ad5x_setup");
++            if (obj == status.end() || !obj->is_object()) {
++                return;
++            }
++            json delta = *obj;
++            token.defer("Ad5xSetupModel::status_update", [this, delta]() {
++                merge_status(delta);
++                refresh();
++            });
++        });
++        subscription_ = SubscriptionGuard(api, id);
++    }
++
++    if (!klippy_observer_) {
++        klippy_observer_ = ui::observe<int>(
++            get_printer_state().network_state().get_klippy_state_subject(), this,
++            [](Ad5xSetupModel* self, int state) {
++                self->klippy_ready_ = static_cast<KlippyState>(state) == KlippyState::READY;
++                // Results and the finish step's outcome survive Klipper's restart.
++                if (self->klippy_ready_ && self->active_) {
++                    self->query_status();
++                }
++                self->refresh();
++            },
++            get_printer_state().get_subjects_lifetime());
++    }
++
++    if (subjects_initialized_ && spec) {
++        copy_if_changed(&explanation_, lv_tr(spec->explanation));
++        set_if_changed(&is_zoffset_, std::strcmp(spec->key, "zoffset") == 0 ? 1 : 0);
++    }
++    query_status();
++    refresh();
++}
++
++void Ad5xSetupModel::deactivate() {
++    if (active_ && subjects_initialized_) {
++        const View v = static_cast<View>(lv_subject_get_int(&view_));
++        // Leaving a step that is still heating, moving or printing stops it.
++        // The save step is left alone: a SAVE_CONFIG must not be cut short.
++        if ((v == View::Running || v == View::WaitingUser) && !active_->restarts_klipper) {
++            spdlog::info("[AD5X setup] Leaving step '{}' while it runs: aborting", active_->key);
++            abort();
++        }
++    }
++    active_ = nullptr;
++    start_in_flight_ = false;
++    local_error_.clear();
++    subscription_.reset();
++    lv_subject_set_int(&wizard_show_skip, 0);
++    lv_subject_set_int(&connection_test_passed, 1);
++}
++
++json Ad5xSetupModel::step_options() const {
++    json options = json::object();
++    if (!active_) {
++        return options;
++    }
++    // The mesh step keeps the bed hot when the Z offset test comes next.
++    if (std::strcmp(active_->key, "mesh") == 0) {
++        const auto& ids = ui_wizard_active_step_subset();
++        const bool zoffset_follows =
++            ids.empty() ? available()
++                        : std::find(ids.begin(), ids.end(), StepId::Ad5xZoffset) != ids.end();
++        if (zoffset_follows) {
++            options["keep_bed"] = 1;
++        }
++    }
++    return options;
++}
++
++void Ad5xSetupModel::send(const std::string& action, double delta) {
++    if (!active_) {
++        return;
++    }
++    const std::string key = active_->key;
++    const bool is_start = action == "start";
++    IMoonrakerClient* client = get_moonraker_client();
++    if (!client || client->get_connection_state() != ConnectionState::CONNECTED) {
++        if (is_start) {
++            start_in_flight_ = false;
++            local_error_ = lv_tr("Not connected to the printer");
++        }
++        refresh();
++        return;
++    }
++
++    json params = {{"step", key}, {"action", action}};
++    if (action == "adjust") {
++        params["delta"] = delta;
++    }
++    if (is_start) {
++        const json options = step_options();
++        for (auto it = options.begin(); it != options.end(); ++it) {
++            params[it.key()] = it.value();
++        }
++    }
++    spdlog::info("[AD5X setup] {} {}", CONTROL_METHOD, params.dump());
++
++    const auto token = lifetime_.token();
++    client->send_jsonrpc(
++        CONTROL_METHOD, params,
++        [this, token, is_start](const json& /*reply*/) {
++            token.defer("Ad5xSetupModel::control_done", [this, is_start]() {
++                if (is_start) {
++                    start_in_flight_ = false;
++                }
++                query_status();
++                refresh();
++            });
++        },
++        [this, token, key, action, delta, is_start](const MoonrakerError& err) {
++            const int code = err.code;
++            const std::string message = err.message;
++            token.defer("Ad5xSetupModel::control_error", [this, key, action, delta, is_start,
++                                                          code, message]() {
++                // Moonraker without the endpoint: same action as G-code.
++                if (code == -32601 || code == 404) {
++                    spdlog::warn("[AD5X setup] {} not available ({}), using G-code",
++                                 CONTROL_METHOD, message);
++                    send_gcode(key, action, delta);
++                    return;
++                }
++                if (is_start) {
++                    start_in_flight_ = false;
++                    if (active_ && key == active_->key) {
++                        local_error_ = message.empty() ? std::string(lv_tr("Failed")) : message;
++                    }
++                } else {
++                    NOTIFY_WARNING("{}", message);
++                }
++                spdlog::warn("[AD5X setup] {} {} failed: {}", key, action, message);
++                query_status();
++                refresh();
++            });
++        },
++        CONTROL_TIMEOUT_MS, /*silent=*/true);
++}
++
++void Ad5xSetupModel::send_gcode(const std::string& key, const std::string& action,
++                                double delta) {
++    IMoonrakerAPI* api = get_moonraker_api();
++    if (!api) {
++        return;
++    }
++    std::string cmd = fmt::format("{} STEP={} ACTION={}", GCODE_COMMAND, key, action);
++    if (action == "adjust") {
++        cmd += fmt::format(" DELTA={:.3f}", delta);
++    }
++    if (action == "start") {
++        const json options = step_options();
++        for (auto it = options.begin(); it != options.end(); ++it) {
++            std::string name = it.key();
++            std::transform(name.begin(), name.end(), name.begin(), ::toupper);
++            cmd += fmt::format(" {}={}", name, it.value().dump());
++        }
++    }
++    spdlog::info("[AD5X setup] {}", cmd);
++    const auto token = lifetime_.token();
++    const bool is_start = action == "start";
++    api->execute_gcode(
++        cmd,
++        [this, token, is_start]() {
++            token.defer("Ad5xSetupModel::gcode_done", [this, is_start]() {
++                if (is_start) {
++                    start_in_flight_ = false;
++                }
++                query_status();
++                refresh();
++            });
++        },
++        [this, token, is_start, key](const MoonrakerError& err) {
++            const std::string message = err.message;
++            token.defer("Ad5xSetupModel::gcode_error", [this, is_start, key, message]() {
++                if (is_start) {
++                    start_in_flight_ = false;
++                    if (active_ && key == active_->key) {
++                        local_error_ = message;
++                    }
++                }
++                query_status();
++                refresh();
++            });
++        },
++        IMoonrakerAPI::MACRO_TIMEOUT_MS, /*silent=*/false, /*on_queued=*/nullptr,
++        /*caller_surfaces_errors=*/true);
++}
++
++void Ad5xSetupModel::start() {
++    if (!active_) {
++        return;
++    }
++    if (active_->restarts_klipper) {
++        // Finish runs SAVE_CONFIG or RESTART when something is pending; a
++        // restart nobody prepared for shows the disconnect and recovery dialogs.
++        auto it = status_.find("pending_save");
++        const bool pending = it == status_.end() || !it->is_boolean() || it->get<bool>();
++        if (pending) {
++            helix::ui::begin_expected_klippy_restart(
++                "Saving setup results... Klipper will restart.");
++        }
++    }
++    start_in_flight_ = true;
++    local_error_.clear();
++    refresh();
++    send("start");
++}
++
++void Ad5xSetupModel::abort() {
++    send("abort");
++}
++
++void Ad5xSetupModel::adjust(double delta_mm) {
++    send("adjust", delta_mm);
++}
++
++void Ad5xSetupModel::accept() {
++    send("accept");
++}
++
++void Ad5xSetupModel::query_status() {
++    IMoonrakerClient* client = get_moonraker_client();
++    if (!client || client->get_connection_state() != ConnectionState::CONNECTED) {
++        return;
++    }
++    const auto token = lifetime_.token();
++    json params = {{"objects", {{"ad5x_setup", nullptr}}}};
++    client->send_jsonrpc(
++        "printer.objects.query", params,
++        [this, token](const json& response) {
++            auto result = response.find("result");
++            if (result == response.end() || !result->is_object()) {
++                return;
++            }
++            auto status = result->find("status");
++            if (status == result->end() || !status->is_object()) {
++                return;
++            }
++            auto obj = status->find("ad5x_setup");
++            if (obj == status->end() || !obj->is_object()) {
++                return;
++            }
++            json full = *obj;
++            token.defer("Ad5xSetupModel::status_query", [this, full]() {
++                status_ = full;
++                refresh();
++            });
++        },
++        [](const MoonrakerError& err) {
++            spdlog::debug("[AD5X setup] ad5x_setup query failed: {}", err.message);
++        },
++        0, /*silent=*/true);
++}
++
++void Ad5xSetupModel::merge_status(const json& delta) {
++    if (!status_.is_object()) {
++        status_ = json::object();
++    }
++    for (auto it = delta.begin(); it != delta.end(); ++it) {
++        status_[it.key()] = it.value();
++    }
++}
++
++std::string Ad5xSetupModel::results_text() const {
++    if (!active_) {
++        return {};
++    }
++    const std::string key = active_->key;
++    json results = json::object();
++    if (auto it = status_.find("results"); it != status_.end() && it->is_object()) {
++        results = *it;
++    }
++
++    std::string out;
++    auto add_line = [&out](const std::string& line) {
++        if (!out.empty()) {
++            out += '\n';
++        }
++        out += line;
++    };
++
++    if (key == "selfcheck") {
++        if (auto it = status_.find("checks"); it != status_.end() && it->is_array()) {
++            for (const auto& check : *it) {
++                if (!check.is_object()) {
++                    continue;
++                }
++                auto ok_it = check.find("ok");
++                const bool ok = ok_it != check.end() && ok_it->is_boolean() && ok_it->get<bool>();
++                // A failed optional item (e.g. a fan without a tachometer) is a warning.
++                auto req_it = check.find("required");
++                const bool required =
++                    req_it == check.end() || !req_it->is_boolean() || req_it->get<bool>();
++                const char* mark = ok ? lv_tr("OK") : required ? lv_tr("FAIL") : lv_tr("WARN");
++                std::string line = fmt::format("{}  {}", mark, str_field(check, "name"));
++                const std::string detail = str_field(check, "detail");
++                if (!detail.empty()) {
++                    line += " - " + detail;
++                }
++                add_line(line);
++            }
++        }
++    }
++
++    if (active_->restarts_klipper) {
++        // The save step sums up everything that ran.
++        for (const auto& label : k_result_labels) {
++            auto it = results.find(label.key);
++            if (it == results.end()) {
++                continue;
++            }
++            const std::string text = result_string(*it);
++            if (!text.empty()) {
++                add_line(fmt::format("{}: {}", lv_tr(label.label), text));
++            }
++        }
++        return out;
++    }
++
++    if (auto it = results.find(key); it != results.end()) {
++        const std::string text = result_string(*it);
++        if (!text.empty()) {
++            add_line(text);
++        }
++    }
++    return out;
++}
++
++void Ad5xSetupModel::update_footer(View view) {
++    // Skip while nothing ran (or it failed); Next once done; neither while running.
++    lv_subject_set_int(&wizard_show_skip, (view == View::Idle || view == View::Failed) ? 1 : 0);
++    lv_subject_set_int(&connection_test_passed,
++                       (view == View::Running || view == View::WaitingUser) ? 0 : 1);
++}
++
++void Ad5xSetupModel::refresh() {
++    if (!subjects_initialized_ || !active_) {
++        return;
++    }
++    const std::string key = active_->key;
++    const std::string st_step = str_field(status_, "step");
++    const std::string st_state = str_field(status_, "state");
++    const bool mine = st_step == key;
++
++    View view = view_for(key, st_step, st_state, start_in_flight_, !local_error_.empty());
++
++    std::string message;
++    if (active_->restarts_klipper && view == View::Running && !klippy_ready_) {
++        message = lv_tr("Saving... Klipper is restarting.");
++    } else if (view == View::Failed && !local_error_.empty() &&
++               !(mine && (st_state == "failed" || st_state == "aborted"))) {
++        message = local_error_;
++    } else if (mine) {
++        message = str_field(status_, "message");
++    }
++    if (message.empty() && view == View::Running) {
++        message = lv_tr("Starting...");
++    }
++
++    int progress = 0;
++    if (view == View::Done) {
++        progress = 100;
++    } else if (mine && (view == View::Running || view == View::WaitingUser)) {
++        auto it = status_.find("progress");
++        if (it != status_.end() && it->is_number()) {
++            progress = static_cast<int>(it->get<double>() * 100.0 + 0.5);
++            progress = std::clamp(progress, 0, 100);
++        }
++    }
++
++    std::string zoffset;
++    if (auto it = status_.find("zoffset"); it != status_.end() && it->is_number()) {
++        zoffset = fmt::format("{:+.3f} mm", it->get<double>());
++    }
++
++    copy_if_changed(&message_, message);
++    copy_if_changed(&results_, results_text());
++    copy_if_changed(&zoffset_, zoffset);
++    set_if_changed(&progress_, progress);
++    set_if_changed(&view_, static_cast<int>(view));
++    update_footer(view);
++}
++
++// ============================================================================
++// Ownership: one model + one step object per spec, created on first use
++// ============================================================================
++
++namespace {
++
++struct Ad5xSetupSteps {
++    Ad5xSetupModel model;
++    std::vector<std::unique_ptr<WizardAd5xSetupStep>> steps;
++
++    Ad5xSetupSteps() {
++        for (const auto& spec : k_specs) {
++            steps.push_back(std::make_unique<WizardAd5xSetupStep>(spec));
++        }
++    }
++};
++
++Ad5xSetupSteps& owner() {
++    return helix::lazy_global<Ad5xSetupSteps>("Ad5xSetupSteps");
++}
++
++} // namespace
++
++Ad5xSetupModel& model() {
++    return owner().model;
++}
++
++void launch_targeted(lv_obj_t* parent) {
++    spdlog::info("[AD5X setup] Running the setup steps again");
++    ui_wizard_register_event_callbacks();
++    ui_wizard_container_register_responsive_constants();
++    ui_wizard_init_subjects();
++    // Back on the first step leaves the session, like the other targeted runs.
++    set_wizard_cancel_callback([]() {
++        ui_wizard_complete_targeted();
++        set_wizard_cancel_callback(nullptr);
++    });
++    ui_wizard_create_targeted(parent, step_ids(), []() { set_wizard_cancel_callback(nullptr); });
++}
++
++void watch_wizard_requests() {
++    IMoonrakerClient* client = get_moonraker_client();
++    if (!client) {
++        return;
++    }
++    // Same handler name on the same client is a no-op, so every call is safe.
++    client->register_method_callback(
++        "notify_gcode_response", "ad5x_setup_wizard", [](const json& note) {
++            // WebSocket thread: only look at the line here.
++            auto params = note.find("params");
++            if (params == note.end() || !params->is_array() || params->empty() ||
++                !(*params)[0].is_string()) {
++                return;
++            }
++            const std::string& line = (*params)[0].get_ref<const std::string&>();
++            if (line.find("action:ad5x_setup_wizard") == std::string::npos) {
++                return;
++            }
++            helix::ui::queue_update("ad5x_setup::wizard_request", []() {
++                if (is_wizard_active()) {
++                    return;
++                }
++                // Answered now, so the next start must not run it again.
++                if (const char* flag = std::getenv("HELIX_WIZARD_FLAG_FILE")) {
++                    helix::fs::remove(flag);
++                }
++                if (!available()) {
++                    return;
++                }
++                spdlog::info("[AD5X setup] SETUP_WIZARD from Klipper: opening the setup steps");
++                launch_targeted(lv_screen_active());
++            });
++        });
++}
++
++} // namespace helix::ad5x_setup
++
++// ============================================================================
++// Step
++// ============================================================================
++
++using helix::ad5x_setup::model;
++
++WizardAd5xSetupStep* get_wizard_ad5x_setup_step(helix::wizard::StepId id) {
++    auto& steps = helix::ad5x_setup::owner().steps;
++    for (auto& step : steps) {
++        if (step->id() == id) {
++            return step.get();
++        }
++    }
++    return steps.front().get();
++}
++
++bool WizardAd5xSetupStep::should_skip(const helix::wizard::StepContext& ctx) const {
++    return !helix::ad5x_setup::available(ctx);
++}
++
++void WizardAd5xSetupStep::init_subjects() {
++    model().init_subjects();
++}
++
++static void on_ad5x_setup_start(lv_event_t* /*e*/) {
++    LVGL_SAFE_EVENT_CB_BEGIN("[AD5X setup] on_start");
++    model().start();
++    LVGL_SAFE_EVENT_CB_END();
++}
++
++static void on_ad5x_setup_abort(lv_event_t* /*e*/) {
++    LVGL_SAFE_EVENT_CB_BEGIN("[AD5X setup] on_abort");
++    model().abort();
++    LVGL_SAFE_EVENT_CB_END();
++}
++
++static void on_ad5x_setup_adjust(lv_event_t* e) {
++    LVGL_SAFE_EVENT_CB_BEGIN("[AD5X setup] on_adjust");
++    const char* delta = static_cast<const char*>(lv_event_get_user_data(e));
++    if (delta) {
++        model().adjust(std::strtod(delta, nullptr));
++    }
++    LVGL_SAFE_EVENT_CB_END();
++}
++
++static void on_ad5x_setup_accept(lv_event_t* /*e*/) {
++    LVGL_SAFE_EVENT_CB_BEGIN("[AD5X setup] on_accept");
++    model().accept();
++    LVGL_SAFE_EVENT_CB_END();
++}
++
++void WizardAd5xSetupStep::register_callbacks() {
++    lv_xml_register_event_cb(nullptr, "on_ad5x_setup_start", on_ad5x_setup_start);
++    lv_xml_register_event_cb(nullptr, "on_ad5x_setup_abort", on_ad5x_setup_abort);
++    lv_xml_register_event_cb(nullptr, "on_ad5x_setup_adjust", on_ad5x_setup_adjust);
++    lv_xml_register_event_cb(nullptr, "on_ad5x_setup_accept", on_ad5x_setup_accept);
++}
++
++lv_obj_t* WizardAd5xSetupStep::create(lv_obj_t* parent) {
++    root_ = static_cast<lv_obj_t*>(lv_xml_create(parent, spec_.component, nullptr));
++    if (!root_) {
++        spdlog::error("[AD5X setup] Failed to create '{}'", spec_.component);
++        return nullptr;
++    }
++    if (spec_.restarts_klipper) {
++        // The save step restarts Klipper: say so on its button
++        if (lv_obj_t* btn = lv_obj_find_by_name(root_, "btn_ad5x_start")) {
++            ui_button_set_text(btn, lv_tr("Save & Restart"));
++        }
++    }
++    model().activate(&spec_);
++    return root_;
++}
++
++void WizardAd5xSetupStep::cleanup() {
++    model().deactivate();
++    root_ = nullptr;
++}
+diff --git a/src/ui/wizard_step_registry.cpp b/src/ui/wizard_step_registry.cpp
+index b188b0a..5a84cd8 100644
+--- a/src/ui/wizard_step_registry.cpp
++++ b/src/ui/wizard_step_registry.cpp
+@@ -1,6 +1,7 @@
+ // SPDX-License-Identifier: GPL-3.0-or-later
+ #include "wizard_step_registry.h"
+ 
++#include "ui_wizard_ad5x_setup.h"
+ #include "ui_wizard_ams_identify.h"
+ #include "ui_wizard_connection.h"
+ #include "ui_wizard_fan_select.h"
+@@ -42,6 +43,9 @@ std::vector<Step*> steps() {
+     v.push_back(get_wizard_ams_identify_step());               // AmsIdentify
+     v.push_back(get_wizard_led_select_step());                 // LedSelect
+     v.push_back(get_wizard_filament_sensor_select_step());     // FilamentSensor
++    for (StepId id : helix::ad5x_setup::step_ids()) {           // Ad5xSelfcheck..Ad5xFinish
++        v.push_back(get_wizard_ad5x_setup_step(id));
++    }
+     v.push_back(get_wizard_input_shaper_step());               // InputShaper
+     v.push_back(helix::wizard::get_wizard_preferences_step()); // Preferences
+     v.push_back(get_wizard_summary_step());                    // Summary
+diff --git a/ui_xml/wizard_ad5x_finish.xml b/ui_xml/wizard_ad5x_finish.xml
+new file mode 100644
+index 0000000..8747264
+--- /dev/null
++++ b/ui_xml/wizard_ad5x_finish.xml
+@@ -0,0 +1,15 @@
++<?xml version="1.0"?>
++<!-- SPDX-License-Identifier: GPL-3.0-or-later -->
++<component>
++  <!-- First-Run Wizard: AD5X tuning step "finish" (ad5x_setup step "finish").
++       Title here; body and behaviour in wizard_ad5x_setup.xml / ui_wizard_ad5x_setup.cpp. -->
++  <consts>
++    <str name="step_title" value="Printer Setup: Save" value_tag="Printer Setup: Save"/>
++    <str name="step_subtitle" value="Save the results to the printer configuration" value_tag="Save the results to the printer configuration"/>
++  </consts>
++  <view name="wizard_ad5x_finish_root"
++        extends="lv_obj" width="100%" height="content" style_bg_opa="0" style_border_width="0" style_pad_all="0"
++        scrollable="false">
++    <wizard_ad5x_setup/>
++  </view>
++</component>
+diff --git a/ui_xml/wizard_ad5x_ifs.xml b/ui_xml/wizard_ad5x_ifs.xml
+new file mode 100644
+index 0000000..3e57ed1
+--- /dev/null
++++ b/ui_xml/wizard_ad5x_ifs.xml
+@@ -0,0 +1,15 @@
++<?xml version="1.0"?>
++<!-- SPDX-License-Identifier: GPL-3.0-or-later -->
++<component>
++  <!-- First-Run Wizard: AD5X tuning step "ifs" (ad5x_setup step "ifs").
++       Title here; body and behaviour in wizard_ad5x_setup.xml / ui_wizard_ad5x_setup.cpp. -->
++  <consts>
++    <str name="step_title" value="Printer Setup: IFS Tuning" value_tag="Printer Setup: IFS Tuning"/>
++    <str name="step_subtitle" value="Faster, reliable filament swaps" value_tag="Faster, reliable filament swaps"/>
++  </consts>
++  <view name="wizard_ad5x_ifs_root"
++        extends="lv_obj" width="100%" height="content" style_bg_opa="0" style_border_width="0" style_pad_all="0"
++        scrollable="false">
++    <wizard_ad5x_setup/>
++  </view>
++</component>
+diff --git a/ui_xml/wizard_ad5x_mesh.xml b/ui_xml/wizard_ad5x_mesh.xml
+new file mode 100644
+index 0000000..8839e0c
+--- /dev/null
++++ b/ui_xml/wizard_ad5x_mesh.xml
+@@ -0,0 +1,15 @@
++<?xml version="1.0"?>
++<!-- SPDX-License-Identifier: GPL-3.0-or-later -->
++<component>
++  <!-- First-Run Wizard: AD5X tuning step "mesh" (ad5x_setup step "mesh").
++       Title here; body and behaviour in wizard_ad5x_setup.xml / ui_wizard_ad5x_setup.cpp. -->
++  <consts>
++    <str name="step_title" value="Printer Setup: Bed Mesh" value_tag="Printer Setup: Bed Mesh"/>
++    <str name="step_subtitle" value="Measure the shape of the bed" value_tag="Measure the shape of the bed"/>
++  </consts>
++  <view name="wizard_ad5x_mesh_root"
++        extends="lv_obj" width="100%" height="content" style_bg_opa="0" style_border_width="0" style_pad_all="0"
++        scrollable="false">
++    <wizard_ad5x_setup/>
++  </view>
++</component>
+diff --git a/ui_xml/wizard_ad5x_pid.xml b/ui_xml/wizard_ad5x_pid.xml
+new file mode 100644
+index 0000000..549c0e3
+--- /dev/null
++++ b/ui_xml/wizard_ad5x_pid.xml
+@@ -0,0 +1,15 @@
++<?xml version="1.0"?>
++<!-- SPDX-License-Identifier: GPL-3.0-or-later -->
++<component>
++  <!-- First-Run Wizard: AD5X tuning step "pid" (ad5x_setup step "pid").
++       Title here; body and behaviour in wizard_ad5x_setup.xml / ui_wizard_ad5x_setup.cpp. -->
++  <consts>
++    <str name="step_title" value="Printer Setup: Heater Tuning" value_tag="Printer Setup: Heater Tuning"/>
++    <str name="step_subtitle" value="PID tuning for the nozzle and the bed" value_tag="PID tuning for the nozzle and the bed"/>
++  </consts>
++  <view name="wizard_ad5x_pid_root"
++        extends="lv_obj" width="100%" height="content" style_bg_opa="0" style_border_width="0" style_pad_all="0"
++        scrollable="false">
++    <wizard_ad5x_setup/>
++  </view>
++</component>
+diff --git a/ui_xml/wizard_ad5x_selfcheck.xml b/ui_xml/wizard_ad5x_selfcheck.xml
+new file mode 100644
+index 0000000..bff47a4
+--- /dev/null
++++ b/ui_xml/wizard_ad5x_selfcheck.xml
+@@ -0,0 +1,15 @@
++<?xml version="1.0"?>
++<!-- SPDX-License-Identifier: GPL-3.0-or-later -->
++<component>
++  <!-- First-Run Wizard: AD5X tuning step "selfcheck" (ad5x_setup step "selfcheck").
++       Title here; body and behaviour in wizard_ad5x_setup.xml / ui_wizard_ad5x_setup.cpp. -->
++  <consts>
++    <str name="step_title" value="Printer Setup: Self-Check" value_tag="Printer Setup: Self-Check"/>
++    <str name="step_subtitle" value="Check that every part of the printer answers" value_tag="Check that every part of the printer answers"/>
++  </consts>
++  <view name="wizard_ad5x_selfcheck_root"
++        extends="lv_obj" width="100%" height="content" style_bg_opa="0" style_border_width="0" style_pad_all="0"
++        scrollable="false">
++    <wizard_ad5x_setup/>
++  </view>
++</component>
+diff --git a/ui_xml/wizard_ad5x_setup.xml b/ui_xml/wizard_ad5x_setup.xml
+new file mode 100644
+index 0000000..75bd4e9
+--- /dev/null
++++ b/ui_xml/wizard_ad5x_setup.xml
+@@ -0,0 +1,103 @@
++<?xml version="1.0"?>
++<!-- SPDX-License-Identifier: GPL-3.0-or-later -->
++<component>
++  <!-- First-Run Wizard: body shared by the AD5X tuning steps (self-check, PID,
++       bed mesh, vibration, IFS, Z offset, save). Each step's own component
++       (wizard_ad5x_<step>.xml) carries its title and embeds this. All data comes
++       from the ad5x_setup_* subjects (ui_wizard_ad5x_setup.cpp), driven by the
++       printer's ad5x_setup status object.
++       ad5x_setup_view: 0 idle, 1 running, 2 waiting for the user, 3 done, 4 failed -->
++  <view name="wizard_ad5x_setup_root"
++        extends="lv_obj" width="100%" height="content" style_bg_opa="0" style_border_width="0"
++        style_pad_all="0" flex_flow="column" style_flex_main_place="start" style_flex_cross_place="center"
++        scrollable="false">
++
++    <ui_card width="100%"
++             height="content" style_radius="#border_radius" style_pad_all="#space_lg" style_pad_gap="#space_md"
++             flex_flow="column" style_flex_main_place="start" style_flex_cross_place="center" scrollable="false">
++
++      <text_body width="100%" bind_text="ad5x_setup_explanation" long_mode="wrap" style_text_align="center"/>
++
++      <!-- Status line and progress -->
++      <text_body width="100%" bind_text="ad5x_setup_message" long_mode="wrap" style_text_align="center">
++        <bind_flag_if_eq subject="ad5x_setup_view" flag="hidden" ref_value="0"/>
++      </text_body>
++      <progress_bar name="ad5x_setup_progress_bar" width="80%" bind_value="ad5x_setup_progress">
++        <bind_flag_if cond="ad5x_setup_view ne 1 and ad5x_setup_view ne 2" flag="hidden"/>
++      </progress_bar>
++
++      <!-- Z offset: live baby-stepping while the test patch prints -->
++      <lv_obj name="ad5x_zoffset_panel"
++              width="100%" height="content" style_pad_all="0" style_pad_gap="#space_sm" style_bg_opa="0"
++              style_border_width="0" flex_flow="column" style_flex_cross_place="center" scrollable="false">
++        <bind_flag_if cond="ad5x_setup_is_zoffset eq 0 or ad5x_setup_view ne 2" flag="hidden"/>
++        <text_heading width="100%" bind_text="ad5x_setup_zoffset" style_text_align="center"/>
++        <lv_obj width="100%"
++                height="content" style_pad_all="0" style_pad_gap="#space_sm" style_bg_opa="0" style_border_width="0"
++                flex_flow="row" style_flex_main_place="center" scrollable="false">
++          <ui_button name="btn_ad5x_z_down_005" flex_grow="1" height="#button_height" text="-0.05">
++            <event_cb trigger="clicked" callback="on_ad5x_setup_adjust" user_data="-0.05"/>
++          </ui_button>
++          <ui_button name="btn_ad5x_z_down_001" flex_grow="1" height="#button_height" text="-0.01">
++            <event_cb trigger="clicked" callback="on_ad5x_setup_adjust" user_data="-0.01"/>
++          </ui_button>
++          <ui_button name="btn_ad5x_z_up_001" flex_grow="1" height="#button_height" text="+0.01">
++            <event_cb trigger="clicked" callback="on_ad5x_setup_adjust" user_data="0.01"/>
++          </ui_button>
++          <ui_button name="btn_ad5x_z_up_005" flex_grow="1" height="#button_height" text="+0.05">
++            <event_cb trigger="clicked" callback="on_ad5x_setup_adjust" user_data="0.05"/>
++          </ui_button>
++        </lv_obj>
++        <text_small width="100%"
++                    text="- moves the nozzle closer to the bed (more squish), + moves it away."
++                    long_mode="wrap" style_text_align="center" style_text_color="#text_muted"/>
++      </lv_obj>
++
++      <!-- Actions -->
++      <lv_obj width="100%"
++              height="content" style_pad_all="0" style_pad_gap="#space_md" style_bg_opa="0" style_border_width="0"
++              flex_flow="row" style_flex_main_place="center" scrollable="false">
++        <ui_button name="btn_ad5x_start" width="#wizard_button_width" height="#button_height" text="Start">
++          <event_cb trigger="clicked" callback="on_ad5x_setup_start"/>
++          <bind_flag_if_not_eq subject="ad5x_setup_view" flag="hidden" ref_value="0"/>
++        </ui_button>
++        <ui_button name="btn_ad5x_retry" width="#wizard_button_width" height="#button_height" text="Retry">
++          <event_cb trigger="clicked" callback="on_ad5x_setup_start"/>
++          <bind_flag_if_not_eq subject="ad5x_setup_view" flag="hidden" ref_value="4"/>
++        </ui_button>
++        <ui_button name="btn_ad5x_rerun" width="#wizard_button_width" height="#button_height" text="Run Again"
++                   variant="ghost">
++          <event_cb trigger="clicked" callback="on_ad5x_setup_start"/>
++          <bind_flag_if_not_eq subject="ad5x_setup_view" flag="hidden" ref_value="3"/>
++        </ui_button>
++        <!-- Z offset: Start again while waiting prints another patch beside the first -->
++        <ui_button name="btn_ad5x_another" width="#wizard_button_width" height="#button_height"
++                   text="New Patch" variant="secondary">
++          <event_cb trigger="clicked" callback="on_ad5x_setup_start"/>
++          <bind_flag_if cond="ad5x_setup_is_zoffset eq 0 or ad5x_setup_view ne 2" flag="hidden"/>
++        </ui_button>
++        <ui_button name="btn_ad5x_accept" width="#wizard_button_width" height="#button_height" text="Accept"
++                   variant="success">
++          <event_cb trigger="clicked" callback="on_ad5x_setup_accept"/>
++          <bind_flag_if cond="ad5x_setup_is_zoffset eq 0 or ad5x_setup_view ne 2" flag="hidden"/>
++        </ui_button>
++        <ui_button name="btn_ad5x_abort" width="#wizard_button_width" height="#button_height" text="Abort"
++                   variant="danger">
++          <event_cb trigger="clicked" callback="on_ad5x_setup_abort"/>
++          <bind_flag_if cond="ad5x_setup_view ne 1 and ad5x_setup_view ne 2" flag="hidden"/>
++        </ui_button>
++      </lv_obj>
++
++      <!-- Results (self-check list, tuned values, the save step's overview) -->
++      <text_small width="100%" bind_text="ad5x_setup_results" long_mode="wrap" style_text_align="left">
++        <bind_flag_if_eq subject="ad5x_setup_view" flag="hidden" ref_value="0"/>
++      </text_small>
++
++      <text_small width="100%"
++                  text="Skip leaves this step out; you can run it later from Settings." long_mode="wrap"
++                  style_text_align="center" style_text_color="#text_muted">
++        <bind_flag_if_not_eq subject="ad5x_setup_view" flag="hidden" ref_value="0"/>
++      </text_small>
++    </ui_card>
++  </view>
++</component>
+diff --git a/ui_xml/wizard_ad5x_shaper.xml b/ui_xml/wizard_ad5x_shaper.xml
+new file mode 100644
+index 0000000..52f4943
+--- /dev/null
++++ b/ui_xml/wizard_ad5x_shaper.xml
+@@ -0,0 +1,15 @@
++<?xml version="1.0"?>
++<!-- SPDX-License-Identifier: GPL-3.0-or-later -->
++<component>
++  <!-- First-Run Wizard: AD5X tuning step "shaper" (ad5x_setup step "shaper").
++       Title here; body and behaviour in wizard_ad5x_setup.xml / ui_wizard_ad5x_setup.cpp. -->
++  <consts>
++    <str name="step_title" value="Printer Setup: Vibration Compensation" value_tag="Printer Setup: Vibration Compensation"/>
++    <str name="step_subtitle" value="Input shaping against ringing" value_tag="Input shaping against ringing"/>
++  </consts>
++  <view name="wizard_ad5x_shaper_root"
++        extends="lv_obj" width="100%" height="content" style_bg_opa="0" style_border_width="0" style_pad_all="0"
++        scrollable="false">
++    <wizard_ad5x_setup/>
++  </view>
++</component>
+diff --git a/ui_xml/wizard_ad5x_zoffset.xml b/ui_xml/wizard_ad5x_zoffset.xml
+new file mode 100644
+index 0000000..0c1a779
+--- /dev/null
++++ b/ui_xml/wizard_ad5x_zoffset.xml
+@@ -0,0 +1,15 @@
++<?xml version="1.0"?>
++<!-- SPDX-License-Identifier: GPL-3.0-or-later -->
++<component>
++  <!-- First-Run Wizard: AD5X tuning step "zoffset" (ad5x_setup step "zoffset").
++       Title here; body and behaviour in wizard_ad5x_setup.xml / ui_wizard_ad5x_setup.cpp. -->
++  <consts>
++    <str name="step_title" value="Printer Setup: Z Offset" value_tag="Printer Setup: Z Offset"/>
++    <str name="step_subtitle" value="First-layer test print with live adjustment" value_tag="First-layer test print with live adjustment"/>
++  </consts>
++  <view name="wizard_ad5x_zoffset_root"
++        extends="lv_obj" width="100%" height="content" style_bg_opa="0" style_border_width="0" style_pad_all="0"
++        scrollable="false">
++    <wizard_ad5x_setup/>
++  </view>
++</component>
+-- 
+2.56.0
+

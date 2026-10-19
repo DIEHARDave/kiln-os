@@ -1,0 +1,51 @@
+#!/bin/sh
+# Fluidd's macro categories (Filament, IFS, Calibration, During print,
+# Light & sound; slicer and internal macros hidden), written into Moonraker's
+# database once, only while Fluidd has no macro settings yet: a user's own
+# arrangement is never changed. Source: /usr/share/ad5x/fluidd-macros.json.
+SPEC=/usr/share/ad5x/fluidd-macros.json
+case "$1" in
+start)
+	[ -f $SPEC ] || exit 0
+	( /usr/bin/python3 - $SPEC <<'PY' >/dev/null 2>&1 & )
+import json, sys, time, urllib.request
+U = "http://localhost:7125"
+for _ in range(90):                     # Moonraker up (up to 3 min)
+    try:
+        urllib.request.urlopen(U + "/server/info", timeout=2)
+        break
+    except Exception:
+        time.sleep(2)
+else:
+    sys.exit(0)
+try:
+    cur = json.load(urllib.request.urlopen(
+        U + "/server/database/item?namespace=fluidd&key=macros",
+        timeout=5))["result"]["value"]
+except Exception:
+    cur = None                          # no entry yet
+if cur and (cur.get("stored") or cur.get("categories")):
+    sys.exit(0)                         # the user's own settings
+spec = json.load(open(sys.argv[1]))
+stored = []
+for cid, items in spec["groups"].items():
+    for order, (name, alias, busy) in enumerate(items):
+        stored.append({"name": name.lower(), "alias": alias, "visible": True,
+                       "disabledWhilePrinting": bool(busy), "color": "",
+                       "categoryId": cid, "order": order})
+for name in spec["hidden"]:
+    stored.append({"name": name.lower(), "alias": "", "visible": False,
+                   "disabledWhilePrinting": False, "color": "",
+                   "categoryId": "0", "order": None})
+value = {"categories": spec["categories"], "stored": stored,
+         "expanded": list(range(len(spec["categories"]) + 1))}
+req = urllib.request.Request(
+    U + "/server/database/item", method="POST",
+    data=json.dumps({"namespace": "fluidd", "key": "macros",
+                     "value": value}).encode(),
+    headers={"Content-Type": "application/json"})
+urllib.request.urlopen(req, timeout=10)
+PY
+	;;
+esac
+exit 0

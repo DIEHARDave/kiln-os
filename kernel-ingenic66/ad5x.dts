@@ -1,0 +1,291 @@
+// SPDX-License-Identifier: GPL-2.0
+/*
+ * Flashforge Adventurer 5X (AD5X) mainboard, Ingenic X2600 - for the
+ * Ingenic X2600 SDK Linux 6.6 kernel (module_drivers/ vendor drivers).
+ *
+ * Runs on the AD5X (chainload, 2026-10-17). Built into the kernel (INGENIC_BUILTIN_DTB) through
+ * DT_X2600_MODULE_BASE / DT_X2600_MODULE_BASE_DTS_FILE="x2600/ad5x.dts";
+ * ad5x/build.sh copies this file and ad5x-display.dtsi into
+ * module_drivers/dts/x2600/.
+ *
+ * Source of truth: the device tree built into the stock 5.10 kernel
+ * (decompiled, see kernel-mainline/dts/reference/x2600-ad5x-stock-5.10.dts
+ * in ad5xrecon) plus the stock out-of-tree module parameters
+ * (/module_driver/*.sh, app_startup.sh). Every deviation from the stock DT
+ * is marked "DEVIATION".
+ *
+ * Boot contract with the stock SPL (no DTB passed, fixed command line):
+ *   console=ttyS0,115200n8 ... mem=... rmem=... rtos_size=4M@0xfc00000
+ *   root=/dev/mmcblk0pN rootwait rootfstype=squashfs ro lpj=11935744
+ * so: no /chosen bootargs here (MIPS_CMDLINE_FROM_DTB falls back to the
+ * SPL's argv when the DT has none), uart0 = ttyS0, msc0 = mmc0, and no
+ * /memory node (as stock: the SPL's mem= describes RAM).
+ */
+/dts-v1/;
+
+#include <dt-bindings/input/input.h>
+#include <dt-bindings/interrupt-controller/irq.h>
+#include "x2600.dtsi"		/* also pulls in x2600-pinctrl.dtsi */
+
+/ {
+	compatible = "flashforge,ad5x", "ingenic,x2600";
+	model = "Flashforge Adventurer 5X";
+
+	/*
+	 * Aliases come from x2600.dtsi and are identical to stock
+	 * (uart0..7, i2c0..3, mmc0/1, mac0, spi0/1, can0/1). ingenic_uart
+	 * numbers ports from the "uartN" alias, so ttyS0/2/3/4/5/7 match stock:
+	 *   ttyS0 debug console, ttyS2 motion MCU, ttyS3 ?, ttyS4 IFS (RS-485),
+	 *   ttyS5 eboard, ttyS7 weighing board.
+	 */
+
+	/*
+	 * DEVIATION: stock DT has no reserved-memory. Stock reserves the
+	 * RISC-V RTOS area in userspace/out-of-tree (rmem_manager.ko reads
+	 * rtos_size=4M@0xfc00000 from /proc/cmdline); this 6.6 kernel parses
+	 * neither rmem= nor rtos_size=. Keep the RTOS's 4 MiB out of Linux'
+	 * hands. Harmless if the SPL's mem= already excludes it.
+	 */
+	reserved-memory {
+		#address-cells = <1>;
+		#size-cells = <1>;
+		ranges;
+
+		rtos@fc00000 {
+			reg = <0x0fc00000 0x00400000>;
+			no-map;
+		};
+	};
+
+	/*
+	 * DEVIATION (stock: gpio_backlight.ko backlight_gpio=PC14
+	 * gpio_active_level=1 backlight_enabled=0). Starts off like stock;
+	 * userspace turns it on via /sys/class/backlight/.
+	 */
+	backlight: backlight {
+		compatible = "gpio-backlight";
+		gpios = <&gpc 14 GPIO_ACTIVE_HIGH INGENIC_GPIO_NOBIAS>;
+	};
+
+	/*
+	 * DEVIATION (stock: keyboard_gpio_add.ko gpio=PB11 key_code=0x164
+	 * KEY_POWER2 active_level=0).
+	 */
+	gpio-keys {
+		compatible = "gpio-keys";
+
+		key-power2 {
+			label = "KEY_POWER2";
+			gpios = <&gpb 11 GPIO_ACTIVE_LOW INGENIC_GPIO_NOBIAS>;
+			linux,code = <KEY_POWER2>;
+			debounce-interval = <20>;
+		};
+	};
+
+	/*
+	 * DEVIATION / ASSUMPTION: stock powers the RTL8821CU with
+	 * "insmod 8821cu.ko power_on=PB07" (and firmwareExe toggles PB07 in
+	 * restartWifiDevice). In-tree rtw88_8821cu has no such parameter, so
+	 * hold PB07 on here. Active-high is assumed (Realtek's Ingenic platform
+	 * glue drives power_on high) - VERIFY with a multimeter or stock's
+	 * /sys/class/gpio state before relying on it.
+	 */
+	wifi_pwr: regulator-wifi {
+		compatible = "regulator-fixed";
+		regulator-name = "wifi-power";
+		regulator-min-microvolt = <3300000>;
+		regulator-max-microvolt = <3300000>;
+		gpio = <&gpb 7 GPIO_ACTIVE_HIGH INGENIC_GPIO_NOBIAS>;
+		enable-active-high;
+		regulator-always-on;
+		regulator-boot-on;
+	};
+
+	/*
+	 * Not described (left to userspace, as stock): PC11 heartbeat
+	 * (gpio_regulator.ko "GPIO-POWER0", toggled 1 Hz by sys_start.sh),
+	 * PC15 (set to output 0 by app_startup.sh), PB17/PB18 (MCU NRST/BOOT0
+	 * for flashing), PB02/PB03.
+	 */
+};
+
+&pinctrl {
+	/* As stock: GPIO port A and the port E/MSC0 domain run at 1.8 V. */
+	ingenic,gpa_voltage = <GPIO_VOLTAGE_1V8>;
+	ingenic,gpe_msc_voltage = <GPIO_VOLTAGE_1V8>;
+};
+
+/* ---- UARTs: exactly stock's enabled set and pinmux ---- */
+
+&uart0 {	/* ttyS0 console, PE9-PE12 f1 (port E is the 1.8 V domain) */
+	status = "okay";
+	pinctrl-names = "default";
+	pinctrl-0 = <&uart0_pe>;
+};
+
+&uart2 {	/* ttyS2 motion MCU, PD12/PD13 f0 */
+	status = "okay";
+	pinctrl-names = "default";
+	pinctrl-0 = <&uart2_pd>;
+};
+
+&uart3 {	/* ttyS3, PB22/PB23 f1 */
+	status = "okay";
+	pinctrl-names = "default";
+	pinctrl-0 = <&uart3_pb>;
+};
+
+&uart4 {	/* ttyS4 IFS, PB24/PB25 f1, RS-485 driver enable on PC3 */
+	status = "okay";
+	pinctrl-names = "default";
+	pinctrl-0 = <&uart4_pb>;
+	/*
+	 * Kept verbatim from stock (<&gpc 3 0 4>: active high, INGENIC_GPIO_HIZ).
+	 * WARNING: the 6.6 SDK ingenic_uart.c does NOT parse this property
+	 * (stock 5.10's did). Without a driver patch (or userspace driving
+	 * PC3 around each transmit) the IFS gets no replies.
+	 */
+	ingenic,rs485-tx-enable-gpio = <&gpc 3 GPIO_ACTIVE_HIGH INGENIC_GPIO_HIZ>;
+};
+
+&uart5 {	/* ttyS5 eboard (toolhead), PB26/PB27 f1 */
+	status = "okay";
+	pinctrl-names = "default";
+	pinctrl-0 = <&uart5_pb>;
+};
+
+&uart7 {	/* ttyS7 weighing board, PC4/PC5 f1 */
+	status = "okay";
+	pinctrl-names = "default";
+	pinctrl-0 = <&uart7_pc>;
+};
+
+/* ---- I2C ---- */
+
+/*
+ * DEVIATION: stock DT leaves i2c0 disabled and drives it from the
+ * out-of-tree soc_i2c.ko (i2c0_is_enable=1 i2c0_rate=400000 PC00/PC01).
+ * Here the in-tree ingenic I2C driver takes it, with the touch controller.
+ */
+&i2c0 {
+	status = "okay";
+	clock-frequency = <400000>;
+	pinctrl-names = "default";
+	pinctrl-0 = <&i2c0_pc>;
+
+	/*
+	 * Mainline TI binding (drivers/input/touchscreen/tsc2007_core.c).
+	 * Stock: tsc2007_touch.ko tsc_irq_gpio=PC07 tsc_i2c_addr=0x48
+	 * tsc_x_plate_ohms=660 tsc_max_rt=600 fuzz 0, poll 0, y flipped.
+	 * Mainline reports raw 0..4095 and has no flip/size properties:
+	 * calibrate in userspace (tslib/HelixScreen), stock flips Y.
+	 */
+	touchscreen@48 {
+		compatible = "ti,tsc2007";
+		reg = <0x48>;
+		interrupt-parent = <&gpc>;
+		interrupts = <7 IRQ_TYPE_EDGE_FALLING INGENIC_GPIO_NOBIAS>;
+		gpios = <&gpc 7 GPIO_ACTIVE_LOW INGENIC_GPIO_NOBIAS>;	/* PENIRQ */
+		ti,x-plate-ohms = <660>;
+		ti,max-rt = <600>;
+	};
+};
+
+/*
+ * DEVIATION: stock leaves i2c3 "okay" (SoC dtsi default) with no pinmux
+ * and no clients; its candidate pins PC21/PC22 are RMII pins here.
+ */
+&i2c3 {
+	status = "disabled";
+};
+
+/* ---- eMMC: as stock ---- */
+
+&msc0 {
+	status = "okay";
+	pinctrl-names = "default";
+	pinctrl-0 = <&msc0_8bit_low>, <&msc0_8bit_high>;
+	pinctrl-1 = <&msc0_8bit_high>;
+	mmc-hs200-1_8v;
+	non-removable;
+	max-frequency = <25000000>;	/* stock value; raise only after testing */
+	bus-width = <8>;
+	voltage-ranges = <1800 3300>;
+	ingenic,rst-gpios = <0>;
+};
+
+/* ---- USB: as stock (OTG port + host-only port with the RTL8821CU) ---- */
+
+&otg_phy {
+	status = "okay";
+	external-vbus-detect;	/* stock has it; SDK dtsi only under #ifdef */
+};
+
+&usb_phy {
+	status = "okay";
+};
+
+&otg {
+	status = "okay";
+	dr_mode = "otg";
+};
+
+&usb {
+	status = "okay";
+	dr_mode = "host";
+};
+
+/* ---- Ethernet ---- */
+
+/*
+ * DEVIATION: stock's mac0 node is bare (no pinctrl, no mode) because the
+ * out-of-tree soc_mac_driver.ko does the work (phy_probe_mask=0 = scan,
+ * phy_reset_gpio=-1, phy_power_gpio=-1, virtual phy off). Configured here
+ * for the SDK in-tree ingenic_mac in RMII mode like the SDK boards, minus
+ * the PHY reset GPIO (stock has none) and minus mac0_phy_clk (PC15):
+ * stock's app_startup.sh drives PC15 as a plain GPIO output 0, so the
+ * 50 MHz RMII reference most likely comes from the PHY, not the SoC.
+ * UNVERIFIED: PHY part/address and the reference-clock direction.
+ */
+&mac0 {
+	status = "okay";
+	pinctrl-names = "default";
+	pinctrl-0 = <&mac0_rmii_p0_normal>, <&mac0_rmii_p1_normal>;
+	ingenic,rst-ms = <10>;
+	ingenic,mac-mode = <RMII>;
+	ingenic,mode-reg = <0xb00000e4>;
+	ingenic,phy-clk-freq = <50000000>;
+};
+
+/*
+ * DEVIATION: stock leaves sfc (SPI NOR/NAND controller) enabled by default;
+ * the AD5X boots from eMMC and the SFC pins PD0-PD5 are the MSC0 pins.
+ */
+&sfc {
+	status = "disabled";
+};
+
+/* ---- DMA, media blocks: as stock ---- */
+
+&pdma {
+	status = "okay";
+};
+
+&pdma1 {	/* ahb_mcu PDMA: stock enables it (PWM/SADC DMA) */
+	status = "okay";
+};
+
+&jpegd {
+	status = "okay";
+};
+
+&jpege {
+	status = "okay";
+};
+
+&felix {
+	status = "okay";
+};
+
+/* Display: DPU + LVDS panel. */
+#include "ad5x-display.dtsi"

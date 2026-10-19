@@ -1,0 +1,28 @@
+#!/bin/sh
+# Choose the kernel: the printer's stock 5.10 (in the boot slots) or our
+# 6.6, started from it at every boot (S00ad5x-kernel).
+#   ad5x-kernel status     running kernel, choice, last failure
+#   ad5x-kernel own        use our kernel from the next boot
+#   ad5x-kernel stock      use the stock kernel from the next boot
+# A start of our kernel that doesn't complete (hang: power-cycle; panic:
+# reboots by itself) sets the choice back to stock.
+D=/data/ad5x/kernel
+K=/usr/lib/ad5x/kernel66
+case "$1" in
+status|"")
+	echo "running: $(uname -r)"
+	echo "choice:  $(cat $D/use 2>/dev/null || echo stock)"
+	echo "ours:    $(cat $K/release 2>/dev/null || echo 'not in this image')"
+	[ -f $D/history ] && echo "last failure: $(tail -1 $D/history)"
+	;;
+own)
+	[ -f $K/xImage ] || { echo "ad5x-kernel: this image has no kernel in $K"; exit 1; }
+	mkdir -p $D; echo own > $D/use; rm -f $D/pending; sync
+	echo "our kernel from the next boot (reboot now?)"
+	;;
+stock)
+	mkdir -p $D; echo stock > $D/use; sync
+	echo "stock kernel from the next boot"
+	;;
+*) sed -n '2,9p' "$0"; exit 2 ;;
+esac

@@ -1,0 +1,25 @@
+#!/bin/sh
+# nginx: Fluidd on port 80, Moonraker's API proxied (/etc/nginx/nginx.conf).
+# Root is read-only: pid and temp files in /run/nginx, log in /var/log/nginx.
+NGINX=/usr/sbin/nginx
+PID=/run/nginx/nginx.pid
+case "$1" in
+start)
+	[ -x $NGINX ] || exit 0
+	mkdir -p /run/nginx /var/log/nginx
+	# Fluidd's directory (S61ad5x-web); the image's if S61 didn't run
+	[ -f /run/nginx/fluidd-root.conf ] ||
+		echo "root /usr/share/fluidd;" > /run/nginx/fluidd-root.conf
+	start-stop-daemon -S -x $NGINX -p $PID
+	;;
+stop)
+	start-stop-daemon -K -p $PID
+	;;
+reload)
+	$NGINX -s reload
+	;;
+restart)
+	$0 stop; sleep 1; $0 start
+	;;
+esac
+exit 0

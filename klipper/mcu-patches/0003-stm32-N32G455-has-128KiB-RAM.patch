@@ -1,0 +1,27 @@
+From: ad5x <ad5x@localhost>
+Date: Fri, 16 Oct 2026 00:00:00 +0000
+Subject: [PATCH] stm32: N32G455 has 128KiB RAM
+
+The Flashforge AD5X eboard bootloader does not start an application whose
+initial stack pointer is 0x20010000 (64KiB RAM): it stays in the
+bootloader. Stock firmware for both AD5X boards uses 0x20020000, as does
+xblax/klipper's MACH_N32G455xC. Use 128KiB for N32G455 builds.
+---
+ src/stm32/Kconfig | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/src/stm32/Kconfig b/src/stm32/Kconfig
+index e9aa08791..429538d8c 100644
+--- a/src/stm32/Kconfig
++++ b/src/stm32/Kconfig
+@@ -257,6 +257,7 @@ config RAM_SIZE
+     default 0x9000 if MACH_STM32G07x
+     default 0x24000 if MACH_STM32G0Bx
+     default 0x20000 if MACH_STM32H7
++    default 0x20000 if MACH_N32G455 # AD5X: as stock; the eboard bootloader checks the stack pointer
+     default 0x10000 if MACH_N32G45x
+ 
+ config STACK_SIZE
+-- 
+2.56.0
+

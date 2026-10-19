@@ -1,0 +1,176 @@
+{
+  "active_printer_id": "default",
+  "config_version": 28,
+  "dark_mode": true,
+  "display": {
+    "animations_enabled": false,
+    "backlight_enable_ioctl": false,
+    "bed_mesh_render_mode": 0,
+    "dim_brightness": 30,
+    "dim_sec": 600,
+    "drm_device": "",
+    "gcode_render_mode": 0,
+    "gpu_3d_blocked": false,
+    "gpu_blur_blocked": false,
+    "hardware_blank": 1,
+    "rotate": 0,
+    "rotation_probed": true,
+    "screensaver_levels": {
+      "toasters": {
+        "board": "fbdev/2c/2400bm/800x480/16bpp",
+        "level": 1,
+        "too_heavy": false,
+        "version": "1.1.0-beta.9 (e5cdc5dc)"
+      }
+    },
+    "sleep_backlight_off": true,
+    "sleep_sec": 1200
+  },
+  "gcode_viewer": {
+    "tube_sides": 4
+  },
+  "input": {
+    "calibration": {
+      "a": 1.0,
+      "b": -0.023826099932193756,
+      "c": -2.4921393394470215,
+      "d": -0.023209648206830025,
+      "e": 1.0,
+      "f": -1.6879432201385498,
+      "rotation": 0,
+      "valid": true
+    },
+    "long_press_time": 500,
+    "scroll_limit": 10,
+    "scroll_throw": 25,
+    "touch_device": "",
+    "touch_range": {
+      "max_x": 723,
+      "max_y": 404,
+      "min_x": 60,
+      "min_y": 72,
+      "rotation": 0,
+      "swap_axes": false,
+      "valid": true
+    }
+  },
+  "language": "en",
+  "log_path": "/tmp/helixscreen.log",
+  "motion": {
+    "jog_mode": 2
+  },
+  "printers": {
+    "default": {
+      "default_macros": {
+        "cooldown": "SET_HEATER_TEMPERATURE HEATER=extruder TARGET=0\nSET_HEATER_TEMPERATURE HEATER=heater_bed TARGET=0",
+        "load_filament": {
+          "gcode": "LOAD_FILAMENT",
+          "label": "Load"
+        },
+        "macro_1": {
+          "gcode": "CLEAR_NOZZLE",
+          "label": "Clean Nozzle"
+        },
+        "macro_2": {
+          "gcode": "AUTO_FULL_BED_LEVEL",
+          "label": "Bed Level"
+        },
+        "unload_filament": {
+          "gcode": "UNLOAD_FILAMENT",
+          "label": "Unload"
+        }
+      },
+      "extra_sensors": {},
+      "fans": {
+        "aux": "fan_generic pcb_fan",
+        "chamber": "fan_generic pcb_fan",
+        "exhaust": "",
+        "hotend": "heater_fan heat_fan",
+        "part": "fan_generic fanM106"
+      },
+      "filament": {
+        "auto_open_editor": true
+      },
+      "filament_sensors": {
+        "master_enabled": true,
+        "sensors": [
+          {
+            "enabled": true,
+            "klipper_name": "filament_switch_sensor toolhead",
+            "role": "runout",
+            "type": "switch"
+          }
+        ]
+      },
+      "hardware": {
+        "expected": [
+          "heater_bed",
+          "extruder",
+          "fan_generic fanM106",
+          "heater_fan heat_fan",
+          "fan_generic chamber_fan",
+          "fan_generic pcb_fan",
+          "filament_switch_sensor head_switch_sensor"
+        ],
+        "optional": []
+      },
+      "heaters": {
+        "bed": "heater_bed",
+        "hotend": "extruder"
+      },
+      "input": {
+        "scroll_guard": true,
+        "scroll_limit": 10,
+        "scroll_throw": 25
+      },
+      "leds": {
+        "selected": [],
+        "strip": ""
+      },
+      "moonraker_api_key": false,
+      "moonraker_host": "127.0.0.1",
+      "moonraker_port": 7125,
+      "motion": {
+        "bed_map_clearance": 5,
+        "coarse_inner": 1.0,
+        "coarse_outer": 10.0,
+        "fine_inner": 0.10000000149011612,
+        "fine_outer": 1.0,
+        "jog_speed_xy": 6000,
+        "jog_speed_z": 600,
+        "show_actual_position": false,
+        "turbo_inner": 10.0,
+        "turbo_outer": 50.0
+      },
+      "preset": "ad5x",
+      "preset_provisional": false,
+      "printer_name": "AD5X",
+      "temp_sensors": {
+        "bed": "heater_bed",
+        "hotend": "extruder"
+      },
+      "type": "FlashForge Adventurer 5X",
+      "wizard_completed": false
+    },
+    "show_printer_switcher": false
+  },
+  "telemetry_enabled": false,
+  "theme": {
+    "preset": 0
+  },
+  "thermal": {
+    "rates": {
+      "extruder": {
+        "heat_rate": 0.34072887897491455
+      },
+      "heater_bed": {
+        "heat_rate": 3.1266250610351562
+      }
+    }
+  },
+  "tour": {
+    "completed": true,
+    "last_seen_version": 1
+  },
+  "wizard_completed": false
+}

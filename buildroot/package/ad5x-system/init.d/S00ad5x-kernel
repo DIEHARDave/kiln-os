@@ -1,0 +1,69 @@
+#!/bin/sh
+# Our own kernel (6.6, kernel-ingenic66/) without touching the boot slots.
+# The slots keep the printer's stock 5.10 kernel. When "ad5x-kernel own" is
+# set, this runs first thing on the stock kernel and starts our kernel from
+# RAM (chainload.ko, kernel-ingenic66/chainload): same command line, same
+# root, plus ad5x.kernel=own panic=10. The boot flag and the eMMC are not
+# written, only a marker on /data:
+#   /data/ad5x/kernel/use      "own" (ad5x-kernel own) or absent (stock)
+#   /data/ad5x/kernel/pending  written before the jump, removed by
+#                              S99ad5x-booted once our kernel has started
+# If our kernel hangs, a power cycle comes back here with "pending" still
+# there: this boot stays on the stock kernel, records the failure and sets
+# "use" back to stock (ad5x-kernel status shows it). A panic reboots after
+# 10 s with the same result.
+. /usr/lib/ad5x/kernel.sh
+. /usr/lib/ad5x/slot.sh
+K=/usr/lib/ad5x/kernel66
+case "$1" in
+start)
+	[ $KERNEL = stock ] && [ -n "$SLOT" ] || exit 0
+	[ -f $K/xImage ] && [ -f $K/chainload.ko ] || exit 0
+	dev=$(part userdata) || exit 0
+	mkdir -p /tmp/kdata
+	mount -t ext4 -o noatime $dev /tmp/kdata 2>/dev/null || exit 0
+	d=/tmp/kdata/ad5x/kernel
+	if [ "$(cat $d/use 2>/dev/null)" != own ]; then
+		umount /tmp/kdata; exit 0
+	fi
+	if [ -f $d/pending ]; then
+		echo "ad5x-kernel: our kernel did not finish starting last time; staying on the stock kernel"
+		echo "$(cat $d/pending) failed" >> $d/history
+		rm -f $d/pending
+		echo stock > $d/use
+		sync; umount /tmp/kdata
+		exit 0
+	fi
+	krp=$(sed -n 's/^\([0-9a-f]*\) T kernel_restart_prepare$/\1/p' /proc/kallsyms)
+	if [ -z "$krp" ]; then
+		echo "ad5x-kernel: no kernel_restart_prepare in kallsyms; stock kernel"
+		umount /tmp/kdata; exit 0
+	fi
+	echo "ad5x-kernel: starting our kernel ($(cat $K/release 2>/dev/null))"
+	ad5x-bootlog "  chainload own kernel"
+	# /data/ad5x/kernel/cmdline-extra: more kernel options (tests)
+	cmdline="$(cat /proc/cmdline) ad5x.kernel=own panic=10 $(cat $d/cmdline-extra 2>/dev/null)"
+	if ! insmod $K/chainload.ko image=$K/xImage krp=0x$krp cmdline="\"$cmdline\""; then
+		echo "ad5x-kernel: staging failed; stock kernel"
+		umount /tmp/kdata; exit 0
+	fi
+	# Our kernel starts the display itself (kernel-ingenic66 patches
+	# 0004-0007); the stock kernel only loads it. Until 2026-10-17 this
+	# script started the panel with stock's display drivers first.
+	echo "$(cat /proc/uptime | cut -d' ' -f1)s slot $SLOT $(cat $K/release 2>/dev/null)" > $d/pending
+	sync; umount /tmp/kdata
+	# Nothing else runs yet; USB is the only bus master doing DMA
+	for x in 13500000.otg 13540000.usb; do
+		[ -e /sys/bus/platform/drivers/dwc2/$x ] &&
+			echo $x > /sys/bus/platform/drivers/dwc2/unbind
+	done
+	for c in /sys/devices/system/cpu/cpu[1-9]*/online; do
+		[ -f "$c" ] && echo 0 > "$c"
+	done
+	echo 1 > /sys/module/chainload/parameters/go
+	# not reached unless the jump was refused
+	echo "ad5x-kernel: jump refused; stock kernel"
+	rmmod chainload 2>/dev/null
+	;;
+esac
+exit 0

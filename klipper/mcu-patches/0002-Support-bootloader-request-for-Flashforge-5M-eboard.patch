@@ -1,0 +1,41 @@
+From 245ec843c4a4a7a7137df3c62852265213695d91 Mon Sep 17 00:00:00 2001
+From: xblax <xblax@incy.net>
+Date: Wed, 20 Aug 2025 22:33:43 +0200
+Subject: [PATCH] Support bootloader request for Flashforge 5M eboard
+
+Signed-off-by: xblax <xblax@incy.net>
+---
+ src/stm32/stm32f1.c | 10 ++++++++++
+ 1 file changed, 10 insertions(+)
+
+diff --git a/src/stm32/stm32f1.c b/src/stm32/stm32f1.c
+index 0e4cb782..c5ae1d54 100644
+--- a/src/stm32/stm32f1.c
++++ b/src/stm32/stm32f1.c
+@@ -242,6 +242,14 @@ usb_stm32duino_bootloader(void)
+     NVIC_SystemReset();
+ }
+ 
++// Reboot into serial bootloader of Flashforge 5M(Pro) eboard MCU
++static void
++flashforge_bootloader_request(void)
++{
++   // Only MCU reset is needed, starting the bootloader is the default behavior
++   NVIC_SystemReset();
++}
++
+ // Handle reboot requests
+ void
+ bootloader_request(void)
+@@ -251,6 +259,8 @@ bootloader_request(void)
+         usb_hid_bootloader();
+     else if (CONFIG_STM32_FLASH_START_2000)
+         usb_stm32duino_bootloader();
++    else if (CONFIG_MACH_N32G455 && CONFIG_STM32_FLASH_START_10000)
++        flashforge_bootloader_request();
+ }
+ 
+ 
+-- 
+2.56.0
+

@@ -1,0 +1,6 @@
+# Sourced by /etc/init.d/S49chronyd. /run is a fresh tmpfs at every boot and
+# the root is read-only: chronyd's run directory (pid file, socket, drift
+# file, see /etc/chrony.conf) is made here.
+mkdir -p /run/chrony
+chown chrony:chrony /run/chrony
+chmod 750 /run/chrony

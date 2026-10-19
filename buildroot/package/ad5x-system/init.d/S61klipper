@@ -1,0 +1,36 @@
+#!/bin/sh
+# Klipper host. Runs as user klipper at nice -10 (stock renices its main
+# thread to -10; the host is a slow MIPS SoC).
+PD=/home/klipper/printer_data
+PID=/var/run/klipper.pid
+# The image's Klipper or a newer daily package (lib/apps.sh)
+. /usr/lib/ad5x/apps.sh
+KROOT=$(app_root klipper)
+case "$1" in
+start)
+	if [ ! -f /data/ad5x/klipper.enable ]; then
+		echo "klipper: off (create /data/ad5x/klipper.enable to start it;"
+		echo "  only once the boards run mainline Klipper firmware)"
+		exit 0
+	fi
+	[ "$KROOT" = /usr/lib/klipper ] || echo "klipper: $(cat $KROOT/klippy/.version) from $KROOT"
+	HOME=/home/klipper start-stop-daemon -S -b -m -p $PID -c klipper -N -10 \
+		-x /usr/bin/python3 -- $KROOT/klippy/klippy.py \
+		$PD/config/printer.cfg -l $PD/logs/klippy.log \
+		-a $PD/comms/klippy.sock
+	;;
+stop)
+	start-stop-daemon -K -p $PID -s INT
+	# Wait for it to exit (it releases its port/serial lines), then force.
+	for i in 1 2 3 4 5 6 7 8 9 10; do
+		start-stop-daemon -K -t -p $PID >/dev/null 2>&1 || break
+		sleep 1
+	done
+	start-stop-daemon -K -p $PID -s KILL >/dev/null 2>&1
+	rm -f $PID
+	;;
+restart)
+	$0 stop; sleep 2; $0 start
+	;;
+esac
+exit 0

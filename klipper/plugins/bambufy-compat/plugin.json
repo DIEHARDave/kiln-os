@@ -1,0 +1,10 @@
+{
+  "name": "bambufy-compat",
+  "description": "Bambufy profile G-code: _NOPOOP (prime tower purges the next colour change), _M106",
+  "version": "1.0.0",
+  "author": "ad5x-open",
+  "url": "docs/zmod-compat.md",
+  "requires_os": "1.0",
+  "requires": ["zmod-compat"],
+  "conflicts": []
+}

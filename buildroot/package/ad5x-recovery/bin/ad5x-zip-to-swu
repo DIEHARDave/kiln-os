@@ -1,0 +1,37 @@
+#!/bin/sh
+# Turn a .zip update (tools/make_swu.sh --zip) into a .swu for SWUpdate.
+#
+# usage: ad5x-zip-to-swu ZIP OUT.swu
+# The zip holds rootfs.squashfs, optionally kernel.uimage, SHA256SUMS and
+# version.txt. Unpacked under /data/ad5x/update/.work, checked against
+# SHA256SUMS, then packed with the same sw-description and install script a
+# .swu from the laptop has (mk-sw-description.sh, ad5x-slot-b.sh).
+set -e
+[ $# -eq 2 ] || { sed -n '2,8p' "$0" >&2; exit 2; }
+ZIP=$1 OUT=$2
+L=/usr/lib/ad5x-recovery
+W=${AD5X_DATA:-/data}/ad5x/update/.work
+die() { echo "zip-to-swu: FAILED $*"; rm -rf "$W"; exit 1; }
+[ "$(head -c 4 "$ZIP" | od -An -t x1 | tr -d ' \n')" = 504b0304 ] || die "$ZIP is not a zip file"
+rm -rf "$W"; mkdir -p "$W"
+unzip -q -o "$ZIP" -d "$W" || die "unzip"
+[ -f "$W/rootfs.squashfs" ] || die "no rootfs.squashfs in the zip"
+[ -f "$W/SHA256SUMS" ] || die "no SHA256SUMS in the zip"
+( cd "$W" && sha256sum -c SHA256SUMS >/dev/null ) || die "SHA256SUMS check (damaged file)"
+grep -q ' rootfs.squashfs$' "$W/SHA256SUMS" || die "SHA256SUMS doesn't list rootfs.squashfs"
+[ "$(head -c 4 "$W/rootfs.squashfs")" = hsqs ] || die "rootfs.squashfs is not a squashfs image"
+VER=$(sed -n 's/.*version \(.*\)/\1/p' "$W/version.txt" 2>/dev/null | head -1)
+[ -n "$VER" ] || VER=zip-$(sha256sum "$W/rootfs.squashfs" | cut -c1-8)
+cp $L/ad5x-slot-b.sh "$W/ad5x-slot-b.sh"
+FILES="sw-description ad5x-slot-b.sh"
+if [ -f "$W/kernel.uimage" ]; then
+	grep -q ' kernel.uimage$' "$W/SHA256SUMS" || die "SHA256SUMS doesn't list kernel.uimage"
+	sh $L/mk-sw-description.sh "$VER" "$W/rootfs.squashfs" "$W/ad5x-slot-b.sh" "$W/kernel.uimage" > "$W/sw-description"
+	FILES="$FILES kernel.uimage"
+else
+	sh $L/mk-sw-description.sh "$VER" "$W/rootfs.squashfs" "$W/ad5x-slot-b.sh" > "$W/sw-description"
+fi
+FILES="$FILES rootfs.squashfs"
+( cd "$W" && printf '%s\n' $FILES | cpio -o -H newc 2>/dev/null ) > "$OUT" || die "cpio"
+rm -rf "$W"
+echo "zip-to-swu: $OUT, version $VER"

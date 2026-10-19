@@ -1,0 +1,14 @@
+#!/bin/sh
+# Boot trace (see /etc/init.d/rcS): append a line with the
+# uptime to /run/ad5x-boot.log and copy the log into the ota partition at
+# 64 KiB, where it survives a reset. Only on an installed system (slot A
+# or B), not in USB test mode.
+. /usr/lib/ad5x/slot.sh
+[ -n "$SLOT" ] || exit 0
+trace=$(part ota)
+[ -n "$trace" ] || exit 0
+mkdir -p /run
+echo "$(cut -d' ' -f1 /proc/uptime) $*" >> /run/ad5x-boot.log
+{ cat /run/ad5x-boot.log; head -c 8192 /dev/zero; } | head -c 8192 | \
+	dd of="$trace" bs=1024 seek=64 conv=notrunc 2>/dev/null
+sync

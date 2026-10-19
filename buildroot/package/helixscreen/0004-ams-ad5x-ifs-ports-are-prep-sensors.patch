@@ -1,0 +1,32 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: ad5xrecon <ad5xrecon@localhost>
+Date: Fri, 16 Oct 2026 19:21:38 -0400
+Subject: [PATCH] ams: AD5X IFS ports count as prep sensors (open the slot
+ editor on insert)
+
+---
+ include/ams_backend_ad5x_ifs.h | 8 ++++++++
+ 1 file changed, 8 insertions(+)
+
+diff --git a/include/ams_backend_ad5x_ifs.h b/include/ams_backend_ad5x_ifs.h
+index b6ff580..340d71b 100644
+--- a/include/ams_backend_ad5x_ifs.h
++++ b/include/ams_backend_ad5x_ifs.h
+@@ -350,6 +350,14 @@ class AmsBackendAd5xIfs : public AmsSubscriptionBackend {
+         return true;
+     }
+ 
++    // Each IFS port senses its filament (IFS_STATUS Ports), which is what a
++    // prep sensor means to FilamentInsertWatcher: a spool inserted into an
++    // idle port opens its editor (filament/auto_open_editor), as the stock
++    // screen asks for the new spool's material and colour.
++    [[nodiscard]] bool slot_has_prep_sensor(int slot_index) const override {
++        return slot_index >= 0 && slot_index < NUM_PORTS;
++    }
++
+     AmsError recover() override;
+     AmsError reset() override;
+     AmsError cancel() override;
+-- 
+2.56.0
+

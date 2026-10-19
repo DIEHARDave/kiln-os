@@ -1,0 +1,59 @@
+#!/bin/sh
+# Moonraker (API server for web front ends and slicers), port 7125, as
+# user klipper. Runs without Klipper too; it connects when klippy starts.
+PD=/home/klipper/printer_data
+PID=/var/run/moonraker.pid
+# The image's Klipper/Moonraker or newer daily packages (lib/apps.sh)
+. /usr/lib/ad5x/apps.sh
+KROOT=$(app_root klipper)
+MROOT=$(app_root moonraker)
+case "$1" in
+start)
+	[ -f $PD/config/moonraker.conf ] || {
+		echo "moonraker: no $PD/config/moonraker.conf"; exit 0; }
+	# Plugins' Moonraker parts (docs/plugins.md): bring the list of the
+	# enabled plugins' moonraker.conf files up to date, then start
+	# Moonraker on a small top file that reads the printer's own
+	# moonraker.conf and that list, so moonraker.conf needs no change.
+	# (Klipper rewrites the list when plugins change; Moonraker reads it
+	# at its next start.)
+	PL=$PD/config/moonraker-plugins.conf
+	/usr/bin/python3 $KROOT/klippy/extras/ad5x_plugins.py \
+		moonraker $PD/config/plugins.cfg $PL \
+		|| echo "moonraker: plugin list not updated"
+	[ -f $PL ] && chown klipper:klipper $PL
+	TOP=/run/moonraker/moonraker.conf
+	mkdir -p /run/moonraker
+	chown klipper:klipper /run/moonraker
+	{
+		echo "# Written by S62moonraker at each start; edit $PD/config/moonraker.conf"
+		# Fluidd updates (moonraker-updates.conf); moonraker.conf after
+		# it, so the printer's own settings win
+		UPD=/usr/share/ad5x/moonraker-updates.conf
+		[ -f $UPD ] && echo "[include $UPD]"
+		echo "[include $PD/config/moonraker.conf]"
+		if [ -f $PL ] && ! grep -q '^\[include.*moonraker-plugins\.conf' \
+				$PD/config/moonraker.conf; then
+			echo "[include $PL]"
+		fi
+	} > $TOP
+	[ "$MROOT" = /usr/lib/moonraker ] || echo "moonraker: $(cat $MROOT/moonraker/.version) from $MROOT"
+	HOME=/home/klipper start-stop-daemon -S -b -m -p $PID -c klipper \
+		-x /usr/bin/python3 -- $MROOT/moonraker/moonraker.py \
+		-d $PD -c $TOP
+	;;
+stop)
+	start-stop-daemon -K -p $PID -s INT
+	# Wait for it to exit (it releases its port/serial lines), then force.
+	for i in 1 2 3 4 5 6 7 8 9 10; do
+		start-stop-daemon -K -t -p $PID >/dev/null 2>&1 || break
+		sleep 1
+	done
+	start-stop-daemon -K -p $PID -s KILL >/dev/null 2>&1
+	rm -f $PID
+	;;
+restart)
+	$0 stop; sleep 2; $0 start
+	;;
+esac
+exit 0

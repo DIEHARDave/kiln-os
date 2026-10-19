@@ -1,0 +1,81 @@
+#!/bin/sh
+# USB sticks for the recovery OS.
+#
+# usage: ad5x-usb mount [WAIT]   mount every USB partition (vfat, ext4, exfat)
+#                                read-write at /run/ad5x/usb/<dev>; WAIT: seconds
+#                                to wait for a stick to show up (default 0)
+#        ad5x-usb list           one line per mounted partition (see below)
+#        ad5x-usb umount         sync and unmount them all (safe to unplug)
+#
+# list prints space-separated key=value fields (no spaces inside values):
+#   dev=/dev/sda1 mnt=/run/ad5x/usb/sda1 fs=vfat swu=a.swu,b.swu
+#   autoupdate=0|1 rescue_root=0|1 rescue_boot=0|1 rescue_flash=0|1
+# swu: .swu and .zip update files in the partition's top directory. autoupdate,
+# rescue_boot, rescue_flash: marker files "ad5x-autoupdate",
+# "ad5x-rescue-boot", "ad5x-rescue-flash" in the top directory of any
+# partition of the same stick. rescue_root: this partition is an ext4 root
+# with /etc/ad5x-release (e.g. usb-test.img's AD5XROOT).
+. /usr/lib/ad5x-recovery/recovery.sh
+
+usb_parts() {	# USB block devices: partitions, or the whole disk without any
+	for d in "$AD5X_SYS"/block/sd*; do
+		[ -e "$d" ] || continue
+		n=${d##*/} found=
+		for p in "$d"/$n[0-9]*; do
+			[ -e "$p" ] || continue
+			echo "${p##*/}"; found=1
+		done
+		[ -n "$found" ] || echo "$n"
+	done
+}
+
+do_mount() {
+	wait=${1:-0} n=0
+	while [ -z "$(usb_parts)" ] && [ $n -lt "$wait" ]; do sleep 1; n=$((n + 1)); done
+	for p in $(usb_parts); do
+		m=$RC_USB/$p
+		rc_mounted "$AD5X_DEV/$p" && continue
+		mkdir -p "$m"
+		for t in vfat ext4 exfat; do
+			mount -t $t -o noatime "$AD5X_DEV/$p" "$m" 2>/dev/null && break
+		done
+		rc_mounted "$AD5X_DEV/$p" || rmdir "$m" 2>/dev/null
+	done
+	do_list
+}
+
+do_list() {
+	mounts=$(rc_usb_mounts)
+	for m in $mounts; do
+		dev=$(awk -v m="$m" '$2 == m { print $1; exit }' "$AD5X_MOUNTS")
+		fs=$(awk -v m="$m" '$2 == m { print $3; exit }' "$AD5X_MOUNTS")
+		disk=${m##*/}; disk=${disk%%[0-9]*}
+		swu=$(cd "$m" && ls -1 2>/dev/null | grep -iE '\.(swu|zip)$' | tr '\n' ',' | sed 's/,$//')
+		root=0; [ "$fs" = ext4 ] && [ -f "$m/etc/ad5x-release" ] && root=1
+		au=0 rb=0 rf=0
+		for o in $mounts; do
+			od=${o##*/}; [ "${od%%[0-9]*}" = "$disk" ] || continue
+			[ -e "$o/ad5x-autoupdate" ] && au=1
+			[ -e "$o/ad5x-rescue-boot" ] && rb=1
+			[ -e "$o/ad5x-rescue-flash" ] && rf=1
+		done
+		echo "dev=$dev mnt=$m fs=$fs swu=$swu autoupdate=$au rescue_root=$root rescue_boot=$rb rescue_flash=$rf"
+	done
+}
+
+do_umount() {
+	sync
+	rc=0
+	for m in $(rc_usb_mounts); do
+		umount "$m" && rmdir "$m" || rc=1
+	done
+	return $rc
+}
+
+case "$1" in
+mount) do_mount "$2" ;;
+list) do_list ;;
+umount) do_umount ;;
+-h|--help) sed -n '2,19p' "$0" ;;
+*) sed -n '2,19p' "$0" >&2; exit 2 ;;
+esac

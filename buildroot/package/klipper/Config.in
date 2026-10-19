@@ -1,0 +1,16 @@
+config BR2_PACKAGE_KLIPPER
+	bool "klipper"
+	depends on BR2_PACKAGE_PYTHON3
+	select BR2_PACKAGE_PYTHON_CFFI
+	select BR2_PACKAGE_PYTHON_GREENLET
+	select BR2_PACKAGE_PYTHON_JINJA2
+	select BR2_PACKAGE_PYTHON_MARKUPSAFE
+	# SHAPER_CALIBRATE (setup wizard vibration step)
+	select BR2_PACKAGE_PYTHON_NUMPY
+	select BR2_PACKAGE_PYTHON_SERIAL
+	help
+	  Mainline Klipper host software (klippy), with this project's
+	  extras (IFS, weighing board, analog runout sensor, setup wizard)
+	  and the AD5X printer.cfg / ifs.cfg / setup.cfg as defaults.
+
+	  https://www.klipper3d.org/

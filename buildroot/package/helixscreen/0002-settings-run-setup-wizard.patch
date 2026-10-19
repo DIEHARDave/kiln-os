@@ -1,0 +1,121 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: ad5xrecon <ad5xrecon@localhost>
+Date: Fri, 16 Oct 2026 14:22:52 -0400
+Subject: [PATCH] settings: Run Setup Wizard entry for the AD5X setup steps
+
+A row in Settings > Printer (shown only where the AD5X setup steps exist)
+runs the tuning steps again as a targeted wizard session, without touching
+wizard_completed or the preset.
+
+Upstream: not applicable (AD5X OS specific)
+---
+ include/ui_panel_settings.h  |  5 +++++
+ src/ui/ui_panel_settings.cpp | 23 +++++++++++++++++++++++
+ ui_xml/settings_panel.xml    |  6 ++++++
+ 3 files changed, 34 insertions(+)
+
+diff --git a/include/ui_panel_settings.h b/include/ui_panel_settings.h
+index 011fb2e..e132344 100644
+--- a/include/ui_panel_settings.h
++++ b/include/ui_panel_settings.h
+@@ -135,6 +135,8 @@ class SettingsPanel : public PanelBase {
+     lv_subject_t updates_unavailable_subject_{};
+     // 1 once a plugin host exists: unhides the Plugins row (settings_panel.xml)
+     lv_subject_t plugins_available_subject_{};
++    // 1 when the printer has the AD5X setup steps: unhides "Run Setup Wizard"
++    lv_subject_t show_ad5x_setup_subject_{};
+ 
+     // Live status line shown under each stateful root row (settings_panel.xml),
+     // refreshed by refresh_status_lines().
+@@ -179,6 +181,9 @@ class SettingsPanel : public PanelBase {
+     /// Opens the Hardware Health overlay; also the target of the hardware-issue toast action.
+     void handle_hardware_health_clicked();
+ 
++    /// Confirms, then runs the AD5X setup steps again as a targeted wizard session.
++    void handle_ad5x_setup_clicked();
++
+     // The root rows' callback table lives in register_settings_panel_callbacks()
+     // and reaches the handlers above.
+     friend void register_settings_panel_callbacks();
+diff --git a/src/ui/ui_panel_settings.cpp b/src/ui/ui_panel_settings.cpp
+index a480514..b603b9a 100644
+--- a/src/ui/ui_panel_settings.cpp
++++ b/src/ui/ui_panel_settings.cpp
+@@ -30,6 +30,7 @@
+ #include "ui_toast_manager.h"
+ #include "ui_update_queue.h"
+ #include "ui_utils.h"
++#include "ui_wizard_ad5x_setup.h"
+ #include "ui_wizard_hardware_selector.h"
+ 
+ #include "app_globals.h"
+@@ -133,6 +134,9 @@ void SettingsPanel::init_subjects() {
+     // stays hidden until there is something to show
+     UI_MANAGED_SUBJECT_INT(plugins_available_subject_, 0, "settings_plugins_available", subjects_);
+ 
++    // Set from the live printer on every return to the root (refresh_status_lines())
++    UI_MANAGED_SUBJECT_INT(show_ad5x_setup_subject_, 0, "settings_show_ad5x_setup", subjects_);
++
+     // Live status line under each stateful root row; refresh_status_lines()
+     // fills these in, first from setup() and then on every return to the root.
+     UI_MANAGED_SUBJECT_STRING(settings_status_display_subject_, settings_status_display_buf_, "",
+@@ -214,6 +218,8 @@ std::string status_string_subject(const char* name, const char* fallback) {
+ void SettingsPanel::refresh_status_lines() {
+     using namespace helix::settings::status;
+ 
++    lv_subject_set_int(&show_ad5x_setup_subject_, helix::ad5x_setup::available() ? 1 : 0);
++
+     // Formatted here rather than once at init, so it is in the language of the
+     // latest return to the settings root.
+     lv_subject_copy_string(&settings_status_display_subject_,
+@@ -325,6 +331,21 @@ void SettingsPanel::handle_hardware_health_clicked() {
+     overlay.show(parent_screen_);
+ }
+ 
++void SettingsPanel::handle_ad5x_setup_clicked() {
++    if (is_wizard_active()) {
++        return;
++    }
++    helix::ui::ConfirmOptions opts;
++    opts.owner_token = lifetime_.token();
++    helix::ui::modal_confirm(
++        lv_tr("Run Setup Wizard"),
++        lv_tr("Runs the self-check and the tuning steps again (PID, bed mesh, vibration, IFS, "
++              "Z offset). Every step can be skipped. Results are saved at the end and Klipper "
++              "restarts."),
++        ModalSeverity::Info, lv_tr("Start"),
++        [this]() { helix::ad5x_setup::launch_targeted(parent_screen_); }, opts);
++}
++
+ // ============================================================================
+ // GLOBAL INSTANCE
+ // ============================================================================
+@@ -380,6 +401,8 @@ void register_settings_panel_callbacks() {
+         // Devices page
+         {"on_hardware_health_clicked",
+          [](lv_event_t*) { get_global_settings_panel().handle_hardware_health_clicked(); }},
++        {"on_ad5x_setup_clicked",
++         [](lv_event_t*) { get_global_settings_panel().handle_ad5x_setup_clicked(); }},
+ 
+         // Restart prompt and the shared header back button
+         {"on_restart_later_clicked",
+diff --git a/ui_xml/settings_panel.xml b/ui_xml/settings_panel.xml
+index 101e712..ddbee5a 100644
+--- a/ui_xml/settings_panel.xml
++++ b/ui_xml/settings_panel.xml
+@@ -42,6 +42,12 @@
+       <setting_action_row name="row_connection"
+                           label="Connection" icon="lan" callback="on_connection_clicked"
+                           bind_description="settings_status_connection" description_min_bp="0"/>
++      <!-- AD5X: run the tuning steps of the setup wizard again -->
++      <setting_action_row name="row_ad5x_setup"
++                          label="Run Setup Wizard" icon="tune_variant" callback="on_ad5x_setup_clicked"
++                          description="Self-check, PID, bed mesh, vibration, IFS, Z offset" description_min_bp="0">
++        <bind_flag_if_eq subject="settings_show_ad5x_setup" flag="hidden" ref_value="0"/>
++      </setting_action_row>
+     </setting_group>
+     <setting_group name="group_helixscreen">
+       <setting_group_header title="HELIXSCREEN"/>
+-- 
+2.56.0
+

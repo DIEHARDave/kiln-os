@@ -1,0 +1,70 @@
+#!/bin/sh
+# Put the saved stock Flashforge system back into slot B (replacing the
+# main OS there).
+#
+# usage: ad5x-restore-stock [--dry-run] [--no-flag] [--reboot] [DIR]
+#   DIR        default /data/ad5x/stock: rootfs.squashfs, kernel.img and
+#              SHA256SUMS, saved by the main OS's "ad5x-update
+#              --replace-stock" when it first replaced stock
+#   --no-flag  don't point the boot flag at slot B afterwards
+#   --reboot   reboot when done
+#   --dry-run  checks only
+#
+# Writes kernel.img to kernel2 and rootfs.squashfs to rootfs2 (ad5x-restore,
+# with read-back) and sets the boot flag to slot B. Stock then boots and
+# stays (it has no try-once). It also arms stock's own board update (Update
+# and UpdateM in stock's control directory on the usershare partition), so
+# stock writes Flashforge's board firmware back over Kiln OS's Klipper at its
+# first start (docs/mcu-flashing.md). Switch the printer off and on for
+# that, rather than rebooting: the toolhead board takes new firmware only
+# right after power-on. Note: a stock firmware update run from slot B
+# would write slot A, this recovery system.
+. /usr/lib/ad5x-recovery/recovery.sh
+dry= noflag= rb=
+while [ $# -gt 0 ]; do
+	case "$1" in
+	--dry-run) dry=--dry-run ;;
+	--no-flag) noflag=1 ;;
+	--reboot) rb=--reboot ;;
+	-h|--help) sed -n '2,17p' "$0"; exit 0 ;;
+	-*) sed -n '2,17p' "$0" >&2; exit 2 ;;
+	*) break ;;
+	esac
+	shift
+done
+DIR=${1:-$AD5X_DATA/ad5x/stock}
+[ -f "$DIR/rootfs.squashfs" ] && [ -f "$DIR/kernel.img" ] ||
+	rc_die "no saved stock system in $DIR (rootfs.squashfs + kernel.img)"
+[ -f "$DIR/SHA256SUMS" ] || rc_die "no $DIR/SHA256SUMS"
+for f in rootfs.squashfs kernel.img; do
+	grep -q " \*\{0,1\}$f\$" "$DIR/SHA256SUMS" || rc_die "$f not listed in $DIR/SHA256SUMS"
+done
+# Stock's own board update at its first start (ad5x-mcu arms it too, before
+# it first writes a board)
+arm_boards() {
+	dev=$(rc_dev usershare) || return 1
+	m=$AD5X_RUN/usershare
+	mkdir -p "$m"
+	mount -t ext4 "$dev" "$m" 2>/dev/null || return 1
+	c=$(ls -d "$m"/PROGRAM/control/[0-9]* 2>/dev/null | awk -F/ '{ split($NF, v, ".");
+		printf "%06d%06d%06d %s\n", v[1], v[2], v[3], $0 }' | sort | tail -1 | cut -d' ' -f2)
+	rc=1
+	[ -n "$c" ] && [ -f "$c/AD5X.bin" ] && touch "$c/Update" "$c/UpdateM" && rc=0
+	sync; umount "$m"
+	return $rc
+}
+if [ -z "$dry" ]; then
+	# Stock writes its own eboard firmware: Kiln OS's record of the last
+	# eboard flash no longer holds (ad5x-mcu flashes it again next time)
+	rm -f "$AD5X_DATA/ad5x/mcu/eboard"
+	if arm_boards; then
+		echo "restore-stock: stock's board update armed: switch the printer off and on" \
+			"(not just reboot) and stock writes its own board firmware back"
+	else
+		echo "restore-stock: couldn't arm stock's board update (usershare): if the boards" \
+			"run Kiln OS's Klipper, restore them by hand (docs/mcu-flashing.md)"
+	fi
+fi
+set -- $dry $rb
+[ -n "$noflag" ] || set -- "$@" --set-flag B
+exec ad5x-restore "$@" "$DIR" kernel2=kernel.img rootfs2=rootfs.squashfs

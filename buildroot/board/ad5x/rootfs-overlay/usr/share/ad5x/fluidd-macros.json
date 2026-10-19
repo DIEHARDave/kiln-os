@@ -1,0 +1,207 @@
+{
+  "categories": [
+    {
+      "id": "ad5x-filament",
+      "name": "Filament"
+    },
+    {
+      "id": "ad5x-ifs",
+      "name": "IFS"
+    },
+    {
+      "id": "ad5x-calibration",
+      "name": "Calibration"
+    },
+    {
+      "id": "ad5x-print",
+      "name": "During print"
+    },
+    {
+      "id": "ad5x-light",
+      "name": "Light & sound"
+    },
+    {
+      "id": "ad5x-system",
+      "name": "System"
+    }
+  ],
+  "groups": {
+    "ad5x-filament": [
+      [
+        "LOAD_FILAMENT",
+        "Load",
+        1
+      ],
+      [
+        "UNLOAD_FILAMENT",
+        "Unload",
+        1
+      ],
+      [
+        "CLEAR_NOZZLE",
+        "Clean nozzle",
+        1
+      ],
+      [
+        "M600",
+        "Change filament (pause)",
+        0
+      ],
+      [
+        "LINE_PURGE",
+        "Purge line",
+        1
+      ]
+    ],
+    "ad5x-ifs": [
+      [
+        "T0",
+        "",
+        1
+      ],
+      [
+        "T1",
+        "",
+        1
+      ],
+      [
+        "T2",
+        "",
+        1
+      ],
+      [
+        "T3",
+        "",
+        1
+      ],
+      [
+        "IFS_PURGE_TEST",
+        "Purge test",
+        1
+      ],
+      [
+        "IFS_PURGE_RESULT",
+        "Purge test result",
+        1
+      ],
+      [
+        "GET_FILAMENT_VALUE",
+        "Filament sensor value",
+        0
+      ],
+      [
+        "GET_CUT_VALUE",
+        "Cutter sensor value",
+        0
+      ]
+    ],
+    "ad5x-calibration": [
+      [
+        "SETUP_WIZARD",
+        "Setup wizard",
+        1
+      ],
+      [
+        "AUTO_FULL_BED_LEVEL",
+        "Full bed mesh",
+        1
+      ],
+      [
+        "BED_MESH_CALIBRATE",
+        "",
+        1
+      ],
+      [
+        "LOAD_CELL_TARE",
+        "Tare load cell",
+        1
+      ]
+    ],
+    "ad5x-print": [
+      [
+        "SET_PAUSE_AT_LAYER",
+        "Pause at layer",
+        0
+      ],
+      [
+        "SET_PAUSE_NEXT_LAYER",
+        "Pause next layer",
+        0
+      ]
+    ],
+    "ad5x-light": [
+      [
+        "LED_ON",
+        "Light on",
+        0
+      ],
+      [
+        "LED_OFF",
+        "Light off",
+        0
+      ],
+      [
+        "LED",
+        "Light level",
+        0
+      ],
+      [
+        "M300",
+        "Beep",
+        0
+      ]
+    ],
+    "ad5x-system": [
+      [
+        "PLUGINS_LIST",
+        "List plugins",
+        0
+      ],
+      [
+        "PLUGIN_ENABLE",
+        "Enable plugin",
+        1
+      ],
+      [
+        "PLUGIN_DISABLE",
+        "Disable plugin",
+        1
+      ],
+      [
+        "IFS_TUNE_RUN",
+        "Tune IFS swaps",
+        1
+      ],
+      [
+        "IFS_TUNE_CLEAR",
+        "Reset IFS tuning",
+        1
+      ],
+      [
+        "IFS_INFO",
+        "IFS status",
+        0
+      ],
+      [
+        "CONFIG_BACKUPS_SHOW",
+        "Update backups",
+        0
+      ]
+    ]
+  },
+  "hidden": [
+    "START_PRINT",
+    "END_PRINT",
+    "PRINT_START",
+    "PRINT_END",
+    "CANCEL_PRINT",
+    "M106",
+    "M107",
+    "M900",
+    "SET_GCODE_OFFSET",
+    "SET_PRINT_STATS_INFO",
+    "TIMELAPSE_TAKE_FRAME",
+    "SET_ACTIVE_SPOOL",
+    "CLEAR_ACTIVE_SPOOL"
+  ]
+}
