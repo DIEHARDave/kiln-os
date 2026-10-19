@@ -21,7 +21,10 @@
 # ever starts again (a failed first start, ad5x-restore-stock) it flashes
 # Flashforge's images back by itself.
 # When both boards run this version, /data/ad5x/klipper.enable is created
-# once (S61klipper starts Klipper only with it).
+# once (S61klipper starts Klipper only with it). Before the screen asks for
+# a power-cycle, this start counts as complete (S99ad5x-booted): otherwise
+# the try-once boot flag would still point at the recovery OS and the
+# power-cycle the screen asks for would start the recovery OS instead.
 #
 # usage: ad5x-mcu boot                 at start-up (S60ad5x-eboard)
 #        ad5x-mcu status               versions on the boards and wanted (not
@@ -37,7 +40,7 @@
 # AD5X_RUN (/run/ad5x), AD5X_MCU_FW (/usr/share/ad5x/mcu),
 # AD5X_USERSHARE (a directory holding stock's PROGRAM/ instead of mounting
 # the usershare partition), AD5X_SCREENS (/usr/share/ad5x/screens),
-# AD5X_KERNEL (stock|own).
+# AD5X_KERNEL (stock|own), AD5X_BOOTED (/etc/init.d/S99ad5x-booted).
 : "${AD5X_DATA:=/data}" "${AD5X_SYS:=/sys}" "${AD5X_DEV:=/dev}" "${AD5X_RUN:=/run/ad5x}"
 : "${AD5X_MCU_FW:=/usr/share/ad5x/mcu}" "${AD5X_SCREENS:=/usr/share/ad5x/screens}"
 ST=$AD5X_DATA/ad5x/mcu
@@ -236,6 +239,7 @@ boot() {
 		return 0
 	fi
 	if [ "$failed" = power ]; then
+		"${AD5X_BOOTED:-/etc/init.d/S99ad5x-booted}" start
 		show mcu-powercycle; blog "eboard needs a power-cycle"
 	else
 		show mcu-failed; blog "board update failed (ad5x-mcu status)"

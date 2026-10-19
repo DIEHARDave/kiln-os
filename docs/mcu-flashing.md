@@ -41,7 +41,10 @@ every start (`S60ad5x-eboard`), before Klipper:
    eboard.hex /dev/ttyS5`, then `A` to start it. If its application already
    runs with another version (the SoC restarted without a power-cycle, e.g.
    right after the install), the screen asks to switch the printer off and
-   on; the next start flashes it.
+   on; the next start flashes it. Before that screen, the start counts as
+   complete (`S99ad5x-booted`): the try-once boot flag otherwise still
+   points at the recovery OS, and a user who switches off at once lands
+   there instead (found in the 2026-10-19 round trip below).
 3. When both report the wanted version, `/data/ad5x/klipper.enable` is
    created once and Klipper starts.
 
@@ -398,6 +401,7 @@ verifies its writes.
 | 2026-10-16 | Eboard (toolhead) | `v0.13.0-802-gf5d198392` `eboard.hex` | `IAPCommand /tmp/eboard.hex /dev/ttyS5` after `Ready.`: 41 frames acked, "STM32Write: success", exit 0. `boot_eboard` got `Ready.`/`A`/0x06, but the board stayed in its bootloader: Klipper `identify` got no answer at 230400; raw bytes at 115200 were answered with 0x06 (bootloader ACKs). Cause (most likely): mainline gives N32G45x 64 KiB RAM, so the image's initial stack pointer is 0x20010000; stock (both boards) and xblax use 0x20020000, and the bootloader appears to check it before jumping. Fixed by `klipper/mcu-patches/0003` (128 KiB for N32G455): `v0.13.0-803-g4cd711119`. Board is recoverable in this state (bootloader intact). |
 | 2026-10-16 | Eboard (toolhead) | `v0.13.0-803-g4cd711119` `eboard.hex` (sha256 `4873e51b…`) | After a power-cycle (`Ready.`): `IAPCommand`, 41 frames, success, exit 0; `boot_eboard` then Klipper `identify`: `v0.13.0-803-g4cd711119`, 144 MHz, 230400. **Runs.** Confirms the stack-pointer cause. |
 | 2026-10-16 | Mainboard (motion MCU) | `v0.13.0-803-g4cd711119` `mainboard.bin` (sha256 `ba8c1355…`) | Same `NationsCommand` line; `identify` afterwards: `v0.13.0-803-g4cd711119`. Both boards on the same build. |
+| 2026-10-19 | Both, full round trip | Kiln OS v0.0.3 | `ad5x-restore-stock` + power-cycle: stock flashed `AD5X.bin`/`ADM_App.hex` itself (flags consumed), stock Klipper ready on `?-20241125`/`?-20241122`. SSH install of the v0.0.3 install zip; first start (warm) flashed the mainboard and asked for a power-cycle. Power cut seconds after that screen came back in the **recovery OS**: start-up hadn't reached `S99ad5x-booted`, so the try-once flag still pointed at slot A (fixed: ad5x-mcu marks the start complete before that screen). From recovery, `ad5x-boot-main`: eboard flashed at start, Klipper ready on `v0.13.0-803-g4cd711119`. Repeated as a cold power-on with the eboard record removed: flashed, start-up complete. |
 
 ## Nozzle heater under mainline
 
