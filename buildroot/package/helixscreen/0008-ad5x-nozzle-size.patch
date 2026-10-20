@@ -1,0 +1,1386 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: ad5xrecon <ad5xrecon@localhost>
+Date: Tue, 20 Oct 2026 18:00:00 -0400
+Subject: [PATCH] wizard, settings: AD5X nozzle size
+
+A "Nozzle Size" step follows the time zone among the AD5X setup steps, in
+the first-start wizard and in "Run Setup Wizard" sessions, where Klipper
+has the ad5x_nozzle object. It offers the object's sizes with the running
+one selected. Next with another size sends SET_NOZZLE_SIZE, which restarts
+Klipper, and holds the wizard (new Step::hold_on_next() hook, resumed with
+ui_wizard_advance()) until Klipper is ready again with that size, so the
+tuning steps never start against a restarting Klipper. A refusal, or no
+Klipper within a minute, shows the reason with Retry and Skip. When
+local.cfg sets the size the dropdown is fixed and says so.
+
+Settings > Printer gets a "Nozzle Size" row with the current size, shown
+only with the object. It opens a chooser that asks first (Klipper
+restarts), is locked during a print and points to local.cfg when that
+sets the size. The object joins the status subscription.
+
+Upstream: not applicable (AD5X OS specific)
+---
+ include/ui_ad5x_nozzle.h                 | 167 ++++++++++
+ include/ui_panel_settings.h              |   2 +
+ include/ui_wizard.h                      |   8 +
+ include/ui_wizard_ad5x_setup.h           |  90 +++++-
+ include/wizard_step.h                    |  12 +-
+ src/api/moonraker_discovery_sequence.cpp |   9 +
+ src/system/wizard_step.cpp               |   2 +
+ src/ui/ui_ad5x_nozzle.cpp                | 370 +++++++++++++++++++++++
+ src/ui/ui_panel_settings.cpp             |  16 +-
+ src/ui/ui_wizard.cpp                     |  13 +
+ src/ui/ui_wizard_ad5x_setup.cpp          | 269 +++++++++++++++-
+ src/ui/wizard_step_registry.cpp          |   1 +
+ ui_xml/ad5x_nozzle_modal.xml             |  55 ++++
+ ui_xml/settings_panel.xml                |   6 +
+ ui_xml/wizard_ad5x_nozzle.xml            |  69 +++++
+ 15 files changed, 1075 insertions(+), 14 deletions(-)
+ create mode 100644 include/ui_ad5x_nozzle.h
+ create mode 100644 src/ui/ui_ad5x_nozzle.cpp
+ create mode 100644 ui_xml/ad5x_nozzle_modal.xml
+ create mode 100644 ui_xml/wizard_ad5x_nozzle.xml
+
+diff --git a/include/ui_ad5x_nozzle.h b/include/ui_ad5x_nozzle.h
+new file mode 100644
+index 00000000..309eca4c
+--- /dev/null
++++ b/include/ui_ad5x_nozzle.h
+@@ -0,0 +1,167 @@
++// SPDX-License-Identifier: GPL-3.0-or-later
++#pragma once
++
++/**
++ * @file ui_ad5x_nozzle.h
++ * @brief The AD5X nozzle size: the `ad5x_nozzle` Klipper object and SET_NOZZLE_SIZE
++ *
++ * Klipper's object: `size` (the nozzle_diameter it runs with), `saved`
++ * (nozzle.cfg's), `local` (local.cfg sets nozzle_diameter, which wins over
++ * the chosen size) and `sizes` (what SET_NOZZLE_SIZE takes). SET_NOZZLE_SIZE
++ * SIZE=<mm> writes nozzle.cfg and restarts Klipper; it is refused during a
++ * print.
++ *
++ * Used by the setup wizard's Nozzle Size step (ui_wizard_ad5x_setup.cpp) and
++ * the Settings > Nozzle Size row, whose chooser is Ad5xNozzleModal.
++ *
++ * @threading Main thread only; Moonraker callbacks hop over via lifetime tokens
++ */
++
++#include "ui_modal.h"
++#include "ui_observer_guard.h"
++#include "ui_subscription_guard.h"
++
++#include "async_lifetime_guard.h"
++#include "json_fwd.h"
++#include "lvgl/lvgl.h"
++#include "subject_managed_panel.h"
++
++#include <cstdint>
++#include <functional>
++#include <optional>
++#include <string>
++#include <vector>
++
++namespace helix::ad5x_nozzle {
++
++/// The sizes SET_NOZZLE_SIZE takes, for a Klipper that does not list them.
++const std::vector<double>& default_sizes();
++
++/// The factory nozzle, assumed while nothing says otherwise.
++inline constexpr double kDefaultSize = 0.4;
++
++/// The `ad5x_nozzle` object as the screen uses it.
++struct Status {
++    std::optional<double> size;                  ///< nozzle_diameter Klipper runs with
++    bool local = false;                          ///< local.cfg sets the size
++    std::vector<double> sizes = default_sizes(); ///< Offered sizes, never empty
++};
++
++/// Status from the object; missing fields keep their defaults.
++Status parse_status(const json& obj);
++
++/// Sizes to offer: @p status's list plus its running size when that is not in it.
++std::vector<double> offered_sizes(const Status& status);
++
++/// Same nozzle (the offered sizes differ by 0.05 mm or more).
++bool same_size(double a, double b);
++
++/// "0.4", "0.25", "1.0"
++std::string size_number(double mm);
++
++/// "0.4 mm"
++std::string size_label(double mm);
++
++/// Dropdown options, one size_label() per line.
++std::string dropdown_options(const std::vector<double>& sizes);
++
++/// Position of @p mm in @p sizes, else of kDefaultSize, else 0.
++uint32_t index_of(const std::vector<double>& sizes, double mm);
++
++/// "SET_NOZZLE_SIZE SIZE=0.6"
++std::string gcode_for(double mm);
++
++/// Whether the printer publishes the `ad5x_nozzle` object.
++bool available();
++
++/// The cached object, the shared subjects and the command.
++///
++/// Subjects: `ad5x_nozzle_size_text` ("0.4 mm", empty while unknown) and
++/// `ad5x_nozzle_local` (1 when local.cfg sets the size).
++class Ad5xNozzleModel {
++  public:
++    Ad5xNozzleModel() = default;
++    ~Ad5xNozzleModel();
++    Ad5xNozzleModel(const Ad5xNozzleModel&) = delete;
++    Ad5xNozzleModel& operator=(const Ad5xNozzleModel&) = delete;
++
++    void init_subjects();
++
++    /// Follow the object (status updates, Klipper restarts) from now on, and
++    /// query it. Safe to call again; later calls only query.
++    void start();
++
++    /// Ask Klipper for the whole object.
++    void query();
++
++    const Status& status() const {
++        return status_;
++    }
++    /// The object answered since Klipper last became ready.
++    bool loaded() const {
++        return loaded_;
++    }
++    bool klippy_ready() const {
++        return klippy_ready_;
++    }
++
++    /// Runs on the main thread after status(), loaded() or klippy_ready()
++    /// changed. One listener (the wizard step on screen); nullptr clears it.
++    void set_listener(std::function<void()> listener);
++
++    /// Sends SET_NOZZLE_SIZE for @p mm, which restarts Klipper. @p done runs on
++    /// the main thread with an empty string when Klipper took it (or went away
++    /// restarting), else with Klipper's answer.
++    void apply(double mm, std::function<void(const std::string& error)> done);
++
++  private:
++    void set_status(const Status& status);
++    void notify();
++
++    SubjectManager subjects_;
++    lv_subject_t size_text_{};
++    lv_subject_t local_{};
++    char size_text_buf_[64] = "";
++    bool subjects_initialized_ = false;
++
++    Status status_;
++    bool loaded_ = false;
++    bool klippy_ready_ = true;
++    bool started_ = false;
++    std::function<void()> listener_;
++
++    SubscriptionGuard subscription_;
++    ObserverGuard klippy_observer_;
++    AsyncLifetimeGuard lifetime_;
++};
++
++Ad5xNozzleModel& model();
++
++} // namespace helix::ad5x_nozzle
++
++namespace helix::ui {
++
++/// Settings > Nozzle Size: the sizes in a dropdown; Apply asks first (Klipper
++/// restarts), then sends SET_NOZZLE_SIZE. Apply is off during a print and
++/// hidden when local.cfg sets the size.
++class Ad5xNozzleModal : public Modal {
++  public:
++    const char* get_name() const override {
++        return "AD5X Nozzle Size";
++    }
++    const char* component_name() const override {
++        return "ad5x_nozzle_modal";
++    }
++
++    /// One-shot owned show over the active screen.
++    static bool show_owned();
++
++  protected:
++    void on_show() override;
++    void on_ok() override;
++
++  private:
++    std::vector<double> sizes_;
++};
++
++} // namespace helix::ui
+diff --git a/include/ui_panel_settings.h b/include/ui_panel_settings.h
+index fce561fe..80687627 100644
+--- a/include/ui_panel_settings.h
++++ b/include/ui_panel_settings.h
+@@ -139,6 +139,8 @@ class SettingsPanel : public PanelBase {
+     lv_subject_t show_ad5x_setup_subject_{};
+     // 1 when the printer has the AD5X plugin object: unhides the printer's "Plugins"
+     lv_subject_t show_ad5x_plugins_subject_{};
++    // 1 when the printer has the AD5X nozzle object: unhides "Nozzle Size"
++    lv_subject_t show_ad5x_nozzle_subject_{};
+ 
+     // Live status line shown under each stateful root row (settings_panel.xml),
+     // refreshed by refresh_status_lines().
+diff --git a/include/ui_wizard.h b/include/ui_wizard.h
+index e23f8f8b..7dc7d351 100644
+--- a/include/ui_wizard.h
++++ b/include/ui_wizard.h
+@@ -109,6 +109,14 @@ lv_obj_t* ui_wizard_create(lv_obj_t* parent);
+  */
+ void ui_wizard_navigate_to_step(helix::wizard::StepId step);
+ 
++/**
++ * Leave the current step forward, as its Next button does
++ *
++ * For a step that held Next (Step::hold_on_next()) until its own work was
++ * done. The step is asked again and must now let the wizard go on.
++ */
++void ui_wizard_advance();
++
+ /**
+  * Set wizard title
+  *
+diff --git a/include/ui_wizard_ad5x_setup.h b/include/ui_wizard_ad5x_setup.h
+index 9fa918eb..9f8840f0 100644
+--- a/include/ui_wizard_ad5x_setup.h
++++ b/include/ui_wizard_ad5x_setup.h
+@@ -3,12 +3,13 @@
+ 
+ /**
+  * @file ui_wizard_ad5x_setup.h
+- * @brief AD5X steps of the setup wizard: time zone, then the tuning steps
+- *        (self-check, PID, bed mesh, vibration compensation, IFS tuning,
+- *        Z offset, save)
++ * @brief AD5X steps of the setup wizard: time zone, nozzle size, then the
++ *        tuning steps (self-check, PID, bed mesh, vibration compensation, IFS
++ *        tuning, Z offset, save)
+  *
+  * The time zone step is local to the screen (the Settings > Language & Time
+- * setting). The tuning steps are one data-driven step class, instantiated once
++ * setting). The nozzle size step sets the `ad5x_nozzle` size Klipper runs with
++ * (ui_ad5x_nozzle.h). The tuning steps are one data-driven step class, instantiated once
+  * per tuning step. Each step
+  * drives the printer's setup steps (Klipper API `printer.ad5x_setup.control`,
+  * G-code `SETUP_WIZARD_STEP` as fallback) and shows
+@@ -23,6 +24,8 @@
+ 
+ #include "ui_observer_guard.h"
+ #include "ui_subscription_guard.h"
++#include "ui_timer_guard.h"
++#include "ui_widget_ref.h"
+ 
+ #include "async_lifetime_guard.h"
+ #include "json_fwd.h"
+@@ -32,6 +35,7 @@
+ 
+ #include <array>
+ #include <memory>
++#include <optional>
+ #include <string>
+ #include <vector>
+ 
+@@ -61,8 +65,8 @@ const std::vector<StepSpec>& step_specs();
+ /// Spec for @p id, or nullptr when @p id is not an AD5X tuning step.
+ const StepSpec* spec_for(wizard::StepId id);
+ 
+-/// The AD5X steps' ids in wizard order, time zone first (for a targeted wizard
+-/// session).
++/// The AD5X steps' ids in wizard order, time zone first, then the nozzle size
++/// when Klipper has the `ad5x_nozzle` object (for a targeted wizard session).
+ std::vector<wizard::StepId> step_ids();
+ 
+ /// Whether the printer has the AD5X setup steps: the `ad5x` preset is set for
+@@ -208,3 +212,77 @@ class WizardAd5xTimezoneStep : public helix::wizard::Step {
+ };
+ 
+ WizardAd5xTimezoneStep* get_wizard_ad5x_timezone_step();
++
++/**
++ * @class WizardAd5xNozzleStep
++ * @brief AD5X nozzle size step: the size Klipper runs with (`ad5x_nozzle`)
++ *
++ * Next with another size sends SET_NOZZLE_SIZE, which restarts Klipper, and
++ * holds the wizard until Klipper is ready again with that size, so the tuning
++ * steps after it never start against a restarting Klipper. Refused, or not
++ * back within a minute: the reason, Retry, and Skip to go on. While Klipper is
++ * not ready the step waits, with Skip. Fixed when local.cfg sets the size.
++ */
++class WizardAd5xNozzleStep : public helix::wizard::Step {
++  public:
++    ~WizardAd5xNozzleStep() override;
++
++    helix::wizard::StepId id() const override {
++        return helix::wizard::StepId::Ad5xNozzle;
++    }
++    const char* component_name() const override {
++        return "wizard_ad5x_nozzle";
++    }
++    const char* log_name() const override {
++        return "WizardAd5xNozzle";
++    }
++    bool should_skip(const helix::wizard::StepContext& ctx) const override;
++
++    void init_subjects() override;
++    void register_callbacks() override;
++    lv_obj_t* create(lv_obj_t* parent) override;
++    void cleanup() override;
++    bool hold_on_next() override;
++
++    void handle_choice_changed();
++    void handle_retry();
++
++  private:
++    /// ad5x_nozzle_step_view
++    enum class View {
++        Ready = 0,    ///< Next (applies a changed size)
++        Waiting = 1,  ///< Klipper not ready yet: Skip
++        Applying = 2, ///< SET_NOZZLE_SIZE sent, Klipper restarting: no Next
++        Failed = 3,   ///< Refused or timed out: Retry, Skip
++    };
++
++    std::optional<double> chosen_size() const;
++    void fill_dropdown();
++    void start_apply(double mm);
++    void on_model_changed();
++    void on_tick();
++    void finish_apply();
++    void fail(const std::string& message);
++    void stop_apply();
++    void refresh();
++
++    SubjectManager subjects_;
++    lv_subject_t view_{};
++    lv_subject_t message_{};
++    char message_buf_[256] = "";
++    bool subjects_initialized_ = false;
++
++    helix::ui::WidgetRef root_;
++    helix::ui::WidgetRef dropdown_;
++    std::vector<double> sizes_;
++    bool picked_ = false; ///< The user changed the dropdown
++    bool applying_ = false;
++    double target_ = 0.0;
++    uint32_t waited_ms_ = 0;
++    uint32_t apply_seq_ = 0; ///< Bumped when an apply ends; drops a late answer
++    std::string error_;
++    helix::ui::LvglTimerGuard timer_;
++    helix::AsyncLifetimeGuard lifetime_;
++};
++
++WizardAd5xNozzleStep* get_wizard_ad5x_nozzle_step();
+diff --git a/include/wizard_step.h b/include/wizard_step.h
+index 472918c5..59fbe40f 100644
+--- a/include/wizard_step.h
++++ b/include/wizard_step.h
+@@ -22,9 +22,10 @@ enum class StepId {
+     AmsIdentify,
+     LedSelect,
+     FilamentSensor,
+-    // AD5X setup steps (ui_wizard_ad5x_setup.h): the time zone, then the tuning
+-    // steps; skipped on other printers
++    // AD5X setup steps (ui_wizard_ad5x_setup.h): the time zone, the nozzle size,
++    // then the tuning steps; skipped on other printers
+     Ad5xTimezone,
++    Ad5xNozzle,
+     Ad5xSelfcheck,
+     Ad5xPid,
+     Ad5xMesh,
+@@ -37,7 +38,7 @@ enum class StepId {
+     Summary,
+     Telemetry,
+ };
+-inline constexpr int STEP_COUNT = 22;
++inline constexpr int STEP_COUNT = 23;
+ 
+ // Plain data needed to decide skips — no LVGL, constructible in tests.
+ struct StepContext {
+@@ -66,6 +67,11 @@ class Step {
+     virtual bool is_validated() const {
+         return true;
+     }
++    // Next (or Skip) was pressed on this step. True keeps the wizard here: the
++    // step finishes its own work first, then calls ui_wizard_advance().
++    virtual bool hold_on_next() {
++        return false;
++    }
+ };
+ 
+ const char* to_string(StepId); // for logs/debug
+diff --git a/src/api/moonraker_discovery_sequence.cpp b/src/api/moonraker_discovery_sequence.cpp
+index 1e58015c..0787994b 100644
+--- a/src/api/moonraker_discovery_sequence.cpp
++++ b/src/api/moonraker_discovery_sequence.cpp
+@@ -1511,6 +1511,15 @@ json MoonrakerDiscoverySequence::build_subscription_objects(
+         }
+     }
+ 
++    // AD5X nozzle size (ui_ad5x_nozzle.cpp): four small fields that change only
++    // with SET_NOZZLE_SIZE, so the whole object.
++    {
++        const auto& objects = hw.printer_objects();
++        if (std::find(objects.begin(), objects.end(), "ad5x_nozzle") != objects.end()) {
++            subscription_objects["ad5x_nozzle"] = nullptr;
++        }
++    }
++
+     // Print start macros — only the boolean flags PrintStartCollector reads.
+     // Other variables on these macros (slicer args, profile names, etc.) are
+     // irrelevant to the start-detection logic.
+diff --git a/src/system/wizard_step.cpp b/src/system/wizard_step.cpp
+index bee685ad..0b356eb6 100644
+--- a/src/system/wizard_step.cpp
++++ b/src/system/wizard_step.cpp
+@@ -27,6 +27,8 @@ const char* to_string(StepId id) {
+         return "FilamentSensor";
+     case StepId::Ad5xTimezone:
+         return "Ad5xTimezone";
++    case StepId::Ad5xNozzle:
++        return "Ad5xNozzle";
+     case StepId::Ad5xSelfcheck:
+         return "Ad5xSelfcheck";
+     case StepId::Ad5xPid:
+diff --git a/src/ui/ui_ad5x_nozzle.cpp b/src/ui/ui_ad5x_nozzle.cpp
+new file mode 100644
+index 00000000..dfa5236b
+--- /dev/null
++++ b/src/ui/ui_ad5x_nozzle.cpp
+@@ -0,0 +1,370 @@
++// SPDX-License-Identifier: GPL-3.0-or-later
++
++#include "ui_ad5x_nozzle.h"
++
++#include "ui_emergency_stop.h"
++#include "ui_error_reporting.h"
++
++#include "app_globals.h"
++#include "i_moonraker_api.h"
++#include "i_moonraker_client.h"
++#include "json_utils.h"
++#include "lvgl/src/others/translation/lv_translation.h"
++#include "macro_executor.h"
++#include "observer_factory.h"
++#include "printer_discovery.h"
++#include "printer_state.h"
++#include "static_panel_registry.h"
++
++#include <spdlog/fmt/fmt.h>
++#include <spdlog/spdlog.h>
++
++#include <algorithm>
++#include <cmath>
++#include <memory>
++
++namespace helix::ad5x_nozzle {
++
++namespace {
++
++constexpr const char* kObject = "ad5x_nozzle";
++
++/// The offered sizes differ by 0.05 mm or more; closer is the same nozzle.
++constexpr double kSameSizeTolerance = 0.001;
++
++/// Applies the fields @p obj carries (a full object or a status delta).
++void apply_fields(Status& status, const json& obj) {
++    if (const json* size = json_util::find_member(obj, "size")) {
++        if (size->is_number()) {
++            status.size = size->get<double>();
++        } else {
++            status.size.reset();
++        }
++    }
++    if (const json* local = json_util::find_member(obj, "local")) {
++        status.local = json_util::as_bool(*local);
++    }
++    if (const json* list = json_util::find_member(obj, "sizes"); list && list->is_array()) {
++        std::vector<double> sizes;
++        for (const auto& item : *list) {
++            if (item.is_number() && item.get<double>() > 0.0) {
++                sizes.push_back(item.get<double>());
++            }
++        }
++        status.sizes = sizes.empty() ? default_sizes() : sizes;
++    }
++}
++
++} // namespace
++
++// ============================================================================
++// STATUS OBJECT
++// ============================================================================
++
++const std::vector<double>& default_sizes() {
++    static const std::vector<double> sizes = {0.2, 0.25, 0.4, 0.6, 0.8, 1.0};
++    return sizes;
++}
++
++Status parse_status(const json& obj) {
++    Status status;
++    apply_fields(status, obj);
++    return status;
++}
++
++std::vector<double> offered_sizes(const Status& status) {
++    std::vector<double> sizes = status.sizes.empty() ? default_sizes() : status.sizes;
++    // local.cfg can set a size the list does not have; show it rather than a wrong one
++    if (status.size && std::none_of(sizes.begin(), sizes.end(),
++                                    [&](double mm) { return same_size(mm, *status.size); })) {
++        sizes.push_back(*status.size);
++        std::sort(sizes.begin(), sizes.end());
++    }
++    return sizes;
++}
++
++bool same_size(double a, double b) {
++    return std::fabs(a - b) < kSameSizeTolerance;
++}
++
++std::string size_number(double mm) {
++    // One decimal where that is exact (0.4, 1.0), else two (0.25)
++    const bool tenths = std::fabs(mm * 10.0 - std::round(mm * 10.0)) < kSameSizeTolerance;
++    return tenths ? fmt::format("{:.1f}", mm) : fmt::format("{:.2f}", mm);
++}
++
++std::string size_label(double mm) {
++    return size_number(mm) + " mm";
++}
++
++std::string dropdown_options(const std::vector<double>& sizes) {
++    std::string options;
++    for (double mm : sizes) {
++        if (!options.empty()) {
++            options += '\n';
++        }
++        options += size_label(mm);
++    }
++    return options;
++}
++
++uint32_t index_of(const std::vector<double>& sizes, double mm) {
++    for (double want : {mm, kDefaultSize}) {
++        for (size_t i = 0; i < sizes.size(); ++i) {
++            if (same_size(sizes[i], want)) {
++                return static_cast<uint32_t>(i);
++            }
++        }
++    }
++    return 0;
++}
++
++std::string gcode_for(double mm) {
++    return fmt::format("SET_NOZZLE_SIZE SIZE={}", size_number(mm));
++}
++
++bool available() {
++    IMoonrakerAPI* api = get_moonraker_api();
++    if (!api) {
++        return false;
++    }
++    const auto& objects = api->hardware().printer_objects();
++    return std::find(objects.begin(), objects.end(), kObject) != objects.end();
++}
++
++// ============================================================================
++// MODEL
++// ============================================================================
++
++Ad5xNozzleModel::~Ad5xNozzleModel() {
++    lifetime_.invalidate();
++    subscription_.reset();
++    klippy_observer_.reset();
++    subjects_.deinit_all();
++}
++
++void Ad5xNozzleModel::init_subjects() {
++    if (subjects_initialized_) {
++        return;
++    }
++    // "0.4 mm" for the Settings row, empty while the object has not answered
++    UI_MANAGED_SUBJECT_STRING(size_text_, size_text_buf_, "", "ad5x_nozzle_size_text", subjects_);
++    // 1: local.cfg sets nozzle_diameter, so choosing here changes nothing
++    UI_MANAGED_SUBJECT_INT(local_, 0, "ad5x_nozzle_local", subjects_);
++    subjects_initialized_ = true;
++}
++
++void Ad5xNozzleModel::start() {
++    if (!started_) {
++        IMoonrakerAPI* api = get_moonraker_api();
++        if (api) {
++            started_ = true;
++            const auto token = lifetime_.token();
++            // Runs on the WebSocket thread: copy the object out, apply it on the main thread.
++            const SubscriptionId id = api->subscribe_notifications([this, token](const json& note) {
++                const json* params = json_util::find_member(note, "params");
++                if (!params || !params->is_array() || params->empty()) {
++                    return;
++                }
++                const json* obj = json_util::find_member((*params)[0], kObject);
++                if (!obj || !obj->is_object()) {
++                    return;
++                }
++                json delta = *obj;
++                token.defer("Ad5xNozzleModel::status_update", [this, delta]() {
++                    // Deltas only patch a full object; the query in flight brings one
++                    if (!loaded_) {
++                        return;
++                    }
++                    Status status = status_;
++                    apply_fields(status, delta);
++                    set_status(status);
++                });
++            });
++            subscription_ = SubscriptionGuard(api, id);
++
++            // SET_NOZZLE_SIZE restarts Klipper: the object comes back with the new size.
++            klippy_observer_ = ui::observe<int>(
++                get_printer_state().network_state().get_klippy_state_subject(), this,
++                [](Ad5xNozzleModel* self, int state) {
++                    const bool ready = static_cast<KlippyState>(state) == KlippyState::READY;
++                    if (ready == self->klippy_ready_) {
++                        return;
++                    }
++                    self->klippy_ready_ = ready;
++                    if (ready) {
++                        self->query();
++                    } else {
++                        self->loaded_ = false;
++                    }
++                    self->notify();
++                },
++                get_printer_state().get_subjects_lifetime());
++        }
++    }
++    query();
++}
++
++void Ad5xNozzleModel::query() {
++    IMoonrakerClient* client = get_moonraker_client();
++    if (!client || client->get_connection_state() != ConnectionState::CONNECTED) {
++        return;
++    }
++    const auto token = lifetime_.token();
++    json params = {{"objects", {{kObject, nullptr}}}};
++    client->send_jsonrpc(
++        "printer.objects.query", params,
++        [this, token](const json& response) {
++            const json* result = json_util::find_member(response, "result");
++            const json* status = result ? json_util::find_member(*result, "status") : nullptr;
++            const json* obj = status ? json_util::find_member(*status, kObject) : nullptr;
++            if (!obj || !obj->is_object()) {
++                return;
++            }
++            json full = *obj;
++            token.defer("Ad5xNozzleModel::status_query",
++                        [this, full]() { set_status(parse_status(full)); });
++        },
++        [](const MoonrakerError& err) {
++            spdlog::debug("[AD5X nozzle] {} query failed: {}", kObject, err.message);
++        },
++        0, /*silent=*/true);
++}
++
++void Ad5xNozzleModel::set_status(const Status& status) {
++    status_ = status;
++    loaded_ = true;
++    if (subjects_initialized_) {
++        std::string text;
++        if (status_.size) {
++            text = size_label(*status_.size);
++            if (status_.local) {
++                text = fmt::format(lv_tr("{}, set in local.cfg"), text);
++            }
++        }
++        lv_subject_copy_string(&size_text_, text.c_str());
++        lv_subject_set_int(&local_, status_.local ? 1 : 0);
++    }
++    notify();
++}
++
++void Ad5xNozzleModel::set_listener(std::function<void()> listener) {
++    listener_ = std::move(listener);
++}
++
++void Ad5xNozzleModel::notify() {
++    // A copy: the listener may replace itself
++    if (auto listener = listener_) {
++        listener();
++    }
++}
++
++void Ad5xNozzleModel::apply(double mm, std::function<void(const std::string& error)> done) {
++    auto finish = std::make_shared<std::function<void(const std::string&)>>(std::move(done));
++    IMoonrakerAPI* api = get_moonraker_api();
++    if (!api) {
++        if (*finish) {
++            (*finish)(lv_tr("Not connected to the printer"));
++        }
++        return;
++    }
++    const std::string gcode = gcode_for(mm);
++    spdlog::info("[AD5X nozzle] {}", gcode);
++    // Armed before sending: Klipper can drop the connection before it answers,
++    // and a restart nobody announced shows the disconnect and recovery dialogs.
++    helix::ui::begin_expected_klippy_restart("Changing the nozzle size... Klipper will restart.");
++
++    const auto token = lifetime_.token();
++    api->execute_gcode(
++        gcode,
++        [this, token, finish]() {
++            token.defer("Ad5xNozzleModel::apply_done", [this, finish]() {
++                query();
++                if (*finish) {
++                    (*finish)(std::string());
++                }
++            });
++        },
++        [token, finish](const MoonrakerError& err) {
++            // Klipper restarting drops the reply: that is the command working
++            const bool restarting = classify_macro_rpc_failure(MacroHostEffect::Restarts, err) ==
++                                    MacroFailureReport::ExpectedRestart;
++            const std::string message = err.message;
++            token.defer("Ad5xNozzleModel::apply_error", [finish, restarting, message]() {
++                if (!*finish) {
++                    return;
++                }
++                if (restarting) {
++                    (*finish)(std::string());
++                } else {
++                    (*finish)(message.empty() ? std::string(lv_tr("Failed")) : message);
++                }
++            });
++        },
++        0, /*silent=*/false, /*on_queued=*/nullptr, /*caller_surfaces_errors=*/true);
++}
++
++Ad5xNozzleModel& model() {
++    return helix::lazy_global<Ad5xNozzleModel>("Ad5xNozzleModel");
++}
++
++} // namespace helix::ad5x_nozzle
++
++// ============================================================================
++// SETTINGS CHOOSER
++// ============================================================================
++
++namespace helix::ui {
++
++bool Ad5xNozzleModal::show_owned() {
++    return Modal::show_owned(std::make_unique<Ad5xNozzleModal>(), lv_screen_active());
++}
++
++void Ad5xNozzleModal::on_show() {
++    wire_ok_button("btn_primary");
++    wire_cancel_button("btn_secondary");
++
++    auto& nozzle = ad5x_nozzle::model();
++    nozzle.start();
++    const ad5x_nozzle::Status& status = nozzle.status();
++    sizes_ = ad5x_nozzle::offered_sizes(status);
++    if (lv_obj_t* dropdown = find_widget("nozzle_dropdown")) {
++        lv_dropdown_set_options(dropdown, ad5x_nozzle::dropdown_options(sizes_).c_str());
++        lv_dropdown_set_selected(
++            dropdown,
++            ad5x_nozzle::index_of(sizes_, status.size.value_or(ad5x_nozzle::kDefaultSize)));
++    }
++}
++
++void Ad5xNozzleModal::on_ok() {
++    lv_obj_t* dropdown = find_widget("nozzle_dropdown");
++    const uint32_t index = dropdown ? lv_dropdown_get_selected(dropdown) : 0;
++    std::optional<double> chosen;
++    if (index < sizes_.size()) {
++        chosen = sizes_[index];
++    }
++    // Everything this needs is copied out: the instance goes with the dialog.
++    hide(ModalCloseReason::ButtonPress);
++
++    const ad5x_nozzle::Status& status = ad5x_nozzle::model().status();
++    if (!chosen || status.local || (status.size && ad5x_nozzle::same_size(*chosen, *status.size))) {
++        return;
++    }
++    if (lv_subject_get_int(get_printer_state().print_state().get_print_active_subject()) != 0) {
++        NOTIFY_WARNING("{}", lv_tr("The nozzle size can't change during a print"));
++        return;
++    }
++    const double mm = *chosen;
++    const std::string title =
++        fmt::format(lv_tr("Change the nozzle size to {}?"), ad5x_nozzle::size_label(mm));
++    modal_confirm(title.c_str(), lv_tr("Klipper restarts to apply this. Continue?"),
++                  ModalSeverity::Warning, lv_tr("Change"), [mm]() {
++                      ad5x_nozzle::model().apply(mm, [](const std::string& error) {
++                          if (!error.empty()) {
++                              NOTIFY_WARNING("{}", error);
++                          }
++                      });
++                  });
++}
++
++} // namespace helix::ui
+diff --git a/src/ui/ui_panel_settings.cpp b/src/ui/ui_panel_settings.cpp
+index 3e1fdfad..57c2b469 100644
+--- a/src/ui/ui_panel_settings.cpp
++++ b/src/ui/ui_panel_settings.cpp
+@@ -10,6 +10,7 @@
+ #if HELIX_HAS_PLUGINS
+ #include "plugins_overlay.h"
+ #endif
++#include "ui_ad5x_nozzle.h"
+ #include "ui_nav.h"
+ #include "ui_panel_memory_stats.h"
+ #include "ui_printer_manager_overlay.h"
+@@ -139,6 +140,9 @@ void SettingsPanel::init_subjects() {
+     // Set from the live printer on every return to the root (refresh_status_lines())
+     UI_MANAGED_SUBJECT_INT(show_ad5x_setup_subject_, 0, "settings_show_ad5x_setup", subjects_);
+     UI_MANAGED_SUBJECT_INT(show_ad5x_plugins_subject_, 0, "settings_show_ad5x_plugins", subjects_);
++    UI_MANAGED_SUBJECT_INT(show_ad5x_nozzle_subject_, 0, "settings_show_ad5x_nozzle", subjects_);
++    // The Nozzle Size row's line (ad5x_nozzle_size_text) follows the printer's object
++    helix::ad5x_nozzle::model().init_subjects();
+ 
+     // Live status line under each stateful root row; refresh_status_lines()
+     // fills these in, first from setup() and then on every return to the root.
+@@ -224,6 +228,11 @@ void SettingsPanel::refresh_status_lines() {
+     lv_subject_set_int(&show_ad5x_setup_subject_, helix::ad5x_setup::available() ? 1 : 0);
+     lv_subject_set_int(&show_ad5x_plugins_subject_,
+                        helix::settings::Ad5xPluginsOverlay::available() ? 1 : 0);
++    const bool has_nozzle = helix::ad5x_nozzle::available();
++    lv_subject_set_int(&show_ad5x_nozzle_subject_, has_nozzle ? 1 : 0);
++    if (has_nozzle) {
++        helix::ad5x_nozzle::model().start();
++    }
+ 
+     // Formatted here rather than once at init, so it is in the language of the
+     // latest return to the settings root.
+@@ -344,9 +353,9 @@ void SettingsPanel::handle_ad5x_setup_clicked() {
+     opts.owner_token = lifetime_.token();
+     helix::ui::modal_confirm(
+         lv_tr("Run Setup Wizard"),
+-        lv_tr("Asks for the time zone, then runs the self-check and the tuning steps again (PID, "
+-              "bed mesh, vibration, IFS, Z offset). Every step can be skipped. Results are saved "
+-              "at the end and Klipper restarts."),
++        lv_tr("Asks for the time zone and the nozzle size, then runs the self-check and the "
++              "tuning steps again (PID, bed mesh, vibration, IFS, Z offset). Every step can be "
++              "skipped. Results are saved at the end and Klipper restarts."),
+         ModalSeverity::Info, lv_tr("Start"),
+         [this]() { helix::ad5x_setup::launch_targeted(parent_screen_); }, opts);
+ }
+@@ -410,6 +419,7 @@ void register_settings_panel_callbacks() {
+          [](lv_event_t*) { get_global_settings_panel().handle_hardware_health_clicked(); }},
+         {"on_ad5x_setup_clicked",
+          [](lv_event_t*) { get_global_settings_panel().handle_ad5x_setup_clicked(); }},
++        {"on_ad5x_nozzle_clicked", [](lv_event_t*) { helix::ui::Ad5xNozzleModal::show_owned(); }},
+ 
+         // Restart prompt and the shared header back button
+         {"on_restart_later_clicked",
+diff --git a/src/ui/ui_wizard.cpp b/src/ui/ui_wizard.cpp
+index 2f5fa795..296528ca 100644
+--- a/src/ui/ui_wizard.cpp
++++ b/src/ui/ui_wizard.cpp
+@@ -521,6 +521,7 @@ void ui_wizard_container_register_responsive_constants() {
+         "wizard_ams_identify",
+         "wizard_led_select",
+         "wizard_filament_sensor_select",
++        "wizard_ad5x_nozzle",
+         "wizard_ad5x_setup",
+         "wizard_input_shaper",
+         "wizard_language_chooser",
+@@ -1216,6 +1217,14 @@ static void on_next_clicked(lv_event_t* e) {
+     navigating = true;
+     auto current = static_cast<StepId>(lv_subject_get_int(&current_step));
+ 
++    // A step can keep the wizard on it while it finishes its own work; it calls
++    // ui_wizard_advance() once done (Step::hold_on_next()).
++    if (helix::wizard::Step* s = helix::wizard::step_by_id(current); s && s->hold_on_next()) {
++        spdlog::debug("[Wizard] {} holds Next", s->log_name());
++        navigating = false;
++        return;
++    }
++
+     // Targeted (subset) session: advance only within the requested subset; the
+     // last subset step finishes via ui_wizard_complete_targeted() (which does
+     // NOT set wizard_completed).
+@@ -1306,3 +1315,7 @@ static void on_next_clicked(lv_event_t* e) {
+     schedule_navigate_to_step(*next);
+     spdlog::debug("[Wizard] Next button clicked, step: {}", helix::wizard::to_string(*next));
+ }
++
++void ui_wizard_advance() {
++    on_next_clicked(nullptr);
++}
+diff --git a/src/ui/ui_wizard_ad5x_setup.cpp b/src/ui/ui_wizard_ad5x_setup.cpp
+index 60779cbc..9c152525 100644
+--- a/src/ui/ui_wizard_ad5x_setup.cpp
++++ b/src/ui/ui_wizard_ad5x_setup.cpp
+@@ -2,6 +2,7 @@
+ 
+ #include "ui_wizard_ad5x_setup.h"
+ 
++#include "ui_ad5x_nozzle.h"
+ #include "ui_button.h"
+ #include "ui_emergency_stop.h"
+ #include "ui_error_reporting.h"
+@@ -144,6 +145,10 @@ const StepSpec* spec_for(wizard::StepId id) {
+ 
+ std::vector<wizard::StepId> step_ids() {
+     std::vector<wizard::StepId> ids = {StepId::Ad5xTimezone};
++    // A targeted session shows every id it is given: only with the object
++    if (ad5x_nozzle::available()) {
++        ids.push_back(StepId::Ad5xNozzle);
++    }
+     for (const auto& s : k_specs) {
+         ids.push_back(s.id);
+     }
+@@ -622,8 +627,8 @@ void Ad5xSetupModel::refresh() {
+ }
+ 
+ // ============================================================================
+-// Ownership: one model + one step object per spec + the time zone step,
+-// created on first use
++// Ownership: one model + one step object per spec + the time zone and nozzle
++// size steps, created on first use
+ // ============================================================================
+ 
+ namespace {
+@@ -632,6 +637,7 @@ struct Ad5xSetupSteps {
+     Ad5xSetupModel model;
+     std::vector<std::unique_ptr<WizardAd5xSetupStep>> steps;
+     WizardAd5xTimezoneStep timezone_step;
++    WizardAd5xNozzleStep nozzle_step;
+ 
+     Ad5xSetupSteps() {
+         for (const auto& spec : k_specs) {
+@@ -818,3 +824,262 @@ lv_obj_t* WizardAd5xTimezoneStep::create(lv_obj_t* parent) {
+ void WizardAd5xTimezoneStep::cleanup() {
+     root_ = nullptr;
+ }
++
++// ============================================================================
++// Nozzle size step
++// ============================================================================
++
++namespace {
++
++/// How long Next waits for Klipper to come back with the new size.
++constexpr uint32_t kNozzleApplyTimeoutMs = 60u * 1000u;
++/// While it waits the object is asked again this often: Klipper's restart can
++/// fall between two klippy state notifications.
++constexpr uint32_t kNozzlePollMs = 2000u;
++
++} // namespace
++
++WizardAd5xNozzleStep* get_wizard_ad5x_nozzle_step() {
++    return &helix::ad5x_setup::owner().nozzle_step;
++}
++
++WizardAd5xNozzleStep::~WizardAd5xNozzleStep() {
++    lifetime_.invalidate();
++    timer_.reset();
++    subjects_.deinit_all();
++}
++
++bool WizardAd5xNozzleStep::should_skip(const helix::wizard::StepContext& ctx) const {
++    if (!helix::ad5x_setup::available(ctx) || !ctx.api) {
++        return true;
++    }
++    const auto& objects = ctx.api->hardware().printer_objects();
++    return std::find(objects.begin(), objects.end(), "ad5x_nozzle") == objects.end();
++}
++
++void WizardAd5xNozzleStep::init_subjects() {
++    helix::ad5x_nozzle::model().init_subjects();
++    if (subjects_initialized_) {
++        return;
++    }
++    UI_MANAGED_SUBJECT_INT(view_, 0, "ad5x_nozzle_step_view", subjects_);
++    UI_MANAGED_SUBJECT_STRING(message_, message_buf_, "", "ad5x_nozzle_step_message", subjects_);
++    subjects_initialized_ = true;
++}
++
++static void on_ad5x_nozzle_changed(lv_event_t* /*e*/) {
++    LVGL_SAFE_EVENT_CB_BEGIN("[AD5X nozzle] on_changed");
++    get_wizard_ad5x_nozzle_step()->handle_choice_changed();
++    LVGL_SAFE_EVENT_CB_END();
++}
++
++static void on_ad5x_nozzle_retry(lv_event_t* /*e*/) {
++    LVGL_SAFE_EVENT_CB_BEGIN("[AD5X nozzle] on_retry");
++    get_wizard_ad5x_nozzle_step()->handle_retry();
++    LVGL_SAFE_EVENT_CB_END();
++}
++
++void WizardAd5xNozzleStep::register_callbacks() {
++    lv_xml_register_event_cb(nullptr, "on_ad5x_nozzle_changed", on_ad5x_nozzle_changed);
++    lv_xml_register_event_cb(nullptr, "on_ad5x_nozzle_retry", on_ad5x_nozzle_retry);
++}
++
++lv_obj_t* WizardAd5xNozzleStep::create(lv_obj_t* parent) {
++    root_ = static_cast<lv_obj_t*>(lv_xml_create(parent, component_name(), nullptr));
++    if (!root_) {
++        spdlog::error("[{}] Failed to create screen from XML", log_name());
++        return nullptr;
++    }
++    dropdown_ = helix::ui::find_required(root_, "nozzle_dropdown", log_name());
++    picked_ = false;
++    error_.clear();
++    stop_apply();
++
++    auto& nozzle = helix::ad5x_nozzle::model();
++    const auto token = lifetime_.token();
++    nozzle.set_listener([this, token]() {
++        if (!token.expired()) {
++            on_model_changed();
++        }
++    });
++    fill_dropdown();
++    nozzle.start();
++    refresh();
++    return root_;
++}
++
++void WizardAd5xNozzleStep::cleanup() {
++    // Leaving while Klipper restarts stops only the waiting; the size is sent.
++    stop_apply();
++    helix::ad5x_nozzle::model().set_listener(nullptr);
++    error_.clear();
++    dropdown_.reset();
++    root_ = nullptr;
++    lv_subject_set_int(&wizard_show_skip, 0);
++    lv_subject_set_int(&connection_test_passed, 1);
++}
++
++std::optional<double> WizardAd5xNozzleStep::chosen_size() const {
++    if (!dropdown_) {
++        return std::nullopt;
++    }
++    const uint32_t index = lv_dropdown_get_selected(dropdown_);
++    if (index >= sizes_.size()) {
++        return std::nullopt;
++    }
++    return sizes_[index];
++}
++
++void WizardAd5xNozzleStep::fill_dropdown() {
++    if (!dropdown_) {
++        return;
++    }
++    const helix::ad5x_nozzle::Status& status = helix::ad5x_nozzle::model().status();
++    sizes_ = helix::ad5x_nozzle::offered_sizes(status);
++    lv_dropdown_set_options(dropdown_, helix::ad5x_nozzle::dropdown_options(sizes_).c_str());
++    lv_dropdown_set_selected(dropdown_,
++                             helix::ad5x_nozzle::index_of(
++                                 sizes_, status.size.value_or(helix::ad5x_nozzle::kDefaultSize)));
++}
++
++void WizardAd5xNozzleStep::handle_choice_changed() {
++    picked_ = true;
++    if (!applying_) {
++        // A new choice is a new attempt: Next again
++        error_.clear();
++    }
++    refresh();
++}
++
++void WizardAd5xNozzleStep::handle_retry() {
++    const auto chosen = chosen_size();
++    if (applying_ || !chosen) {
++        return;
++    }
++    error_.clear();
++    start_apply(*chosen);
++}
++
++bool WizardAd5xNozzleStep::hold_on_next() {
++    if (applying_) {
++        return true;
++    }
++    auto& nozzle = helix::ad5x_nozzle::model();
++    // Skip while Klipper is not ready or after a failure keeps the running size
++    if (!error_.empty() || !nozzle.klippy_ready() || !nozzle.loaded()) {
++        return false;
++    }
++    const helix::ad5x_nozzle::Status& status = nozzle.status();
++    const auto chosen = chosen_size();
++    if (status.local || !chosen ||
++        (status.size && helix::ad5x_nozzle::same_size(*chosen, *status.size))) {
++        return false;
++    }
++    start_apply(*chosen);
++    return true;
++}
++
++void WizardAd5xNozzleStep::start_apply(double mm) {
++    applying_ = true;
++    target_ = mm;
++    waited_ms_ = 0;
++    error_.clear();
++    timer_.reset(lv_timer_create(
++        [](lv_timer_t* t) {
++            static_cast<WizardAd5xNozzleStep*>(lv_timer_get_user_data(t))->on_tick();
++        },
++        kNozzlePollMs, this));
++    refresh();
++
++    const uint32_t seq = apply_seq_;
++    const auto token = lifetime_.token();
++    helix::ad5x_nozzle::model().apply(mm, [this, token, seq](const std::string& error) {
++        if (token.expired() || !applying_ || seq != apply_seq_) {
++            return;
++        }
++        if (!error.empty()) {
++            fail(error);
++        }
++        // Taken: Klipper restarts, and on_model_changed() sees it come back
++    });
++}
++
++void WizardAd5xNozzleStep::on_model_changed() {
++    auto& nozzle = helix::ad5x_nozzle::model();
++    if (applying_) {
++        const auto& size = nozzle.status().size;
++        if (nozzle.klippy_ready() && nozzle.loaded() && size &&
++            helix::ad5x_nozzle::same_size(*size, target_)) {
++            finish_apply();
++            return;
++        }
++    } else if (!picked_ && nozzle.loaded()) {
++        // The object answered after the step was built
++        fill_dropdown();
++    }
++    refresh();
++}
++
++void WizardAd5xNozzleStep::on_tick() {
++    if (!applying_) {
++        timer_.reset();
++        return;
++    }
++    waited_ms_ += kNozzlePollMs;
++    if (waited_ms_ >= kNozzleApplyTimeoutMs) {
++        fail(fmt::format(lv_tr("Klipper did not come back with {} within a minute."),
++                         helix::ad5x_nozzle::size_label(target_)));
++        return;
++    }
++    auto& nozzle = helix::ad5x_nozzle::model();
++    if (nozzle.klippy_ready()) {
++        nozzle.query();
++    }
++}
++
++void WizardAd5xNozzleStep::stop_apply() {
++    applying_ = false;
++    ++apply_seq_;
++    timer_.reset();
++}
++
++void WizardAd5xNozzleStep::finish_apply() {
++    spdlog::info("[{}] Klipper is back with a {} nozzle", log_name(),
++                 helix::ad5x_nozzle::size_label(target_));
++    stop_apply();
++    refresh();
++    ui_wizard_advance();
++}
++
++void WizardAd5xNozzleStep::fail(const std::string& message) {
++    spdlog::warn("[{}] Nozzle size {} not applied: {}", log_name(),
++                 helix::ad5x_nozzle::size_label(target_), message);
++    stop_apply();
++    error_ = message;
++    refresh();
++}
++
++void WizardAd5xNozzleStep::refresh() {
++    if (!subjects_initialized_ || !root_) {
++        return;
++    }
++    auto& nozzle = helix::ad5x_nozzle::model();
++    View view = View::Ready;
++    std::string message;
++    if (applying_) {
++        view = View::Applying;
++        message = fmt::format(lv_tr("Applying {}... Klipper restarts."),
++                              helix::ad5x_nozzle::size_label(target_));
++    } else if (!error_.empty()) {
++        view = View::Failed;
++        message = error_;
++    } else if (!nozzle.klippy_ready() || !nozzle.loaded()) {
++        view = View::Waiting;
++        message = lv_tr("Waiting for Klipper...");
++    }
++    lv_subject_copy_string(&message_, message.c_str());
++    lv_subject_set_int(&view_, static_cast<int>(view));
++    // Skip goes on without a size from Klipper; nothing moves on while it restarts
++    lv_subject_set_int(&wizard_show_skip, (view == View::Waiting || view == View::Failed) ? 1 : 0);
++    lv_subject_set_int(&connection_test_passed, view == View::Applying ? 0 : 1);
++}
+diff --git a/src/ui/wizard_step_registry.cpp b/src/ui/wizard_step_registry.cpp
+index 4fdd84e6..9053e4f9 100644
+--- a/src/ui/wizard_step_registry.cpp
++++ b/src/ui/wizard_step_registry.cpp
+@@ -44,6 +44,7 @@ std::vector<Step*> steps() {
+     v.push_back(get_wizard_led_select_step());                 // LedSelect
+     v.push_back(get_wizard_filament_sensor_select_step());     // FilamentSensor
+     v.push_back(get_wizard_ad5x_timezone_step());              // Ad5xTimezone
++    v.push_back(get_wizard_ad5x_nozzle_step());                // Ad5xNozzle
+     for (const auto& spec : helix::ad5x_setup::step_specs()) { // Ad5xSelfcheck..Ad5xFinish
+         v.push_back(get_wizard_ad5x_setup_step(spec.id));
+     }
+diff --git a/ui_xml/ad5x_nozzle_modal.xml b/ui_xml/ad5x_nozzle_modal.xml
+new file mode 100644
+index 00000000..11599c8c
+--- /dev/null
++++ b/ui_xml/ad5x_nozzle_modal.xml
+@@ -0,0 +1,55 @@
++<?xml version="1.0"?>
++<!-- SPDX-License-Identifier: GPL-3.0-or-later -->
++<component>
++  <!-- Settings > Nozzle Size on the AD5X: choose the nozzle fitted to the
++       printer. The sizes and the selection come from Ad5xNozzleModal
++       (ui_ad5x_nozzle.cpp); Apply asks first, since Klipper restarts. No
++       change during a print; none at all while local.cfg sets the size.
++       Backdrop created by the Modal system. -->
++  <view name="ad5x_nozzle_modal"
++        extends="ui_dialog" width="70%" height="content" style_min_width="320" style_max_width="480"
++        style_max_height="85%" align="center" flex_flow="column" style_flex_main_place="start" style_pad_gap="0"
++        scrollable="false">
++    <lv_obj width="100%"
++            height="content" style_max_height="#dialog_content_max" style_pad_left="#space_lg"
++            style_pad_right="#space_lg" style_pad_top="#space_lg" style_pad_bottom="#space_lg" flex_flow="column"
++            style_flex_cross_place="center" style_pad_gap="#space_md" scrollable="true" scroll_snap_y="none">
++      <lv_obj width="100%"
++              height="content" style_pad_all="0" flex_flow="row" style_flex_main_place="center"
++              style_flex_cross_place="center" style_pad_gap="#space_sm" scrollable="false">
++        <icon src="ruler" size="md" variant="primary"/>
++        <text_heading text="Nozzle Size"/>
++      </lv_obj>
++      <text_small width="100%"
++                  long_mode="wrap"
++                  text="The nozzle fitted to the printer. Line widths, purge lengths and the first-layer test use it."
++                  style_text_color="#text_muted" style_text_align="center"/>
++      <lv_obj width="100%"
++              height="content" style_pad_all="0" flex_flow="row" style_flex_main_place="space_between"
++              style_flex_cross_place="center" style_pad_gap="#space_sm" scrollable="false">
++        <text_body text="Nozzle" flex_grow="1"/>
++        <lv_dropdown name="nozzle_dropdown" width="55%" style_radius="#border_radius">
++          <bind_state_if cond="print_active or ad5x_nozzle_local" state="disabled"/>
++        </lv_dropdown>
++      </lv_obj>
++      <lv_obj width="100%"
++              height="content" style_pad_all="0" flex_flow="row" style_flex_cross_place="center"
++              style_pad_gap="#space_sm" scrollable="false">
++        <bind_flag_if_eq subject="ad5x_nozzle_local" flag="hidden" ref_value="0"/>
++        <icon src="alert" size="xs" variant="warning"/>
++        <text_small width="0"
++                    flex_grow="1" text="local.cfg sets the nozzle size; edit it there" long_mode="wrap"
++                    style_text_color="#warning"/>
++      </lv_obj>
++      <lv_obj width="100%"
++              height="content" style_pad_all="0" flex_flow="row" style_flex_cross_place="center"
++              style_pad_gap="#space_sm" scrollable="false">
++        <bind_flag_if_eq subject="print_active" flag="hidden" ref_value="0"/>
++        <icon src="lock" size="xs" variant="secondary"/>
++        <text_small width="0" flex_grow="1" text="The nozzle size can't change during a print" long_mode="wrap"/>
++      </lv_obj>
++    </lv_obj>
++    <modal_button_row primary_text="Apply" secondary_text="Cancel" primary_disable_subject="print_active"
++                      primary_hide_subject="ad5x_nozzle_local"/>
++  </view>
++</component>
+diff --git a/ui_xml/settings_panel.xml b/ui_xml/settings_panel.xml
+index 0f16557e..184249b4 100644
+--- a/ui_xml/settings_panel.xml
++++ b/ui_xml/settings_panel.xml
+@@ -51,6 +51,12 @@
+                           description="Self-check, PID, bed mesh, vibration, IFS, Z offset" description_min_bp="0">
+         <bind_flag_if_eq subject="settings_show_ad5x_setup" flag="hidden" ref_value="0"/>
+       </setting_action_row>
++      <!-- AD5X: the nozzle fitted to the printer (ad5x_nozzle object, SET_NOZZLE_SIZE) -->
++      <setting_action_row name="row_ad5x_nozzle"
++                          label="Nozzle Size" icon="ruler" callback="on_ad5x_nozzle_clicked"
++                          bind_description="ad5x_nozzle_size_text" description_min_bp="0">
++        <bind_flag_if_eq subject="settings_show_ad5x_nozzle" flag="hidden" ref_value="0"/>
++      </setting_action_row>
+       <!-- AD5X: the printer's own plugins (Klipper add-ons), not HelixScreen's -->
+       <setting_action_row name="row_ad5x_plugins"
+                           label="Plugins" icon="puzzle_outline" callback="on_ad5x_plugins_clicked"
+diff --git a/ui_xml/wizard_ad5x_nozzle.xml b/ui_xml/wizard_ad5x_nozzle.xml
+new file mode 100644
+index 00000000..21fb8ca9
+--- /dev/null
++++ b/ui_xml/wizard_ad5x_nozzle.xml
+@@ -0,0 +1,69 @@
++<?xml version="1.0"?>
++<!-- SPDX-License-Identifier: GPL-3.0-or-later -->
++<component>
++  <!-- First-Run Wizard: AD5X nozzle size step, after the time zone and before
++       the tuning steps. The sizes and the selection come from
++       ui_wizard_ad5x_setup.cpp (the ad5x_nozzle Klipper object). Next with
++       another size sends SET_NOZZLE_SIZE and waits for Klipper to come back.
++       ad5x_nozzle_step_view: 0 ready, 1 waiting for Klipper, 2 applying, 3 failed -->
++  <consts>
++    <str name="step_title" value="Nozzle Size" value_tag="Nozzle Size"/>
++    <str name="step_subtitle" value="The nozzle fitted to the printer" value_tag="The nozzle fitted to the printer"/>
++  </consts>
++  <styles>
++    <style name="text_failed" text_color="#danger"/>
++  </styles>
++  <view name="wizard_ad5x_nozzle_root"
++        extends="lv_obj" width="100%" height="content" style_bg_opa="0" style_border_width="0" style_pad_all="0"
++        flex_flow="column" style_flex_main_place="start" style_flex_cross_place="center" scrollable="false">
++    <ui_card width="100%"
++             height="content" style_radius="#border_radius" style_pad_all="#space_lg" style_pad_gap="#space_md"
++             flex_flow="column" style_flex_main_place="start" style_flex_cross_place="start" scrollable="false">
++      <text_body width="100%"
++                 text="The nozzle fitted to the printer. Line widths, purge lengths and the first-layer test use it. Change it later in Settings."
++                 long_mode="wrap"/>
++      <text_body text="Nozzle Size"/>
++      <lv_dropdown name="nozzle_dropdown"
++                   width="100%" height="#header_height" options="" style_border_opa="100%"
++                   style_radius="#border_radius" style_pad_all="#space_lg">
++        <bind_state_if cond="ad5x_nozzle_local or ad5x_nozzle_step_view eq 2" state="disabled"/>
++        <event_cb trigger="value_changed" callback="on_ad5x_nozzle_changed"/>
++      </lv_dropdown>
++      <!-- local.cfg wins over the choice here -->
++      <lv_obj width="100%"
++              height="content" style_pad_all="0" flex_flow="row" style_flex_cross_place="center"
++              style_pad_gap="#space_sm" style_bg_opa="0" style_border_width="0" scrollable="false">
++        <bind_flag_if_eq subject="ad5x_nozzle_local" flag="hidden" ref_value="0"/>
++        <icon src="alert" size="xs" variant="warning"/>
++        <text_small width="0"
++                    flex_grow="1" text="local.cfg sets the nozzle size; edit it there" long_mode="wrap"
++                    style_text_color="#warning"/>
++      </lv_obj>
++      <!-- Waiting for Klipper, applying (Klipper restarts) or why it failed -->
++      <lv_obj width="100%"
++              height="content" style_pad_all="0" flex_flow="row" style_flex_cross_place="center"
++              style_pad_gap="#space_sm" style_bg_opa="0" style_border_width="0" scrollable="false">
++        <bind_flag_if_eq subject="ad5x_nozzle_step_view" flag="hidden" ref_value="0"/>
++        <spinner size="sm">
++          <bind_flag_if cond="ad5x_nozzle_step_view ne 1 and ad5x_nozzle_step_view ne 2" flag="hidden"/>
++        </spinner>
++        <text_body width="0" flex_grow="1" bind_text="ad5x_nozzle_step_message" long_mode="wrap">
++          <bind_style_if_eq name="text_failed" subject="ad5x_nozzle_step_view" ref_value="3"/>
++        </text_body>
++      </lv_obj>
++      <lv_obj width="100%"
++              height="content" style_pad_all="0" flex_flow="row" style_flex_main_place="center" style_bg_opa="0"
++              style_border_width="0" scrollable="false">
++        <bind_flag_if_not_eq subject="ad5x_nozzle_step_view" flag="hidden" ref_value="3"/>
++        <ui_button name="btn_ad5x_nozzle_retry" width="#wizard_button_width" height="#button_height" text="Retry">
++          <event_cb trigger="clicked" callback="on_ad5x_nozzle_retry"/>
++        </ui_button>
++      </lv_obj>
++      <text_small width="100%"
++                  text="Skip keeps the nozzle size Klipper runs with now." long_mode="wrap"
++                  style_text_color="#text_muted">
++        <bind_flag_if cond="ad5x_nozzle_step_view ne 1 and ad5x_nozzle_step_view ne 3" flag="hidden"/>
++      </text_small>
++    </ui_card>
++  </view>
++</component>
+-- 
+2.56.0
+

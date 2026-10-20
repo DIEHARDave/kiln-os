@@ -37,6 +37,10 @@
 #   Two readings can't tell how much is still to come: on a bed settling
 #   like a measured one this stops with about 0.01 mm left, and the load
 #   cells' own scatter limits it; the calibration is the better guide.
+# API ad5x_soak/abort (Moonraker: JSON-RPC printer.ad5x_soak.abort, HTTP
+#   POST /printer/ad5x_soak/abort; HelixScreen's Stop): ends a running
+#   calibration within a second, heaters off, nothing saved. A G-code
+#   command couldn't: the calibration holds the G-code queue.
 # BED_SOAK_ENABLE [ENABLE=0|1]
 #   The soak on or off for every print (saved: ad5x_bed_soak_on; a
 #   calibration stays saved either way); without ENABLE says which it is.
@@ -136,7 +140,11 @@ class BedSoak:
         self.mode = "time"
         self.points = 1
         self.enabled = True
+        self.abort = False
         self.printer.register_event_handler("klippy:connect", self._load)
+        webhooks = self.printer.lookup_object('webhooks', None)
+        if webhooks is not None:
+            webhooks.register_endpoint("ad5x_soak/abort", self._handle_abort)
         for cmd, desc in (
                 ("BED_SOAK_CALIBRATE", "Measure how long the bed's Z keeps "
                  "moving after heating: BED= (from a cold bed)"),
@@ -169,9 +177,16 @@ class BedSoak:
     def _status(self, msg):
         self.gcode.run_script_from_command('_PRINT_STATUS MSG="%s"' % (msg,))
 
+    def _handle_abort(self, web_request):
+        if self.running:
+            self.abort = True
+        web_request.send({'running': self.running})
+
     def _sleep(self, seconds):
         end = self.reactor.monotonic() + seconds
         while not self.printer.is_shutdown():
+            if self.abort:
+                raise self.gcode.error("Bed soak calibration stopped")
             now = self.reactor.monotonic()
             if now >= end:
                 return
@@ -213,6 +228,7 @@ class BedSoak:
                              "(below 40 C) for real numbers, or FORCE=1"
                              % (start,))
         self.running = True
+        self.abort = False
         self.last = []
         readings = [[] for _ in range(npts)]
         try:
@@ -257,6 +273,7 @@ class BedSoak:
                                 - self.reactor.monotonic()))
         finally:
             self.running = False
+            self.abort = False
             self.gcode.run_script_from_command("M140 S0\nM104 S0")
             self._status("")
         if not readings[0]:

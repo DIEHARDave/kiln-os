@@ -236,6 +236,7 @@ Klipper can't restart HelixScreen itself: Moonraker runs with
 ```
 SETUP_WIZARD_STEP STEP=selfcheck            ; ~1 min, watch the console
 SETUP_WIZARD_STEP STEP=pid                  ; ~10-20 min (bed is slow)
+SETUP_WIZARD_STEP STEP=pid HEATERS=extruder ; the nozzle only (after a nozzle change)
 SETUP_WIZARD_STEP STEP=mesh KEEP_BED=1
 SETUP_WIZARD_STEP STEP=shaper               ; needs numpy (not in the image)
 SETUP_WIZARD_STEP STEP=ifs                  ; slots loaded in the IFS first
@@ -440,6 +441,8 @@ dir's `import` commit with `git format-patch`.
 | `0004-ams-ad5x-ifs-ports-are-prep-sensors` | The IFS's port sensors shown as prep sensors |
 | `0005-settings-plugins-panel` | Settings > Printer > **Plugins** (`docs/plugins.md`) |
 | `0006-wizard-ad5x-time-zone-step` | **Time Zone**, the first AD5X step (below) |
+| `0008-ad5x-nozzle-size` | **Nozzle Size**, the second AD5X step, and Settings > Printer > **Nozzle Size** (`SET_NOZZLE_SIZE`, `docs/print-start.md`) |
+| `0009-ad5x-bed-soak-and-nozzle-checks` | Settings > Printer > **Bed Heat Soak** (on/off, calibrated times, Calibrate with progress and Stop; `docs/print-start.md`); after a Nozzle Size change in Settings, the offer to run the hotend PID, Z offset and Save only |
 | `0007-sound-pwm-backend-and-printer-sounds` | HelixScreen's sounds on the speaker, Settings > Sound > **Printer Sounds** (`docs/sound.md`) |
 
 ### Steps
@@ -512,10 +515,19 @@ screensaver; the printer itself keeps UTC). It runs nothing on the printer
 and always offers Next. It is in the first-start wizard and in every
 "Run Setup Wizard" session.
 
+### Nozzle size (patch 0008)
+
+After the time zone: a dropdown of `printer.ad5x_nozzle.sizes`, set to the
+current size (the factory 0.4). A different choice sends `SET_NOZZLE_SIZE`
+on Next; the step waits until Klipper is back with the new size before the
+self-check starts (Retry / Skip after 60 s). When `local.cfg` sets the
+size, the dropdown is off and says so. Settings > Printer > Nozzle Size
+changes it later (confirm: Klipper restarts).
+
 ### Running it again
 
 - **Settings > Printer > Run Setup Wizard** (only where the steps exist):
-  confirm, then the time zone and the seven AD5X steps run as a targeted wizard session over
+  confirm, then the time zone, the nozzle size and the seven AD5X steps run as a targeted wizard session over
   the current screen. `wizard_completed`, the preset and the hardware
   selections are not touched; Back on the first step or Finish on the last
   returns to Settings.

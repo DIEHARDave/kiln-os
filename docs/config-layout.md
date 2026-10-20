@@ -79,6 +79,7 @@ that file: a `local.cfg` with only `variable_*` lines for it and no
 | shipped plugins | image `/usr/share/ad5x/plugins` | RO | `zmod-compat`, `nopoop`, `bambufy-compat`, `recommend` | Opt-in switches: off = stock; which are on is in `plugins.cfg` |
 | `printer.cfg` | config dir | RW, never replaced | Includes `ad5x.cfg`, `unit.cfg`, `local.cfg`; SAVE_CONFIG block (bed mesh) | The printer's own |
 | `unit.cfg` | config dir | RW, never replaced | `[gcode_macro _AD5X_UNIT]`: stock per-unit calibration (Z offset seed, cutter and purge box offsets) | Per printer, from stock's settings at first boot |
+| `nozzle.cfg` | config dir | RW, never replaced; written by `SET_NOZZLE_SIZE` | `[extruder] nozzle_diameter` (the setup wizard's Nozzle Size step, Settings on the touch screen); absent = the factory 0.4 | Included at the end of `ad5x.cfg`: after the factory `[extruder]`, before `unit.cfg` and `local.cfg` |
 | `local.cfg` | config dir | RW, never replaced | The user's lasting overrides (user's printer: `nozzle_diameter: 0.6`, `[ifs] flush_speed: 480`) | Read last: wins over everything |
 | `plugins.cfg` | config dir | RW, never replaced | Enabled plugins (`ENABLE_PLUGIN`/`DISABLE_PLUGIN`) | The user's choice |
 | `ad5x-tuning.cfg` | config dir | RW, written by the wizard | PID and input shaper results | Per printer |

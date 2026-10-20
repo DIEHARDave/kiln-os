@@ -11,7 +11,8 @@ and `INSTALL_PLUGIN`, `UPDATE_PLUGIN`, `REMOVE_PLUGIN`;
 `printer.ad5x_plugins` `catalog`, `job`; Moonraker restarts by itself when
 a switch changes its plugin parts; the bed heat soak: `BED_SOAK_CALIBRATE`,
 `PRINT_START SOAK=`, `printer.ad5x_soak`; the speaker: `M300`,
-`PLAY_MIDI`, `PLAY_SOUND`, `SOUND_STOP`, `SOUND_SETUP`, `printer.ad5x_sound`.
+`PLAY_MIDI`, `PLAY_SOUND`, `SOUND_STOP`, `SOUND_SETUP`, `printer.ad5x_sound`;
+the nozzle size: `SET_NOZZLE_SIZE`, `printer.ad5x_nozzle`.
 1.3, 2026-10-20: additions only: a plugin's
 `python/` libraries (Klipper and Moonraker) and `moonraker/components/`
 (Moonraker components), and `git` on the printer for installing plugins.
@@ -221,6 +222,8 @@ printer` before calling one.
 | `PLAY_SOUND`, `SOUND_STOP` | `EVENT=` startup\|start\|complete\|error\|cancelled\|paused\|refill (1.4) |
 | `SOUND_SETUP` | `[ENABLE=0\|1]` `[VOLUME=0-100]` `[<EVENT>=<file>\|0]` (1.4) |
 | `BED_SOAK_CALIBRATE` | `BED=` `[POINTS=5\|1]` `[NOZZLE=140]` `[INTERVAL=]` `[STABLE=0.005]` `[WINDOW=120]` `[MAX=1500]` `[FORCE=1]` (1.4): measure the bed's settling after heating (`docs/print-start.md`) |
+| `SET_NOZZLE_SIZE` | `SIZE=` 0.2\|0.25\|0.4\|0.6\|0.8\|1.0 `[RESTART=0]` (1.4): saved in `nozzle.cfg`, Klipper restarts |
+| `SETUP_WIZARD_STEP STEP=pid HEATERS=` | `extruder`\|`bed`\|`both` (1.4; default both) |
 | `BED_SOAK_ENABLE` | `[ENABLE=0\|1]` (1.4): the soak on/off for every print, saved |
 | `BED_SOAK_START`, `BED_SOAK_WAIT` | `PRINT_START`'s soak (1.4; `BED=` `FROM=` `[SECONDS=]` `[MODE=time\|probe]` `[POINTS=]`) |
 | `CONFIG_BACKUPS` | `ACK=1` (clear the notice) | List `macros/` files an update replaced and the backups of edited ones |
@@ -283,6 +286,7 @@ save variable: 0 or 2 = prime only, other = purge; else purge.
 | Object | Fields |
 |---|---|
 | `printer.ifs` | `connected`, `version`, `busy`, `channel` (loaded, 0 none), `state`, `selected`, `inserted[4]`, `colors[4]`, `channel_count`, `active_channel`, `loaded_channels`, `pending_insert_channels`, `activity`, `activity_channel`, `error`, `tool_map` (`"0"`-`"3"` -> slot), `tune`, `auto_refill`, `refill` (1.2: last auto-refill message) |
+| `printer.ad5x_nozzle` | `size` (running), `saved` (nozzle.cfg, null), `local` (local.cfg sets it), `sizes` (1.4) |
 | `printer.ad5x_sound` | `speaker`, `enabled`, `volume`, `events` (event -> file, "" off), `files`, `playing` (1.4) |
 | `printer.ad5x_soak` | `enabled`, `calibration` (1.4: per bed temperature `settle`, `drift`, `warp`, `points`, `from`, `stable`, `date`), `running`, `soak`, `last` |
 | `printer.ad5x_resume` | `available`, `file`, `z`, `time` (1.2: an interrupted print) |

@@ -224,7 +224,7 @@ class AD5XSetup:
                 delta = float(delta)
             params = {}
             for key in ('material', 'extruder', 'bed', 'keep_bed', 'tube',
-                        'channel'):
+                        'channel', 'heaters'):
                 if web_request.get(key, None) is not None:
                     params[key.upper()] = str(web_request.get(key))
             msg = self._dispatch(step, action, params, delta)
@@ -566,13 +566,23 @@ class AD5XSetup:
                 "Self-check failed: %s" % (", ".join(failed),))
         self._set("All checks passed", 1.)
     def _step_pid(self, params):
+        # HEATERS=extruder after a nozzle change (the bed didn't change),
+        # bed, or both (default)
+        which = str(params.get('HEATERS', 'both') or 'both').lower()
+        heaters = [h for h in (
+            ("extruder", "nozzle", self.pid_nozzle),
+            ("heater_bed", "bed", self.pid_bed))
+            if which == 'both' or h[1] == which or h[0] == which]
+        if not heaters:
+            raise self.printer.command_error(
+                "HEATERS is extruder, bed or both")
         self._home()
         cx, cy = self.patch_center
         self._gcode("G90\nG1 X%.1f Y%.1f Z10 F6000" % (cx, cy))
         results = []
-        for name, label, target, prog in (
-                ("extruder", "nozzle", self.pid_nozzle, (0., .5)),
-                ("heater_bed", "bed", self.pid_bed, (.5, 1.))):
+        n = len(heaters)
+        for i, (name, label, target) in enumerate(heaters):
+            prog = (i / float(n), (i + 1) / float(n))
             self._set("PID tuning the %s at %.0f C (takes a few minutes)"
                       % (label, target), prog[0])
             fan = self.pid_fan if name == "extruder" else 0.

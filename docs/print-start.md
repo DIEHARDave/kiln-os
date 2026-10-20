@@ -78,6 +78,22 @@ colour or Prime line; cleared at the end.
 The print file follows. Slicer end G-code: `PRINT_END` (retract 2 mm, lift 10 mm, park at X107.5 Y215, heaters, fans and X/Y/E motors off). `CANCEL_PRINT` does the same after stopping the file. Stock's swap at the first `T<n>` and the end of the
 print are not part of this macro.
 
+## Nozzle size
+
+The factory config is for the 0.4 mm nozzle most AD5X have. After
+fitting a different nozzle, the whole setup is not needed: the hotend
+PID (`SETUP_WIZARD_STEP STEP=pid HEATERS=extruder`) and the first-layer
+Z offset test are worth redoing (the touch screen offers both after a
+change in Settings); the bed PID, mesh, input shaper and IFS tuning stay
+valid. Another size
+is set with `SET_NOZZLE_SIZE SIZE=0.6` (0.2, 0.25, 0.4, 0.6, 0.8, 1.0),
+the setup wizard's Nozzle Size step or Settings > Nozzle Size on the touch
+screen: it writes the printer's `nozzle.cfg` and restarts Klipper. The
+prime line width (2.5 x the nozzle), the IFS purge lengths (nozzle / 0.4),
+the setup wizard's first-layer test and Klipper's extrusion limits follow
+it. A bigger nozzle can also flush faster at colour changes:
+`[ifs] flush_speed` in `local.cfg` (stock 300 mm/min).
+
 ## Bed heat soak (`klipper/extras/ad5x_soak.py`)
 
 The bed sensor reaches its target minutes before the plate's surface
@@ -109,6 +125,12 @@ from 34 °C): the centre moved 0.09 mm (0.07 mm in the first 7 minutes,
 then about 0.005 mm a minute, the frame warming), the corners up to
 0.04 mm less; settled within 0.02 mm after 420 s. Saved: 420 s for 60 and
 80 °C.
+
+A running calibration is stopped through the API (it holds the G-code
+queue, so a G-code can't): `POST /printer/ad5x_soak/abort` (Moonraker
+JSON-RPC `printer.ad5x_soak.abort`; the touch screen's Stop): heaters
+off, nothing saved. On the touch screen: Settings > Bed Heat Soak (on/off,
+the calibrated times, Calibrate with progress).
 
 On or off for every print: `BED_SOAK_ENABLE ENABLE=0` / `ENABLE=1`
 (saved; a calibration stays saved either way; `BED_SOAK_ENABLE` alone

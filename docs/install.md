@@ -5,11 +5,13 @@ how to go back to stock, and what the installer does to the printer. Two
 ways in: a USB stick (no tools needed) or SSH (with root access, for example
 after zMod).
 
-**Status (2026-10-17):** the installer has been tested on the laptop only,
-under qemu against the stock root filesystem (`tools/test_install.sh`). It
-has not run on a printer yet. The pieces it uses (writing a slot, the boot
-flag, the recovery OS, the main OS) have been used on one AD5X by hand
-(`docs/boot-slots.md`, `docs/recovery-os.md`).
+**Status (2026-10-20):** installed on one AD5X over SSH on 2026-10-19
+(installer v0.0.3; stock firmware with zMod, stock running from slot B):
+all six steps, the first start of the main OS and its writing of the
+recovery OS, and the updates since (v0.0.4 to v0.0.8, from Fluidd). The
+USB-stick route (stock's USB hook, the install screens) and the other slot
+layout (stock in slot A) have run under qemu only (`tools/test_install.sh`,
+every release).
 
 > **⚠ Your settings and configs do not come with you.** Kiln OS starts
 > with its own Klipper configuration. It does **not** use the `printer.cfg`,
@@ -313,14 +315,20 @@ tools/test_install.sh                          # vendor files + installer under 
 screens `tools/make_install_screens.py`, vendor helper
 `buildroot/package/ad5x-system/bin/ad5x-vendor`.
 
-## To check on the hardware (not done yet)
+## To check on the hardware
+
+Done 2026-10-19 (SSH, stock in slot B, zMod present): writing the free
+slot from stock, the first start of that layout, the main OS writing slot
+A in the background (`S99ad5x-install-recovery`), `ad5x-vendor ensure` at
+the first start.
+
+Not done yet:
 
 - The USB hook with our `flashforge_init.sh` on stock and on zMod, the screens
   (`cmd_jpeg_display` while stock's logo is up), and the restart.
 - A second mount of the running root (`mount -t squashfs -o ro /dev/mmcblk0p2`)
   on stock; the installer falls back to `/` if it fails.
-- Writing the free slot from stock and the first start of both layouts; the
-  main OS writing slot A in the background (`S99ad5x-install-recovery`).
+- The other layout (stock running from slot A).
 - `ad5x-vendor ensure` at the first start (`unsquashfs` of the saved stock
   root before any driver is loaded: a few seconds longer start-up, once).
 - The eMMC copy to a FAT stick (time, 1 GB `usershare.img`).

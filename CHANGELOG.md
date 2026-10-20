@@ -7,8 +7,21 @@ the release has no section of its own yet (rename it after the release).
 ## Unreleased
 
 ### Added
+- **Nozzle size** in the setup wizard (after the time zone) and in
+  Settings on the touch screen, or `SET_NOZZLE_SIZE SIZE=0.6`: kept in the
+  printer's `nozzle.cfg`. The defaults stay for the 0.4 mm nozzle; line
+  widths, purge lengths and the first-layer test follow the setting.
 - `BED_SOAK_ENABLE ENABLE=0|1`: the bed heat soak on or off for every
   print (saved; calibrations are kept).
+- **Bed heat soak on the touch screen** (Settings > Bed Heat Soak): on/off,
+  the calibrated times, and Calibrate with progress and Stop.
+- After a nozzle change in Settings, the screen offers just the hotend PID
+  tune and the first-layer Z offset test, not the whole setup
+  (`SETUP_WIZARD_STEP STEP=pid HEATERS=extruder`).
+
+### Fixed
+- The speaker played nothing: the PWM driver refuses to switch off a
+  channel that was never set up, which the player did before every note.
 
 ### Changed
 - **Our 6.6 kernel always.** No more choice of kernel (`ad5x-kernel own`

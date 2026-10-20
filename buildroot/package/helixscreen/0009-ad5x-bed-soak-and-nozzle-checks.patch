@@ -1,0 +1,1675 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: ad5xrecon <ad5xrecon@localhost>
+Date: Tue, 20 Oct 2026 22:00:00 -0400
+Subject: [PATCH] settings: AD5X bed heat soak; checks after a nozzle change
+
+Settings > Printer gets a "Bed Heat Soak" row after Nozzle Size, shown
+only where Klipper has the ad5x_soak object, with "On · 60 °C 7:00" or
+"Off" as its second line. Its overlay has the on/off switch
+(BED_SOAK_ENABLE), the calibrated times per bed temperature and a
+calibration: a bed temperature (60-110 °C) and Calibrate, refused during
+a print or above 40 °C on the bed, confirmed first. BED_SOAK_CALIBRATE
+holds the G-code queue for 20-35 minutes and answers when it ends, so it
+goes out with a 75 minute timeout and the screen follows the object's
+`running` meanwhile (and alone, should the answer never come): Klipper's
+status line, the rounds so far and Stop, which is the Klipper API
+endpoint printer.ad5x_soak.abort (no G-code reaches Klipper while it
+runs). The end shows Klipper's result line or its error, also as a toast
+when the overlay is closed. The object joins the status subscription.
+
+After Settings > Nozzle Size changed the size and Klipper is back with
+it, a dialog offers the hotend PID tune and the Z offset test (Run /
+Later). Run starts a targeted setup session over PID, Z offset and the
+save step, whose PID step is sent with heaters=extruder: targeted
+sessions now carry per-step start parameters, cleared when the session
+ends and never read by the first-start wizard. "Run Setup Wizard" passes
+none, so it still tunes nozzle and bed. The wizard's own Nozzle Size step
+offers nothing (the tuning steps follow it anyway).
+
+Upstream: not applicable (AD5X OS specific)
+---
+ include/ui_ad5x_nozzle.h                 |   9 +-
+ include/ui_panel_settings.h              |   2 +
+ include/ui_settings_ad5x_soak.h          | 233 ++++++++
+ include/ui_wizard_ad5x_setup.h           |  21 +
+ src/api/moonraker_discovery_sequence.cpp |  10 +
+ src/ui/ui_ad5x_nozzle.cpp                |  88 ++-
+ src/ui/ui_panel_settings.cpp             |  10 +
+ src/ui/ui_settings_ad5x_soak.cpp         | 729 +++++++++++++++++++++++
+ src/ui/ui_wizard_ad5x_setup.cpp          |  68 ++-
+ tests/unit/test_settings_ad5x_soak.cpp   |  94 +++
+ ui_xml/settings_ad5x_soak_overlay.xml    | 126 ++++
+ ui_xml/settings_panel.xml                |   6 +
+ 12 files changed, 1390 insertions(+), 6 deletions(-)
+ create mode 100644 include/ui_settings_ad5x_soak.h
+ create mode 100644 src/ui/ui_settings_ad5x_soak.cpp
+ create mode 100644 tests/unit/test_settings_ad5x_soak.cpp
+ create mode 100644 ui_xml/settings_ad5x_soak_overlay.xml
+
+diff --git a/include/ui_ad5x_nozzle.h b/include/ui_ad5x_nozzle.h
+index 309eca4c..08ba55c1 100644
+--- a/include/ui_ad5x_nozzle.h
++++ b/include/ui_ad5x_nozzle.h
+@@ -12,7 +12,9 @@
+  * print.
+  *
+  * Used by the setup wizard's Nozzle Size step (ui_wizard_ad5x_setup.cpp) and
+- * the Settings > Nozzle Size row, whose chooser is Ad5xNozzleModal.
++ * the Settings > Nozzle Size row, whose chooser is Ad5xNozzleModal. A change
++ * made there offers the checks a new nozzle needs (hotend PID, Z offset) once
++ * Klipper is back with the new size; the wizard runs those steps anyway.
+  *
+  * @threading Main thread only; Moonraker callbacks hop over via lifetime tokens
+  */
+@@ -137,6 +139,11 @@ class Ad5xNozzleModel {
+ 
+ Ad5xNozzleModel& model();
+ 
++/// After Settings changed the size to @p mm: once Klipper is back with it,
++/// asks whether to run the hotend PID tune and the Z offset test now
++/// (ad5x_setup::launch_nozzle_checks()). Gives up quietly after 90 s.
++void offer_checks_when_applied(double mm);
++
+ } // namespace helix::ad5x_nozzle
+ 
+ namespace helix::ui {
+diff --git a/include/ui_panel_settings.h b/include/ui_panel_settings.h
+index 80687627..4df6629b 100644
+--- a/include/ui_panel_settings.h
++++ b/include/ui_panel_settings.h
+@@ -141,6 +141,8 @@ class SettingsPanel : public PanelBase {
+     lv_subject_t show_ad5x_plugins_subject_{};
+     // 1 when the printer has the AD5X nozzle object: unhides "Nozzle Size"
+     lv_subject_t show_ad5x_nozzle_subject_{};
++    // 1 when the printer has the AD5X bed soak object: unhides "Bed Heat Soak"
++    lv_subject_t show_ad5x_soak_subject_{};
+ 
+     // Live status line shown under each stateful root row (settings_panel.xml),
+     // refreshed by refresh_status_lines().
+diff --git a/include/ui_settings_ad5x_soak.h b/include/ui_settings_ad5x_soak.h
+new file mode 100644
+index 00000000..fa8cb308
+--- /dev/null
++++ b/include/ui_settings_ad5x_soak.h
+@@ -0,0 +1,233 @@
++// SPDX-License-Identifier: GPL-3.0-or-later
++
++/**
++ * @file ui_settings_ad5x_soak.h
++ * @brief Settings > Bed Heat Soak on the AD5X: the `ad5x_soak` Klipper object
++ *
++ * After a cold start the bed keeps moving for minutes after it reaches its
++ * temperature; the print start waits this long before it checks Z. Klipper's
++ * object: `enabled` (BED_SOAK_ENABLE ENABLE=0|1, saved), `calibration` (per
++ * bed temperature: `settle` seconds, `drift` mm the centre moved, ...),
++ * `running` (a calibration runs), `soak` and `last` (the rounds of the
++ * running or last calibration: [[seconds, z centre, z corners...], ...]).
++ *
++ * BED_SOAK_CALIBRATE BED=<C> measures one temperature from a cold bed. It
++ * holds the G-code queue for 20-35 minutes and answers only when it ends, so
++ * the request is sent with a long timeout and the screen follows `running`
++ * meanwhile. Stop is the Klipper API endpoint `ad5x_soak/abort` (JSON-RPC
++ * printer.ad5x_soak.abort): no G-code can reach Klipper while it runs.
++ *
++ * Ad5xSoakModel keeps the object, the shared subjects and the calibration
++ * request; it lives on while the overlay is closed, so a calibration started
++ * here ends with a toast wherever the user is. Ad5xSoakOverlay is the screen.
++ *
++ * @pattern Overlay (lazy init) over a process-wide model
++ * @threading Main thread only; Moonraker callbacks hop over via lifetime tokens
++ */
++
++#pragma once
++
++#include "ui_observer_guard.h"
++#include "ui_subscription_guard.h"
++
++#include "async_lifetime_guard.h"
++#include "json_fwd.h"
++#include "lvgl/lvgl.h"
++#include "overlay_base.h"
++#include "static_panel_registry.h"
++#include "subject_managed_panel.h"
++
++#include <cstddef>
++#include <string>
++#include <vector>
++
++namespace helix::ad5x_soak {
++
++/// One calibrated bed temperature.
++struct Calibration {
++    int temp = 0;       ///< Bed temperature, °C
++    int settle = 0;     ///< Seconds the print start waits after the bed is hot
++    double drift = 0.0; ///< How far the bed centre moved, mm
++    bool stable = true; ///< Settled before the calibration's time limit
++};
++
++/// The bed temperatures offered for a calibration, in °C.
++const std::vector<int>& bed_temps();
++
++/// Bed temperature Klipper refuses a calibration from (unless FORCE=1), °C.
++inline constexpr int kColdBedC = 40;
++
++/// The `calibration` field, sorted by temperature; malformed entries skipped.
++std::vector<Calibration> parse_calibration(const json& status);
++
++/// "7:00" for 420 s.
++std::string duration_text(int seconds);
++
++/// The calibrated list, one line per temperature, or the uncalibrated fallback.
++std::string calibrated_text(const std::vector<Calibration>& calibration);
++
++/// The Settings row's line: "On · 60 °C 7:00, 80 °C 7:00", "On · not calibrated", "Off".
++std::string summary_text(bool enabled, const std::vector<Calibration>& calibration);
++
++/// The newest @p max_rows rounds of `last`: time since the bed was hot and how
++/// far the centre (and the corners) moved since the first round.
++std::string rounds_text(const json& last, std::size_t max_rows);
++
++/// "BED_SOAK_CALIBRATE BED=60"
++std::string calibrate_gcode(int bed);
++
++/// Klipper's final console line ("// Bed soak at 60 C: ...") without the
++/// prefix; empty for any other line.
++std::string result_line(const std::string& console_line);
++
++/// Whether the printer publishes the `ad5x_soak` object.
++bool available();
++
++/// How the last calibration request ended (ad5x_soak_result_kind).
++enum class ResultKind {
++    None = 0,    ///< Nothing to report: the line is hidden
++    Done = 1,    ///< Finished; the result line
++    Stopped = 2, ///< Stopped from the screen; nothing saved
++    Failed = 3,  ///< Refused or failed; Klipper's reason
++};
++
++/// The object, the shared subjects and the commands.
++///
++/// Subjects: `ad5x_soak_summary` (the Settings row's line), `ad5x_soak_enabled`,
++/// `ad5x_soak_view` (0 idle, 1 calibrating), `ad5x_soak_busy` (1 while
++/// calibrating, a change is pending or Klipper is not ready: the controls bind
++/// it), `ad5x_soak_stopping`, `ad5x_soak_status`, `ad5x_soak_rounds`,
++/// `ad5x_soak_calibrated`, `ad5x_soak_result` and `ad5x_soak_result_kind`.
++class Ad5xSoakModel {
++  public:
++    Ad5xSoakModel() = default;
++    ~Ad5xSoakModel();
++    Ad5xSoakModel(const Ad5xSoakModel&) = delete;
++    Ad5xSoakModel& operator=(const Ad5xSoakModel&) = delete;
++
++    void init_subjects();
++
++    /// Follow the object (status updates, Klipper restarts, the console's
++    /// result line) from now on, and query it. Safe to call again; later
++    /// calls only query.
++    void start();
++
++    /// Ask Klipper for the whole object.
++    void query();
++
++    bool loaded() const {
++        return loaded_;
++    }
++    bool klippy_ready() const {
++        return klippy_ready_;
++    }
++    /// A calibration runs on the printer or our request has not ended.
++    bool calibrating() const {
++        return running_ || request_in_flight_;
++    }
++
++    /// Position in bed_temps() the chooser shows.
++    int bed_index() const {
++        return bed_index_;
++    }
++    void set_bed_index(int index);
++
++    /// BED_SOAK_ENABLE ENABLE=0|1
++    void set_enabled(bool on);
++
++    /// BED_SOAK_CALIBRATE BED=@p bed. The checks (print, cold bed, empty bed)
++    /// are the caller's; this only refuses while a calibration runs.
++    void calibrate(int bed);
++
++    /// printer.ad5x_soak.abort: ends the running calibration, nothing saved.
++    void stop();
++
++  private:
++    void merge_status(const json& delta);
++    void set_status(const json& full);
++    /// `running` from the cached object; ends a request that outlived its timeout.
++    void on_running_changed();
++    void on_gcode_response(const std::string& line);
++    void finish(ResultKind kind, const std::string& text);
++    void finish_from_object();
++    std::string status_text() const;
++    void refresh();
++
++    SubjectManager subjects_;
++    lv_subject_t summary_{};
++    lv_subject_t enabled_{};
++    lv_subject_t view_{};
++    lv_subject_t busy_{};
++    lv_subject_t stopping_{};
++    lv_subject_t status_line_{};
++    lv_subject_t rounds_{};
++    lv_subject_t calibrated_{};
++    lv_subject_t result_{};
++    lv_subject_t result_kind_{};
++    char summary_buf_[128] = "";
++    char status_line_buf_[160] = "";
++    char rounds_buf_[768] = "";
++    char calibrated_buf_[512] = "";
++    char result_buf_[512] = "";
++    bool subjects_initialized_ = false;
++
++    json status_ = json::object();
++    bool loaded_ = false;
++    bool klippy_ready_ = true;
++    bool started_ = false;
++    bool running_ = false;
++    int bed_index_ = 0;
++    int enable_pending_ = 0;
++
++    // The calibration request: sent, answered or timed out, Stop pressed
++    bool request_in_flight_ = false;
++    bool request_timed_out_ = false;
++    bool stop_requested_ = false;
++    int request_bed_ = 0;
++    std::string console_result_; ///< Klipper's final line for this request
++
++    SubscriptionGuard subscription_;
++    ObserverGuard klippy_observer_;
++    ObserverGuard message_observer_;
++    AsyncLifetimeGuard lifetime_;
++};
++
++Ad5xSoakModel& model();
++
++} // namespace helix::ad5x_soak
++
++namespace helix::settings {
++
++/// Settings > Bed Heat Soak: the on/off switch, the calibrated times and a
++/// calibration with its progress and Stop.
++class Ad5xSoakOverlay : public OverlayBase {
++  public:
++    const char* get_name() const override {
++        return "AD5X Bed Heat Soak";
++    }
++    const char* xml_component() const override {
++        return "settings_ad5x_soak_overlay";
++    }
++    /// Freed on close; the next open rebuilds it.
++    bool destroy_on_close() const override {
++        return true;
++    }
++
++    void init_subjects() override;
++    void register_callbacks() override;
++    void on_activate() override;
++
++    void handle_enabled_changed(bool on);
++    void handle_bed_changed(int index);
++    void handle_calibrate();
++    void handle_stop();
++
++  private:
++    void init_bed_dropdown();
++};
++
++inline Ad5xSoakOverlay& get_ad5x_soak_overlay() {
++    return lazy_global<Ad5xSoakOverlay>("Ad5xSoakOverlay");
++}
++
++} // namespace helix::settings
+diff --git a/include/ui_wizard_ad5x_setup.h b/include/ui_wizard_ad5x_setup.h
+index 9f8840f0..994dcbbf 100644
+--- a/include/ui_wizard_ad5x_setup.h
++++ b/include/ui_wizard_ad5x_setup.h
+@@ -20,6 +20,10 @@
+  * All seven steps share one set of subjects (only one step is on screen at a
+  * time), owned by Ad5xSetupModel together with the status cache and the
+  * Moonraker subscription.
++ *
++ * A targeted session can add start parameters per step (launch_nozzle_checks():
++ * the PID step tunes only the hotend). The first-start wizard and "Run Setup
++ * Wizard" add none, so their PID step tunes nozzle and bed.
+  */
+ 
+ #include "ui_observer_guard.h"
+@@ -69,6 +73,10 @@ const StepSpec* spec_for(wizard::StepId id);
+ /// when Klipper has the `ad5x_nozzle` object (for a targeted wizard session).
+ std::vector<wizard::StepId> step_ids();
+ 
++/// The steps after a nozzle change: hotend PID, Z offset, and the save step
++/// that keeps their results.
++std::vector<wizard::StepId> nozzle_check_step_ids();
++
+ /// Whether the printer has the AD5X setup steps: the `ad5x` preset is set for
+ /// the active printer, or Klipper publishes an `ad5x_setup` object.
+ bool available(const wizard::StepContext& ctx);
+@@ -101,10 +109,18 @@ class Ad5xSetupModel {
+     void adjust(double delta_mm);
+     void accept();
+ 
++    /// Start parameters the targeted session now starting adds, by step key:
++    /// {"pid": {"heaters": "extruder"}}. Read only while a targeted session
++    /// runs; an empty object clears them.
++    void set_session_params(json params);
++
+   private:
+     void send(const std::string& action, double delta = 0.0);
+     void send_gcode(const std::string& key, const std::string& action, double delta);
+     json step_options() const;
++    /// @p name of the session parameters for step @p key, or "" when the
++    /// session sets none (or no targeted session runs).
++    std::string session_param(const char* key, const char* name) const;
+     void query_status();
+     void merge_status(const json& delta);
+     void refresh();
+@@ -127,6 +143,7 @@ class Ad5xSetupModel {
+ 
+     const StepSpec* active_ = nullptr;
+     json status_ = json::object();
++    json session_params_ = json::object();
+     bool start_in_flight_ = false;
+     std::string local_error_;
+ 
+@@ -143,6 +160,10 @@ Ad5xSetupModel& model();
+ /// (the settings entry). Does not touch wizard_completed.
+ void launch_targeted(lv_obj_t* parent);
+ 
++/// After a nozzle change: a targeted session with nozzle_check_step_ids(), the
++/// PID step tuning only the hotend (heaters=extruder; the bed did not change).
++void launch_nozzle_checks(lv_obj_t* parent);
++
+ /// Open the AD5X steps when Klipper's SETUP_WIZARD announces
+ /// `// action:ad5x_setup_wizard`, and drop the start-up flag file it wrote
+ /// (HELIX_WIZARD_FLAG_FILE), which this run then answers. Idempotent per client.
+diff --git a/src/api/moonraker_discovery_sequence.cpp b/src/api/moonraker_discovery_sequence.cpp
+index 0787994b..922685d7 100644
+--- a/src/api/moonraker_discovery_sequence.cpp
++++ b/src/api/moonraker_discovery_sequence.cpp
+@@ -1520,6 +1520,16 @@ json MoonrakerDiscoverySequence::build_subscription_objects(
+         }
+     }
+ 
++    // AD5X bed heat soak (ui_settings_ad5x_soak.cpp): the switch, the calibrated
++    // times and, during a calibration, `running` and its rounds (`last`, one a
++    // minute), so the whole object.
++    {
++        const auto& objects = hw.printer_objects();
++        if (std::find(objects.begin(), objects.end(), "ad5x_soak") != objects.end()) {
++            subscription_objects["ad5x_soak"] = nullptr;
++        }
++    }
++
+     // Print start macros — only the boolean flags PrintStartCollector reads.
+     // Other variables on these macros (slicer args, profile names, etc.) are
+     // irrelevant to the start-detection logic.
+diff --git a/src/ui/ui_ad5x_nozzle.cpp b/src/ui/ui_ad5x_nozzle.cpp
+index dfa5236b..e5385d1d 100644
+--- a/src/ui/ui_ad5x_nozzle.cpp
++++ b/src/ui/ui_ad5x_nozzle.cpp
+@@ -4,6 +4,8 @@
+ 
+ #include "ui_emergency_stop.h"
+ #include "ui_error_reporting.h"
++#include "ui_timer_guard.h"
++#include "ui_wizard_ad5x_setup.h"
+ 
+ #include "app_globals.h"
+ #include "i_moonraker_api.h"
+@@ -308,6 +310,88 @@ Ad5xNozzleModel& model() {
+     return helix::lazy_global<Ad5xNozzleModel>("Ad5xNozzleModel");
+ }
+ 
++// ============================================================================
++// CHECKS AFTER A CHANGE IN SETTINGS
++// ============================================================================
++
++namespace {
++
++/// How long the offer waits for Klipper to come back with the new size.
++constexpr uint32_t kFollowUpTimeoutMs = 90u * 1000u;
++/// Klipper's restart can fall between two klippy state notifications: look again this often.
++constexpr uint32_t kFollowUpPollMs = 2000u;
++
++/// Waits until Klipper runs with the new size, then offers the hotend PID and
++/// Z offset checks. One at a time: a second change restarts the wait.
++class NozzleChangeFollowUp {
++  public:
++    void watch(double mm) {
++        target_ = mm;
++        waited_ms_ = 0;
++        timer_.reset(lv_timer_create(
++            [](lv_timer_t* t) {
++                static_cast<NozzleChangeFollowUp*>(lv_timer_get_user_data(t))->tick();
++            },
++            kFollowUpPollMs, this));
++    }
++
++  private:
++    void tick() {
++        auto& nozzle = model();
++        const auto& size = nozzle.status().size;
++        if (nozzle.klippy_ready() && nozzle.loaded() && size && same_size(*size, target_)) {
++            timer_.reset();
++            offer();
++            return;
++        }
++        waited_ms_ += kFollowUpPollMs;
++        if (waited_ms_ >= kFollowUpTimeoutMs) {
++            spdlog::info("[AD5X nozzle] Klipper is not back with {}: no checks offered",
++                         size_label(target_));
++            timer_.reset();
++            return;
++        }
++        if (nozzle.klippy_ready()) {
++            nozzle.query();
++        }
++    }
++
++    void offer() const {
++        // Not over a wizard (it runs these steps itself) or a print
++        if (is_wizard_active() || !ad5x_setup::available() ||
++            lv_subject_get_int(get_printer_state().print_state().get_print_active_subject()) != 0) {
++            return;
++        }
++        spdlog::info("[AD5X nozzle] Klipper runs with {}: offering the checks",
++                     size_label(target_));
++        const std::string title =
++            fmt::format(fmt::runtime(lv_tr("Nozzle changed to {}")), size_label(target_));
++        helix::ui::ConfirmOptions opts;
++        opts.cancel_text = lv_tr("Later");
++        helix::ui::modal_confirm(
++            title.c_str(),
++            lv_tr("Run the hotend PID tune and the first-layer Z offset test now? (The bed "
++                  "doesn't need retuning.)"),
++            ModalSeverity::Info, lv_tr("Run"),
++            []() {
++                if (!is_wizard_active()) {
++                    ad5x_setup::launch_nozzle_checks(lv_screen_active());
++                }
++            },
++            opts);
++    }
++
++    double target_ = 0.0;
++    uint32_t waited_ms_ = 0;
++    helix::ui::LvglTimerGuard timer_;
++};
++
++} // namespace
++
++void offer_checks_when_applied(double mm) {
++    helix::lazy_global<NozzleChangeFollowUp>("Ad5xNozzleChangeFollowUp").watch(mm);
++}
++
+ } // namespace helix::ad5x_nozzle
+ 
+ // ============================================================================
+@@ -359,10 +443,12 @@ void Ad5xNozzleModal::on_ok() {
+         fmt::format(lv_tr("Change the nozzle size to {}?"), ad5x_nozzle::size_label(mm));
+     modal_confirm(title.c_str(), lv_tr("Klipper restarts to apply this. Continue?"),
+                   ModalSeverity::Warning, lv_tr("Change"), [mm]() {
+-                      ad5x_nozzle::model().apply(mm, [](const std::string& error) {
++                      ad5x_nozzle::model().apply(mm, [mm](const std::string& error) {
+                           if (!error.empty()) {
+                               NOTIFY_WARNING("{}", error);
++                              return;
+                           }
++                          ad5x_nozzle::offer_checks_when_applied(mm);
+                       });
+                   });
+ }
+diff --git a/src/ui/ui_panel_settings.cpp b/src/ui/ui_panel_settings.cpp
+index 57c2b469..1c8bc694 100644
+--- a/src/ui/ui_panel_settings.cpp
++++ b/src/ui/ui_panel_settings.cpp
+@@ -15,6 +15,7 @@
+ #include "ui_panel_memory_stats.h"
+ #include "ui_printer_manager_overlay.h"
+ #include "ui_settings_ad5x_plugins.h"
++#include "ui_settings_ad5x_soak.h"
+ #include "ui_settings_appearance.h"
+ #include "ui_settings_connection.h"
+ #include "ui_settings_display.h"
+@@ -143,6 +144,9 @@ void SettingsPanel::init_subjects() {
+     UI_MANAGED_SUBJECT_INT(show_ad5x_nozzle_subject_, 0, "settings_show_ad5x_nozzle", subjects_);
+     // The Nozzle Size row's line (ad5x_nozzle_size_text) follows the printer's object
+     helix::ad5x_nozzle::model().init_subjects();
++    UI_MANAGED_SUBJECT_INT(show_ad5x_soak_subject_, 0, "settings_show_ad5x_soak", subjects_);
++    // The Bed Heat Soak row's line (ad5x_soak_summary) follows the printer's object
++    helix::ad5x_soak::model().init_subjects();
+ 
+     // Live status line under each stateful root row; refresh_status_lines()
+     // fills these in, first from setup() and then on every return to the root.
+@@ -233,6 +237,11 @@ void SettingsPanel::refresh_status_lines() {
+     if (has_nozzle) {
+         helix::ad5x_nozzle::model().start();
+     }
++    const bool has_soak = helix::ad5x_soak::available();
++    lv_subject_set_int(&show_ad5x_soak_subject_, has_soak ? 1 : 0);
++    if (has_soak) {
++        helix::ad5x_soak::model().start();
++    }
+ 
+     // Formatted here rather than once at init, so it is in the language of the
+     // latest return to the settings root.
+@@ -406,6 +415,7 @@ void register_settings_panel_callbacks() {
+         {"on_connection_clicked", nav_row<get_connection_settings_overlay>()},
+         {"on_updates_clicked", nav_row<get_updates_settings_overlay>()},
+         {"on_ad5x_plugins_clicked", nav_row<get_ad5x_plugins_overlay>()},
++        {"on_ad5x_soak_clicked", nav_row<get_ad5x_soak_overlay>()},
+ #if HELIX_HAS_PLUGINS
+         {"on_plugins_clicked", nav_row<helix::plugin::get_plugins_overlay>()},
+ #else
+diff --git a/src/ui/ui_settings_ad5x_soak.cpp b/src/ui/ui_settings_ad5x_soak.cpp
+new file mode 100644
+index 00000000..c0d81d2f
+--- /dev/null
++++ b/src/ui/ui_settings_ad5x_soak.cpp
+@@ -0,0 +1,729 @@
++// SPDX-License-Identifier: GPL-3.0-or-later
++
++#include "ui_settings_ad5x_soak.h"
++
++#include "ui_callback_helpers.h"
++#include "ui_error_reporting.h"
++#include "ui_modal.h"
++
++#include "app_globals.h"
++#include "i_moonraker_api.h"
++#include "i_moonraker_client.h"
++#include "json_utils.h"
++#include "lvgl/src/others/translation/lv_translation.h"
++#include "observer_factory.h"
++#include "printer_discovery.h"
++#include "printer_state.h"
++#include "ui/ui_widget_helpers.h"
++
++#include <spdlog/fmt/fmt.h>
++#include <spdlog/spdlog.h>
++
++#include <algorithm>
++#include <cctype>
++#include <cmath>
++#include <cstdlib>
++#include <memory>
++
++namespace helix::ad5x_soak {
++
++namespace {
++
++constexpr const char* kObject = "ad5x_soak";
++constexpr const char* kAbortMethod = "printer.ad5x_soak.abort";
++constexpr uint32_t kAbortTimeoutMs = 10u * 1000u;
++/// BED_SOAK_CALIBRATE answers when it ends: homing, 5 minutes of nozzle soak,
++/// the bed heating and up to 25 minutes of probing. Past this the screen stops
++/// waiting for the answer and follows `running` alone.
++constexpr uint32_t kCalibrateTimeoutMs = 75u * 60u * 1000u;
++/// Rounds shown while a calibration runs (one per minute).
++constexpr std::size_t kRoundsShown = 8;
++/// Klipper's status line during a calibration starts with this.
++constexpr const char* kStatusPrefix = "Bed soak test: ";
++/// Klipper's final console line starts with this.
++constexpr const char* kResultPrefix = "Bed soak at ";
++
++void copy_if_changed(lv_subject_t* subject, const std::string& text) {
++    const char* cur = lv_subject_get_string(subject);
++    if (!cur || text != cur) {
++        lv_subject_copy_string(subject, text.c_str());
++    }
++}
++
++void set_if_changed(lv_subject_t* subject, int value) {
++    if (lv_subject_get_int(subject) != value) {
++        lv_subject_set_int(subject, value);
++    }
++}
++
++bool starts_with(const std::string& s, const char* prefix) {
++    return s.rfind(prefix, 0) == 0;
++}
++
++} // namespace
++
++// ============================================================================
++// STATUS OBJECT
++// ============================================================================
++
++const std::vector<int>& bed_temps() {
++    static const std::vector<int> temps = {60, 70, 80, 90, 100, 110};
++    return temps;
++}
++
++std::vector<Calibration> parse_calibration(const json& status) {
++    std::vector<Calibration> out;
++    const json* cal = json_util::find_member(status, "calibration");
++    if (!cal || !cal->is_object()) {
++        return out;
++    }
++    for (auto it = cal->begin(); it != cal->end(); ++it) {
++        if (!it.value().is_object()) {
++            continue;
++        }
++        char* end = nullptr;
++        const long temp = std::strtol(it.key().c_str(), &end, 10);
++        if (end == it.key().c_str() || temp <= 0 || temp > 200) {
++            continue;
++        }
++        Calibration c;
++        c.temp = static_cast<int>(temp);
++        c.settle = std::max(
++            0, static_cast<int>(std::lround(json_util::safe_double(it.value(), "settle", 0.0))));
++        c.drift = json_util::safe_double(it.value(), "drift", 0.0);
++        c.stable = json_util::safe_bool(it.value(), "stable", true);
++        out.push_back(c);
++    }
++    std::sort(out.begin(), out.end(),
++              [](const Calibration& a, const Calibration& b) { return a.temp < b.temp; });
++    return out;
++}
++
++std::string duration_text(int seconds) {
++    seconds = std::max(0, seconds);
++    return fmt::format("{}:{:02d}", seconds / 60, seconds % 60);
++}
++
++std::string calibrated_text(const std::vector<Calibration>& calibration) {
++    if (calibration.empty()) {
++        return lv_tr("Not calibrated yet: 3 s per degree the bed heats, at most 10 minutes");
++    }
++    std::string out;
++    for (const auto& c : calibration) {
++        if (!out.empty()) {
++            out += '\n';
++        }
++        out += fmt::format(fmt::runtime(lv_tr("{} °C — {} (centre moved {:.2f} mm)")), c.temp,
++                           duration_text(c.settle), std::fabs(c.drift));
++        if (!c.stable) {
++            out += lv_tr(", not fully settled");
++        }
++    }
++    return out;
++}
++
++std::string summary_text(bool enabled, const std::vector<Calibration>& calibration) {
++    if (!enabled) {
++        return lv_tr("Off");
++    }
++    if (calibration.empty()) {
++        return fmt::format("{} · {}", lv_tr("On"), lv_tr("not calibrated"));
++    }
++    std::string times;
++    for (const auto& c : calibration) {
++        if (!times.empty()) {
++            times += ", ";
++        }
++        times += fmt::format("{} °C {}", c.temp, duration_text(c.settle));
++    }
++    return fmt::format("{} · {}", lv_tr("On"), times);
++}
++
++std::string rounds_text(const json& last, std::size_t max_rows) {
++    if (!last.is_array() || last.empty()) {
++        return lv_tr("No readings yet: the first comes once the bed is hot.");
++    }
++    const json& first = last.front();
++    auto value = [](const json& row, std::size_t i) {
++        return (row.is_array() && i < row.size()) ? json_util::as_double(row[i], NAN) : NAN;
++    };
++    const std::size_t begin = last.size() > max_rows ? last.size() - max_rows : 0;
++    std::string out;
++    for (std::size_t r = begin; r < last.size(); ++r) {
++        const json& row = last[r];
++        const double t = value(row, 0);
++        const double centre = value(row, 1) - value(first, 1);
++        if (std::isnan(t) || std::isnan(centre)) {
++            continue;
++        }
++        std::string line = fmt::format(fmt::runtime(lv_tr("{}  centre {:+.3f} mm")),
++                                       duration_text(static_cast<int>(std::lround(t))), centre);
++        // Corners: the range of their change since the first round
++        double lo = NAN;
++        double hi = NAN;
++        for (std::size_t i = 2; row.is_array() && i < row.size(); ++i) {
++            const double d = value(row, i) - value(first, i);
++            if (std::isnan(d)) {
++                continue;
++            }
++            lo = std::isnan(lo) ? d : std::min(lo, d);
++            hi = std::isnan(hi) ? d : std::max(hi, d);
++        }
++        if (!std::isnan(lo)) {
++            line += fmt::format(fmt::runtime(lv_tr(", corners {:+.3f} to {:+.3f}")), lo, hi);
++        }
++        if (!out.empty()) {
++            out += '\n';
++        }
++        out += line;
++    }
++    return out;
++}
++
++std::string calibrate_gcode(int bed) {
++    return fmt::format("BED_SOAK_CALIBRATE BED={}", bed);
++}
++
++std::string result_line(const std::string& console_line) {
++    std::string line = console_line;
++    if (starts_with(line, "// ")) {
++        line.erase(0, 3);
++    }
++    if (!starts_with(line, kResultPrefix)) {
++        return {};
++    }
++    while (!line.empty() && (line.back() == '\n' || line.back() == '\r')) {
++        line.pop_back();
++    }
++    return line;
++}
++
++bool available() {
++    IMoonrakerAPI* api = get_moonraker_api();
++    if (!api) {
++        return false;
++    }
++    const auto& objects = api->hardware().printer_objects();
++    return std::find(objects.begin(), objects.end(), kObject) != objects.end();
++}
++
++// ============================================================================
++// MODEL
++// ============================================================================
++
++Ad5xSoakModel::~Ad5xSoakModel() {
++    lifetime_.invalidate();
++    subscription_.reset();
++    klippy_observer_.reset();
++    message_observer_.reset();
++    subjects_.deinit_all();
++}
++
++void Ad5xSoakModel::init_subjects() {
++    if (subjects_initialized_) {
++        return;
++    }
++    // "On · 60 °C 7:00" for the Settings row, empty while the object has not answered
++    UI_MANAGED_SUBJECT_STRING(summary_, summary_buf_, "", "ad5x_soak_summary", subjects_);
++    UI_MANAGED_SUBJECT_INT(enabled_, 0, "ad5x_soak_enabled", subjects_);
++    // 0: the calibrate section, 1: a calibration runs (progress and Stop)
++    UI_MANAGED_SUBJECT_INT(view_, 0, "ad5x_soak_view", subjects_);
++    // 1 while calibrating, a change is pending or Klipper is not ready
++    UI_MANAGED_SUBJECT_INT(busy_, 1, "ad5x_soak_busy", subjects_);
++    UI_MANAGED_SUBJECT_INT(stopping_, 0, "ad5x_soak_stopping", subjects_);
++    UI_MANAGED_SUBJECT_STRING(status_line_, status_line_buf_, "", "ad5x_soak_status", subjects_);
++    UI_MANAGED_SUBJECT_STRING(rounds_, rounds_buf_, "", "ad5x_soak_rounds", subjects_);
++    UI_MANAGED_SUBJECT_STRING(calibrated_, calibrated_buf_, "", "ad5x_soak_calibrated", subjects_);
++    UI_MANAGED_SUBJECT_STRING(result_, result_buf_, "", "ad5x_soak_result", subjects_);
++    // ResultKind: hides the line or colours it
++    UI_MANAGED_SUBJECT_INT(result_kind_, 0, "ad5x_soak_result_kind", subjects_);
++    subjects_initialized_ = true;
++}
++
++void Ad5xSoakModel::start() {
++    if (!started_) {
++        IMoonrakerAPI* api = get_moonraker_api();
++        IMoonrakerClient* client = get_moonraker_client();
++        if (api && client) {
++            started_ = true;
++            const auto token = lifetime_.token();
++            // Runs on the WebSocket thread: copy the object out, apply it on the main thread.
++            const SubscriptionId id = api->subscribe_notifications([this, token](const json& note) {
++                const json* params = json_util::find_member(note, "params");
++                if (!params || !params->is_array() || params->empty()) {
++                    return;
++                }
++                const json* obj = json_util::find_member((*params)[0], kObject);
++                if (!obj || !obj->is_object()) {
++                    return;
++                }
++                json delta = *obj;
++                token.defer("Ad5xSoakModel::status_update",
++                            [this, delta]() { merge_status(delta); });
++            });
++            subscription_ = SubscriptionGuard(api, id);
++
++            // The final "Bed soak at 60 C: ..." line; only a request of ours keeps it.
++            // Registering an existing handler name is a no-op: drop one a previous
++            // model (before a printer switch) left behind first.
++            client->unregister_method_callback("notify_gcode_response", "ad5x_soak_result");
++            client->register_method_callback(
++                "notify_gcode_response", "ad5x_soak_result", [this, token](const json& note) {
++                    const json* params = json_util::find_member(note, "params");
++                    if (!params || !params->is_array() || params->empty() ||
++                        !(*params)[0].is_string()) {
++                        return;
++                    }
++                    std::string line = result_line((*params)[0].get<std::string>());
++                    if (line.empty()) {
++                        return;
++                    }
++                    token.defer("Ad5xSoakModel::result_line",
++                                [this, line]() { on_gcode_response(line); });
++                });
++
++            klippy_observer_ = ui::observe<int>(
++                get_printer_state().network_state().get_klippy_state_subject(), this,
++                [](Ad5xSoakModel* self, int state) {
++                    const bool ready = static_cast<KlippyState>(state) == KlippyState::READY;
++                    if (ready == self->klippy_ready_) {
++                        return;
++                    }
++                    self->klippy_ready_ = ready;
++                    if (ready) {
++                        self->query();
++                    } else {
++                        self->loaded_ = false;
++                    }
++                    self->refresh();
++                },
++                get_printer_state().get_subjects_lifetime());
++
++            // The calibration's status line is Klipper's display message
++            message_observer_ = ui::observe<const char*>(
++                get_printer_state().print_state().get_display_message_subject(), this,
++                [](Ad5xSoakModel* self, const char* /*message*/) {
++                    if (self->calibrating()) {
++                        self->refresh();
++                    }
++                },
++                get_printer_state().get_subjects_lifetime());
++        }
++    }
++    query();
++}
++
++void Ad5xSoakModel::query() {
++    IMoonrakerClient* client = get_moonraker_client();
++    if (!client || client->get_connection_state() != ConnectionState::CONNECTED) {
++        return;
++    }
++    const auto token = lifetime_.token();
++    json params = {{"objects", {{kObject, nullptr}}}};
++    client->send_jsonrpc(
++        "printer.objects.query", params,
++        [this, token](const json& response) {
++            const json* result = json_util::find_member(response, "result");
++            const json* status = result ? json_util::find_member(*result, "status") : nullptr;
++            const json* obj = status ? json_util::find_member(*status, kObject) : nullptr;
++            if (!obj || !obj->is_object()) {
++                return;
++            }
++            json full = *obj;
++            token.defer("Ad5xSoakModel::status_query", [this, full]() { set_status(full); });
++        },
++        [](const MoonrakerError& err) {
++            spdlog::debug("[AD5X soak] {} query failed: {}", kObject, err.message);
++        },
++        0, /*silent=*/true);
++}
++
++void Ad5xSoakModel::set_status(const json& full) {
++    status_ = full;
++    loaded_ = true;
++    on_running_changed();
++}
++
++void Ad5xSoakModel::merge_status(const json& delta) {
++    // Deltas only patch a full object; the query in flight brings one
++    if (!loaded_ || !status_.is_object()) {
++        return;
++    }
++    for (auto it = delta.begin(); it != delta.end(); ++it) {
++        status_[it.key()] = it.value();
++    }
++    on_running_changed();
++}
++
++void Ad5xSoakModel::on_running_changed() {
++    running_ = json_util::safe_bool(status_, "running");
++    if (!running_) {
++        if (request_timed_out_) {
++            // Our request outlived its timeout: the object says when it ended
++            finish_from_object();
++        } else if (!request_in_flight_) {
++            // A calibration started elsewhere (console, macro) and stopped here
++            stop_requested_ = false;
++        }
++    }
++    refresh();
++}
++
++void Ad5xSoakModel::on_gcode_response(const std::string& line) {
++    if (request_in_flight_) {
++        console_result_ = line;
++    }
++}
++
++void Ad5xSoakModel::set_bed_index(int index) {
++    const int count = static_cast<int>(bed_temps().size());
++    bed_index_ = std::clamp(index, 0, count - 1);
++}
++
++void Ad5xSoakModel::set_enabled(bool on) {
++    IMoonrakerAPI* api = get_moonraker_api();
++    if (!api || calibrating()) {
++        // Puts the switch back
++        if (subjects_initialized_) {
++            lv_subject_notify(&enabled_);
++        }
++        return;
++    }
++    const std::string gcode = fmt::format("BED_SOAK_ENABLE ENABLE={}", on ? 1 : 0);
++    spdlog::info("[AD5X soak] {}", gcode);
++    if (subjects_initialized_) {
++        lv_subject_set_int(&enabled_, on ? 1 : 0);
++    }
++    ++enable_pending_;
++    refresh();
++
++    // Klipper's answer releases the switch; a fresh query then shows what it kept
++    const auto token = lifetime_.token();
++    api->execute_gcode(
++        gcode,
++        [this, token]() {
++            token.defer("Ad5xSoakModel::enable_done", [this]() {
++                enable_pending_ = std::max(0, enable_pending_ - 1);
++                query();
++                refresh();
++            });
++        },
++        [this, token](const MoonrakerError& err) {
++            const std::string message = err.message;
++            token.defer("Ad5xSoakModel::enable_error", [this, message]() {
++                enable_pending_ = std::max(0, enable_pending_ - 1);
++                NOTIFY_WARNING("{}", message.empty() ? std::string(lv_tr("Failed")) : message);
++                query();
++                refresh();
++            });
++        },
++        0, /*silent=*/false, /*on_queued=*/nullptr, /*caller_surfaces_errors=*/true);
++}
++
++void Ad5xSoakModel::calibrate(int bed) {
++    IMoonrakerAPI* api = get_moonraker_api();
++    if (!api) {
++        NOTIFY_WARNING("{}", lv_tr("Not connected to the printer"));
++        return;
++    }
++    if (calibrating()) {
++        return;
++    }
++    const std::string gcode = calibrate_gcode(bed);
++    spdlog::info("[AD5X soak] {}", gcode);
++    request_in_flight_ = true;
++    request_timed_out_ = false;
++    stop_requested_ = false;
++    request_bed_ = bed;
++    console_result_.clear();
++    if (subjects_initialized_) {
++        lv_subject_set_int(&result_kind_, static_cast<int>(ResultKind::None));
++        copy_if_changed(&result_, "");
++    }
++    refresh();
++
++    // The answer comes when the calibration ends, 20-35 minutes from now; a
++    // long wait is the command working. The model outlives the overlay, so
++    // the end is reported wherever the user is.
++    const auto token = lifetime_.token();
++    api->execute_gcode(
++        gcode,
++        [this, token]() {
++            token.defer("Ad5xSoakModel::calibrate_done", [this]() {
++                if (!request_in_flight_) {
++                    return;
++                }
++                std::string text = console_result_;
++                if (text.empty()) {
++                    text = fmt::format(fmt::runtime(lv_tr("Bed soak at {} °C calibrated.")),
++                                       request_bed_);
++                }
++                finish(ResultKind::Done, text);
++                query();
++            });
++        },
++        [this, token](const MoonrakerError& err) {
++            const bool timed_out = err.type == MoonrakerErrorType::TIMEOUT;
++            const std::string message = err.message;
++            token.defer("Ad5xSoakModel::calibrate_error", [this, timed_out, message]() {
++                if (!request_in_flight_) {
++                    return;
++                }
++                if (timed_out && running_) {
++                    // Still running on the printer: follow `running` from here
++                    spdlog::info("[AD5X soak] No answer yet; following the object");
++                    request_timed_out_ = true;
++                    refresh();
++                    return;
++                }
++                if (stop_requested_) {
++                    finish(ResultKind::Stopped,
++                           lv_tr("Calibration stopped. Heaters off, nothing saved."));
++                } else {
++                    finish(ResultKind::Failed,
++                           message.empty() ? std::string(lv_tr("Failed")) : message);
++                }
++                query();
++            });
++        },
++        kCalibrateTimeoutMs, /*silent=*/false, /*on_queued=*/nullptr,
++        /*caller_surfaces_errors=*/true);
++}
++
++void Ad5xSoakModel::stop() {
++    if (!calibrating() || stop_requested_) {
++        return;
++    }
++    IMoonrakerClient* client = get_moonraker_client();
++    if (!client || client->get_connection_state() != ConnectionState::CONNECTED) {
++        NOTIFY_WARNING("{}", lv_tr("Not connected to the printer"));
++        return;
++    }
++    spdlog::info("[AD5X soak] {}", kAbortMethod);
++    stop_requested_ = true;
++    refresh();
++
++    const auto token = lifetime_.token();
++    client->send_jsonrpc(
++        kAbortMethod, json::object(),
++        [this, token](const json& /*reply*/) {
++            // The calibration ends within a second; its request reports that
++            token.defer("Ad5xSoakModel::abort_done", [this]() {
++                query();
++                refresh();
++            });
++        },
++        [this, token](const MoonrakerError& err) {
++            const int code = err.code;
++            const std::string message = err.message;
++            token.defer("Ad5xSoakModel::abort_error", [this, code, message]() {
++                stop_requested_ = false;
++                if (code == -32601 || code == 404) {
++                    NOTIFY_WARNING("{}", lv_tr("This printer can't stop the calibration from the "
++                                               "screen; use the emergency stop."));
++                } else {
++                    NOTIFY_WARNING("{}", message.empty() ? std::string(lv_tr("Failed")) : message);
++                }
++                refresh();
++            });
++        },
++        kAbortTimeoutMs, /*silent=*/true);
++}
++
++void Ad5xSoakModel::finish(ResultKind kind, const std::string& text) {
++    spdlog::info("[AD5X soak] Calibration ended ({}): {}", static_cast<int>(kind), text);
++    request_in_flight_ = false;
++    request_timed_out_ = false;
++    stop_requested_ = false;
++    console_result_.clear();
++    if (subjects_initialized_) {
++        copy_if_changed(&result_, text);
++        lv_subject_set_int(&result_kind_, static_cast<int>(kind));
++    }
++    switch (kind) {
++    case ResultKind::Done:
++        NOTIFY_SUCCESS("{}", text);
++        break;
++    case ResultKind::Stopped:
++        NOTIFY_INFO("{}", text);
++        break;
++    case ResultKind::Failed:
++        NOTIFY_WARNING("{}", text);
++        break;
++    case ResultKind::None:
++        break;
++    }
++    refresh();
++}
++
++void Ad5xSoakModel::finish_from_object() {
++    if (!console_result_.empty()) {
++        finish(ResultKind::Done, console_result_);
++    } else if (stop_requested_) {
++        finish(ResultKind::Stopped, lv_tr("Calibration stopped. Heaters off, nothing saved."));
++    } else {
++        finish(ResultKind::Done, lv_tr("The calibration ended; the list shows what was saved."));
++    }
++}
++
++std::string Ad5xSoakModel::status_text() const {
++    if (stop_requested_) {
++        return lv_tr("Stopping: heaters off...");
++    }
++    std::string message =
++        lv_subject_get_string(get_printer_state().print_state().get_display_message_subject());
++    if (running_ && starts_with(message, kStatusPrefix)) {
++        message.erase(0, std::char_traits<char>::length(kStatusPrefix));
++        if (!message.empty()) {
++            message[0] = static_cast<char>(std::toupper(static_cast<unsigned char>(message[0])));
++            return message;
++        }
++    }
++    return running_ ? lv_tr("Homing and heating...") : lv_tr("Starting...");
++}
++
++void Ad5xSoakModel::refresh() {
++    if (!subjects_initialized_) {
++        return;
++    }
++    const std::vector<Calibration> calibration = parse_calibration(status_);
++    const bool enabled = json_util::safe_bool(status_, "enabled", true);
++    const bool calib = calibrating();
++
++    std::string summary;
++    if (loaded_) {
++        summary = calib ? std::string(lv_tr("Calibrating...")) : summary_text(enabled, calibration);
++    }
++    copy_if_changed(&summary_, summary);
++    copy_if_changed(&calibrated_, loaded_ ? calibrated_text(calibration) : std::string());
++    // While Klipper has not answered a change, the switch keeps what the user set
++    if (loaded_ && enable_pending_ == 0) {
++        set_if_changed(&enabled_, enabled ? 1 : 0);
++    }
++
++    set_if_changed(&view_, calib ? 1 : 0);
++    set_if_changed(&stopping_, stop_requested_ ? 1 : 0);
++    set_if_changed(&busy_, (calib || enable_pending_ > 0 || !loaded_ || !klippy_ready_) ? 1 : 0);
++    if (calib) {
++        copy_if_changed(&status_line_, status_text());
++        const json* last = json_util::find_member(status_, "last");
++        // Until the printer runs it, `last` still holds the previous calibration's rounds
++        copy_if_changed(&rounds_, (last && running_) ? rounds_text(*last, kRoundsShown)
++                                                     : rounds_text(json::array(), kRoundsShown));
++    }
++}
++
++Ad5xSoakModel& model() {
++    return helix::lazy_global<Ad5xSoakModel>("Ad5xSoakModel");
++}
++
++} // namespace helix::ad5x_soak
++
++// ============================================================================
++// OVERLAY
++// ============================================================================
++
++namespace helix::settings {
++
++namespace ad5x_soak = helix::ad5x_soak;
++
++void Ad5xSoakOverlay::init_subjects() {
++    ad5x_soak::model().init_subjects();
++}
++
++void Ad5xSoakOverlay::register_callbacks() {
++    register_xml_callbacks({
++        {"on_ad5x_soak_enabled_changed",
++         [](lv_event_t* e) {
++             get_ad5x_soak_overlay().handle_enabled_changed(helix::ui::event_checked(e));
++         }},
++        {"on_ad5x_soak_bed_changed",
++         [](lv_event_t* e) {
++             get_ad5x_soak_overlay().handle_bed_changed(helix::ui::event_selected(e));
++         }},
++        {"on_ad5x_soak_calibrate", [](lv_event_t*) { get_ad5x_soak_overlay().handle_calibrate(); }},
++        {"on_ad5x_soak_stop", [](lv_event_t*) { get_ad5x_soak_overlay().handle_stop(); }},
++    });
++}
++
++void Ad5xSoakOverlay::on_activate() {
++    OverlayBase::on_activate();
++    init_bed_dropdown();
++    ad5x_soak::model().start();
++}
++
++void Ad5xSoakOverlay::init_bed_dropdown() {
++    if (!overlay_root_) {
++        return;
++    }
++    lv_obj_t* row = helix::ui::find_required(overlay_root_, "row_ad5x_soak_bed", get_name());
++    lv_obj_t* dropdown = row ? helix::ui::find_required(row, "dropdown", get_name()) : nullptr;
++    if (!dropdown) {
++        return;
++    }
++    std::string options;
++    for (int temp : ad5x_soak::bed_temps()) {
++        if (!options.empty()) {
++            options += '\n';
++        }
++        options += fmt::format("{} °C", temp);
++    }
++    lv_dropdown_set_options(dropdown, options.c_str());
++    lv_dropdown_set_selected(dropdown, static_cast<uint32_t>(ad5x_soak::model().bed_index()));
++}
++
++void Ad5xSoakOverlay::handle_enabled_changed(bool on) {
++    ad5x_soak::model().set_enabled(on);
++}
++
++void Ad5xSoakOverlay::handle_bed_changed(int index) {
++    ad5x_soak::model().set_bed_index(index);
++}
++
++void Ad5xSoakOverlay::handle_calibrate() {
++    auto& soak = ad5x_soak::model();
++    if (soak.calibrating() || !soak.loaded() || !soak.klippy_ready()) {
++        return;
++    }
++    if (lv_subject_get_int(get_printer_state().print_state().get_print_active_subject()) != 0) {
++        helix::ui::modal_alert(lv_tr("Can't calibrate now"),
++                               lv_tr("The bed soak can't be calibrated during a print."),
++                               ModalSeverity::Warning);
++        return;
++    }
++    // Klipper refuses a warm bed too; saying so here spares the homing
++    const int bed_c =
++        lv_subject_get_int(get_printer_state().temperature_state().get_bed_temp_subject()) / 10;
++    if (bed_c >= ad5x_soak::kColdBedC) {
++        const std::string message = fmt::format(
++            fmt::runtime(lv_tr("Let the bed cool below {} °C (now {} °C). The calibration "
++                               "measures from a cold bed.")),
++            ad5x_soak::kColdBedC, bed_c);
++        helix::ui::modal_alert(lv_tr("The bed is still warm"), message.c_str(),
++                               ModalSeverity::Warning);
++        return;
++    }
++
++    const auto& temps = ad5x_soak::bed_temps();
++    const int index = std::clamp(soak.bed_index(), 0, static_cast<int>(temps.size()) - 1);
++    const int bed = temps[static_cast<std::size_t>(index)];
++    const std::string title =
++        fmt::format(fmt::runtime(lv_tr("Calibrate the bed soak at {} °C?")), bed);
++    // The model does the work: it outlives this overlay and the dialog
++    helix::ui::modal_confirm(
++        title.c_str(),
++        lv_tr("The bed must be empty. The printer homes, heats the nozzle and bed and probes "
++              "the bed every minute; this takes 20-35 minutes. Continue?"),
++        ModalSeverity::Warning, lv_tr("Calibrate"), [bed]() { ad5x_soak::model().calibrate(bed); });
++}
++
++void Ad5xSoakOverlay::handle_stop() {
++    if (!ad5x_soak::model().calibrating()) {
++        return;
++    }
++    helix::ui::modal_confirm(
++        lv_tr("Stop the calibration?"), lv_tr("The heaters switch off and nothing is saved."),
++        ModalSeverity::Warning, lv_tr("Stop"), []() { ad5x_soak::model().stop(); });
++}
++
++} // namespace helix::settings
+diff --git a/src/ui/ui_wizard_ad5x_setup.cpp b/src/ui/ui_wizard_ad5x_setup.cpp
+index 9c152525..fadaa994 100644
+--- a/src/ui/ui_wizard_ad5x_setup.cpp
++++ b/src/ui/ui_wizard_ad5x_setup.cpp
+@@ -85,6 +85,12 @@ const std::vector<StepSpec> k_specs = {
+      true},
+ };
+ 
++/// The PID step's explanation when the session tunes only the hotend.
++constexpr const char* k_pid_hotend_explanation =
++    "Tunes the nozzle heater at 220 \xC2\xB0"
++    "C with the part fan running. The bed keeps its tuning. Takes 5 to 10 minutes; stay "
++    "near the printer.";
++
+ /// Result labels for the save step's overview, in wizard order.
+ struct ResultLabel {
+     const char* key;
+@@ -155,6 +161,10 @@ std::vector<wizard::StepId> step_ids() {
+     return ids;
+ }
+ 
++std::vector<wizard::StepId> nozzle_check_step_ids() {
++    return {StepId::Ad5xPid, StepId::Ad5xZoffset, StepId::Ad5xFinish};
++}
++
+ bool available(const wizard::StepContext& ctx) {
+     if (ctx.config && ctx.config->get_preset() == "ad5x") {
+         return true;
+@@ -271,7 +281,10 @@ void Ad5xSetupModel::activate(const StepSpec* spec) {
+     }
+ 
+     if (subjects_initialized_ && spec) {
+-        copy_if_changed(&explanation_, lv_tr(spec->explanation));
++        const bool hotend_only =
++            std::strcmp(spec->key, "pid") == 0 && session_param(spec->key, "heaters") == "extruder";
++        copy_if_changed(&explanation_,
++                        lv_tr(hotend_only ? k_pid_hotend_explanation : spec->explanation));
+         set_if_changed(&is_zoffset_, std::strcmp(spec->key, "zoffset") == 0 ? 1 : 0);
+     }
+     query_status();
+@@ -311,9 +324,34 @@ json Ad5xSetupModel::step_options() const {
+             options["keep_bed"] = 1;
+         }
+     }
++    // What the targeted session adds for this step (e.g. heaters=extruder)
++    if (!ui_wizard_active_step_subset().empty()) {
++        auto it = session_params_.find(active_->key);
++        if (it != session_params_.end() && it->is_object()) {
++            for (auto p = it->begin(); p != it->end(); ++p) {
++                options[p.key()] = p.value();
++            }
++        }
++    }
+     return options;
+ }
+ 
++void Ad5xSetupModel::set_session_params(json params) {
++    session_params_ = params.is_object() ? std::move(params) : json::object();
++}
++
++std::string Ad5xSetupModel::session_param(const char* key, const char* name) const {
++    // The first-start wizard has no subset: never a leftover of an earlier session
++    if (ui_wizard_active_step_subset().empty()) {
++        return {};
++    }
++    auto it = session_params_.find(key);
++    if (it == session_params_.end() || !it->is_object()) {
++        return {};
++    }
++    return str_field(*it, name);
++}
++
+ void Ad5xSetupModel::send(const std::string& action, double delta) {
+     if (!active_) {
+         return;
+@@ -656,17 +694,39 @@ Ad5xSetupModel& model() {
+     return owner().model;
+ }
+ 
+-void launch_targeted(lv_obj_t* parent) {
+-    spdlog::info("[AD5X setup] Running the setup steps again");
++namespace {
++
++/// A targeted session over @p ids; @p params are its per-step start parameters
++/// (Ad5xSetupModel::set_session_params()), dropped when the session ends.
++void launch_session(lv_obj_t* parent, std::vector<StepId> ids, json params) {
+     ui_wizard_register_event_callbacks();
+     ui_wizard_container_register_responsive_constants();
+     ui_wizard_init_subjects();
++    model().set_session_params(std::move(params));
+     // Back on the first step leaves the session, like the other targeted runs.
+     set_wizard_cancel_callback([]() {
+         ui_wizard_complete_targeted();
+         set_wizard_cancel_callback(nullptr);
+     });
+-    ui_wizard_create_targeted(parent, step_ids(), []() { set_wizard_cancel_callback(nullptr); });
++    if (!ui_wizard_create_targeted(parent, std::move(ids), []() {
++            model().set_session_params(json::object());
++            set_wizard_cancel_callback(nullptr);
++        })) {
++        model().set_session_params(json::object());
++        set_wizard_cancel_callback(nullptr);
++    }
++}
++
++} // namespace
++
++void launch_targeted(lv_obj_t* parent) {
++    spdlog::info("[AD5X setup] Running the setup steps again");
++    launch_session(parent, step_ids(), json::object());
++}
++
++void launch_nozzle_checks(lv_obj_t* parent) {
++    spdlog::info("[AD5X setup] Nozzle changed: hotend PID and Z offset");
++    launch_session(parent, nozzle_check_step_ids(), json{{"pid", {{"heaters", "extruder"}}}});
+ }
+ 
+ void watch_wizard_requests() {
+diff --git a/tests/unit/test_settings_ad5x_soak.cpp b/tests/unit/test_settings_ad5x_soak.cpp
+new file mode 100644
+index 00000000..136f3e8c
+--- /dev/null
++++ b/tests/unit/test_settings_ad5x_soak.cpp
+@@ -0,0 +1,94 @@
++// SPDX-License-Identifier: GPL-3.0-or-later
++
++#include "ui_settings_ad5x_soak.h"
++
++#include "../catch_amalgamated.hpp"
++#include "hv/json.hpp"
++
++using namespace helix::ad5x_soak;
++
++namespace {
++
++/// The `ad5x_soak` object as Klipper publishes it.
++json sample_status() {
++    return json::parse(R"({
++        "enabled": true,
++        "calibration": {
++            "80": {"settle": 395, "settle_corners": 780, "drift": 0.112, "warp": 0.03,
++                   "points": 5, "from": 22, "stable": false, "date": "2026-10-20"},
++            "60": {"settle": 420, "settle_corners": 760, "drift": -0.0874, "warp": 0.02,
++                   "points": 5, "from": 21, "stable": true, "date": "2026-10-20"},
++            "junk": {"settle": 1},
++            "70": "not an object"
++        },
++        "running": false,
++        "soak": 0.0,
++        "last": []
++    })");
++}
++
++} // namespace
++
++TEST_CASE("calibration entries are parsed and sorted by temperature", "[ad5x_soak]") {
++    const auto cal = parse_calibration(sample_status());
++    REQUIRE(cal.size() == 2);
++    CHECK(cal[0].temp == 60);
++    CHECK(cal[0].settle == 420);
++    CHECK(cal[0].drift == Catch::Approx(-0.0874));
++    CHECK(cal[0].stable);
++    CHECK(cal[1].temp == 80);
++    CHECK(cal[1].settle == 395);
++    CHECK_FALSE(cal[1].stable);
++
++    CHECK(parse_calibration(json::object()).empty());
++    CHECK(parse_calibration(json::parse(R"({"calibration": []})")).empty());
++}
++
++TEST_CASE("bed soak texts", "[ad5x_soak]") {
++    CHECK(duration_text(420) == "7:00");
++    CHECK(duration_text(65) == "1:05");
++    CHECK(duration_text(-3) == "0:00");
++
++    const auto cal = parse_calibration(sample_status());
++    CHECK(summary_text(false, cal) == "Off");
++    CHECK(summary_text(true, cal) == "On · 60 °C 7:00, 80 °C 6:35");
++    CHECK(summary_text(true, {}) == "On · not calibrated");
++
++    const std::string list = calibrated_text(cal);
++    CHECK(list.find("60 °C — 7:00 (centre moved 0.09 mm)") != std::string::npos);
++    CHECK(list.find("80 °C — 6:35 (centre moved 0.11 mm), not fully settled") != std::string::npos);
++    CHECK(calibrated_text({}).rfind("Not calibrated yet", 0) == 0);
++
++    CHECK(calibrate_gcode(60) == "BED_SOAK_CALIBRATE BED=60");
++}
++
++TEST_CASE("rounds show the change since the first reading", "[ad5x_soak]") {
++    const json last = json::parse(R"([
++        [0.0, -0.100, -0.050, -0.040, -0.060, -0.055],
++        [60.2, -0.130, -0.052, -0.030, -0.070, -0.055],
++        [120.4, -0.160, -0.060, -0.020, -0.080, -0.050]
++    ])");
++    const std::string all = rounds_text(last, 8);
++    CHECK(all.find("0:00  centre +0.000 mm, corners +0.000 to +0.000") != std::string::npos);
++    CHECK(all.find("2:00  centre -0.060 mm, corners -0.020 to +0.020") != std::string::npos);
++
++    // Only the newest rows
++    const std::string newest = rounds_text(last, 1);
++    CHECK(newest.find("0:00") == std::string::npos);
++    CHECK(newest.find("2:00") != std::string::npos);
++
++    // Centre only (POINTS=1)
++    const std::string centre = rounds_text(json::parse(R"([[0, 0.5], [30, 0.49]])"), 8);
++    CHECK(centre.find("0:30  centre -0.010 mm") != std::string::npos);
++    CHECK(centre.find("corners") == std::string::npos);
++
++    CHECK(rounds_text(json::array(), 8).rfind("No readings yet", 0) == 0);
++}
++
++TEST_CASE("only Klipper's final line is a result", "[ad5x_soak]") {
++    CHECK(result_line("// Bed soak at 60 C: the centre moved -0.087 mm") ==
++          "Bed soak at 60 C: the centre moved -0.087 mm");
++    CHECK(result_line("Bed soak at 80 C: done\n") == "Bed soak at 80 C: done");
++    CHECK(result_line("// 240 s: centre -0.0659, corners ...").empty());
++    CHECK(result_line("// Bed soak calibration at 60 C (from 21 C): ...").empty());
++}
+diff --git a/ui_xml/settings_ad5x_soak_overlay.xml b/ui_xml/settings_ad5x_soak_overlay.xml
+new file mode 100644
+index 00000000..f5780e3c
+--- /dev/null
++++ b/ui_xml/settings_ad5x_soak_overlay.xml
+@@ -0,0 +1,126 @@
++<?xml version="1.0"?>
++<!-- SPDX-License-Identifier: GPL-3.0-or-later -->
++<!-- Settings > Bed Heat Soak on the AD5X: the ad5x_soak Klipper object -->
++<!-- Ad5xSoakModel (ui_settings_ad5x_soak.cpp) owns every subject here; it outlives the overlay, -->
++<!-- so a calibration keeps running and reports its end when the overlay is closed. -->
++<component>
++  <styles>
++    <style name="pad_standard" pad_left="#space_lg" pad_right="#space_lg" pad_top="#space_md" pad_bottom="#space_md"/>
++    <style name="pad_micro" pad_left="#space_md" pad_right="#space_md" pad_top="#space_sm" pad_bottom="#space_sm"/>
++    <style name="text_failed" text_color="#danger"/>
++  </styles>
++  <view name="settings_ad5x_soak_overlay" extends="overlay_panel" title="Bed Heat Soak" bg_color="#screen_bg">
++    <!-- Content Area - no padding, rows handle their own -->
++    <lv_obj name="overlay_content"
++            width="100%" flex_grow="1" style_pad_top="0" style_pad_left="0" style_pad_right="0"
++            style_pad_bottom="#space_lg" scrollable="true" flex_flow="column">
++      <!-- On/off for every print (BED_SOAK_ENABLE, saved by Klipper) -->
++      <setting_group name="ad5x_soak_enable_group">
++        <setting_toggle_row name="row_ad5x_soak_enabled"
++                            label="Bed heat soak before the Z check" icon="heat_wave" subject="ad5x_soak_enabled"
++                            callback="on_ad5x_soak_enabled_changed" disabled="ad5x_soak_busy"/>
++        <lv_obj name="ad5x_soak_explanation_row"
++                width="100%" height="content" style_bg_opa="0" style_border_width="0" scrollable="false">
++          <bind_style_if_eq name="pad_micro" subject="ui_breakpoint" ref_value="0"/>
++          <bind_style_if_ge name="pad_standard" subject="ui_breakpoint" ref_value="1"/>
++          <text_small width="100%"
++                      long_mode="wrap" style_text_color="#text_muted"
++                      text="After a cold start the bed keeps moving for minutes after it reaches its temperature. The print start waits this long before it checks Z; the purge counts toward it."/>
++        </lv_obj>
++      </setting_group>
++      <!-- The calibrated times, one line per bed temperature -->
++      <setting_group name="ad5x_soak_calibrated_group">
++        <setting_group_header title="CALIBRATED"/>
++        <lv_obj name="ad5x_soak_calibrated_row"
++                width="100%" height="content" style_bg_opa="0" style_border_width="0" scrollable="false">
++          <bind_style_if_eq name="pad_micro" subject="ui_breakpoint" ref_value="0"/>
++          <bind_style_if_ge name="pad_standard" subject="ui_breakpoint" ref_value="1"/>
++          <text_body name="ad5x_soak_calibrated" width="100%" bind_text="ad5x_soak_calibrated" long_mode="wrap"/>
++        </lv_obj>
++      </setting_group>
++      <!-- A new calibration: bed temperature and Calibrate; hidden while one runs -->
++      <setting_group name="ad5x_soak_calibrate_group">
++        <bind_flag_if_eq subject="ad5x_soak_view" flag="hidden" ref_value="1"/>
++        <setting_group_header title="CALIBRATE"/>
++        <setting_dropdown_row name="row_ad5x_soak_bed"
++                              label="Bed temperature" icon="thermometer"
++                              description="The temperature to measure, from a cold bed" callback="on_ad5x_soak_bed_changed"
++                              disabled="ad5x_soak_busy"/>
++        <lv_obj name="ad5x_soak_calibrate_row"
++                width="100%" height="content" flex_flow="row" style_flex_cross_place="center" style_pad_gap="#space_md"
++                style_bg_opa="0" style_border_width="0" scrollable="false">
++          <bind_style_if_eq name="pad_micro" subject="ui_breakpoint" ref_value="0"/>
++          <bind_style_if_ge name="pad_standard" subject="ui_breakpoint" ref_value="1"/>
++          <text_small width="0"
++                      flex_grow="1" long_mode="wrap" style_text_color="#text_muted"
++                      text="Measures how long the bed keeps moving at that temperature. Takes 20-35 minutes; the bed must be empty and below 40 °C."/>
++          <ui_button name="btn_ad5x_soak_calibrate"
++                     width="content" height="#button_height_sm" style_min_width="120" text="Calibrate" icon="play"
++                     variant="primary">
++            <bind_state_if cond="print_active or ad5x_soak_busy" state="disabled"/>
++            <event_cb trigger="clicked" callback="on_ad5x_soak_calibrate"/>
++          </ui_button>
++        </lv_obj>
++        <lv_obj name="ad5x_soak_print_lock_row"
++                width="100%" height="content" flex_flow="row" style_flex_cross_place="center" style_pad_gap="#space_sm"
++                style_bg_opa="0" style_border_width="0" scrollable="false">
++          <bind_style_if_eq name="pad_micro" subject="ui_breakpoint" ref_value="0"/>
++          <bind_style_if_ge name="pad_standard" subject="ui_breakpoint" ref_value="1"/>
++          <bind_flag_if_eq subject="print_active" flag="hidden" ref_value="0"/>
++          <icon src="lock" size="xs" variant="secondary"/>
++          <text_small width="0" flex_grow="1" text="No calibration during a print" long_mode="wrap"/>
++        </lv_obj>
++        <!-- How the last calibration from this screen ended -->
++        <lv_obj name="ad5x_soak_result_row"
++                width="100%" height="content" flex_flow="row" style_flex_cross_place="start" style_pad_gap="#space_sm"
++                style_bg_opa="0" style_border_width="0" scrollable="false">
++          <bind_style_if_eq name="pad_micro" subject="ui_breakpoint" ref_value="0"/>
++          <bind_style_if_ge name="pad_standard" subject="ui_breakpoint" ref_value="1"/>
++          <bind_flag_if_eq subject="ad5x_soak_result_kind" flag="hidden" ref_value="0"/>
++          <icon src="check_circle" size="xs" variant="success">
++            <bind_flag_if_not_eq subject="ad5x_soak_result_kind" flag="hidden" ref_value="1"/>
++          </icon>
++          <icon src="alert" size="xs" variant="warning">
++            <bind_flag_if_eq subject="ad5x_soak_result_kind" flag="hidden" ref_value="1"/>
++          </icon>
++          <text_small name="ad5x_soak_result" width="0" flex_grow="1" bind_text="ad5x_soak_result" long_mode="wrap">
++            <bind_style_if_eq name="text_failed" subject="ad5x_soak_result_kind" ref_value="3"/>
++          </text_small>
++        </lv_obj>
++      </setting_group>
++      <!-- A calibration running: Klipper's status line, the rounds so far, Stop -->
++      <setting_group name="ad5x_soak_running_group">
++        <bind_flag_if_eq subject="ad5x_soak_view" flag="hidden" ref_value="0"/>
++        <setting_group_header title="CALIBRATING"/>
++        <lv_obj name="ad5x_soak_status_row"
++                width="100%" height="content" flex_flow="row" style_flex_cross_place="center" style_pad_gap="#space_sm"
++                style_bg_opa="0" style_border_width="0" scrollable="false">
++          <bind_style_if_eq name="pad_micro" subject="ui_breakpoint" ref_value="0"/>
++          <bind_style_if_ge name="pad_standard" subject="ui_breakpoint" ref_value="1"/>
++          <spinner size="sm"/>
++          <text_body name="ad5x_soak_status" width="0" flex_grow="1" bind_text="ad5x_soak_status" long_mode="wrap"/>
++        </lv_obj>
++        <lv_obj name="ad5x_soak_rounds_row"
++                width="100%" height="content" flex_flow="column" style_pad_gap="#space_xs" style_bg_opa="0"
++                style_border_width="0" scrollable="false">
++          <bind_style_if_eq name="pad_micro" subject="ui_breakpoint" ref_value="0"/>
++          <bind_style_if_ge name="pad_standard" subject="ui_breakpoint" ref_value="1"/>
++          <text_small text="Since the bed was hot, one round a minute:" style_text_color="#text_muted"/>
++          <text_small name="ad5x_soak_rounds" width="100%" bind_text="ad5x_soak_rounds" long_mode="wrap"/>
++        </lv_obj>
++        <lv_obj name="ad5x_soak_stop_row"
++                width="100%" height="content" flex_flow="row" style_flex_main_place="end" style_bg_opa="0"
++                style_border_width="0" scrollable="false">
++          <bind_style_if_eq name="pad_micro" subject="ui_breakpoint" ref_value="0"/>
++          <bind_style_if_ge name="pad_standard" subject="ui_breakpoint" ref_value="1"/>
++          <ui_button name="btn_ad5x_soak_stop"
++                     width="content" height="#button_height_sm" style_min_width="120" text="Stop" icon="stop"
++                     variant="danger">
++            <bind_state_if_eq subject="ad5x_soak_stopping" state="disabled" ref_value="1"/>
++            <event_cb trigger="clicked" callback="on_ad5x_soak_stop"/>
++          </ui_button>
++        </lv_obj>
++      </setting_group>
++    </lv_obj>
++  </view>
++</component>
+diff --git a/ui_xml/settings_panel.xml b/ui_xml/settings_panel.xml
+index 184249b4..6286f575 100644
+--- a/ui_xml/settings_panel.xml
++++ b/ui_xml/settings_panel.xml
+@@ -57,6 +57,12 @@
+                           bind_description="ad5x_nozzle_size_text" description_min_bp="0">
+         <bind_flag_if_eq subject="settings_show_ad5x_nozzle" flag="hidden" ref_value="0"/>
+       </setting_action_row>
++      <!-- AD5X: how long the print start lets the bed settle before the Z check (ad5x_soak object) -->
++      <setting_action_row name="row_ad5x_soak"
++                          label="Bed Heat Soak" icon="heat_wave" callback="on_ad5x_soak_clicked"
++                          bind_description="ad5x_soak_summary" description_min_bp="0">
++        <bind_flag_if_eq subject="settings_show_ad5x_soak" flag="hidden" ref_value="0"/>
++      </setting_action_row>
+       <!-- AD5X: the printer's own plugins (Klipper add-ons), not HelixScreen's -->
+       <setting_action_row name="row_ad5x_plugins"
+                           label="Plugins" icon="puzzle_outline" callback="on_ad5x_plugins_clicked"
+-- 
+2.56.0
+

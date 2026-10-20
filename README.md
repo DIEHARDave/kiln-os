@@ -12,9 +12,10 @@ and a small recovery OS for updates and rescue.
 
 ## Status
 
-Runs daily on one AD5X (0.6 mm nozzle). Updates from Fluidd, through the
-recovery OS, have been done on that printer. The first install from stock
-firmware has so far been tested under emulation only
+Runs daily on one AD5X (0.6 mm nozzle). It was installed on that printer
+from the stock firmware (with zMod) over SSH, and every release since has
+been installed from Fluidd, through the recovery OS. Installing from a USB
+stick has been tested under emulation only
 ([docs/install.md](docs/install.md)). Expect rough edges, and read
 [docs/deviations-from-stock.md](docs/deviations-from-stock.md) before
 installing: it lists every behaviour that differs from stock, what to look

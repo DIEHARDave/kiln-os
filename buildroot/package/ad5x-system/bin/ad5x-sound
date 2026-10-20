@@ -137,22 +137,24 @@ class Pwm:
         with open(os.path.join(self.path, name), "w") as f:
             f.write(str(value))
 
-    def tone(self, hz):
-        period = int(1e9 / hz)
-        self._w("enable", 0)
+    def _try(self, name, value):
         try:
-            self._w("duty_cycle", 0)
+            self._w(name, value)
         except OSError:
             pass
+
+    def tone(self, hz):
+        # This driver refuses enable=0 on a channel that has never had a
+        # period, and a duty cycle longer than the period: duty to 0 first,
+        # then the period, then the duty, then on
+        period = int(1e9 / hz)
+        self._try("duty_cycle", 0)
         self._w("period", period)
         self._w("duty_cycle", int(period * self.duty))
         self._w("enable", 1)
 
     def off(self):
-        try:
-            self._w("enable", 0)
-        except OSError:
-            pass
+        self._try("enable", 0)
 
 
 def pwm_path():
