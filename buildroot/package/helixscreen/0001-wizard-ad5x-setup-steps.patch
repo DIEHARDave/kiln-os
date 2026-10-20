@@ -758,7 +758,7 @@ index 0000000..ef16628
 +                refresh();
 +            });
 +        },
-+        IMoonrakerAPI::MACRO_TIMEOUT_MS, /*silent=*/false, /*on_queued=*/nullptr,
++        IMoonrakerAPI::kMacroTimeoutMs, /*silent=*/false, /*on_queued=*/nullptr,
 +        /*caller_surfaces_errors=*/true);
 +}
 +

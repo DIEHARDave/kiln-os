@@ -27,8 +27,8 @@
 #                                  stick in the recovery OS)
 #   kiln-os-VERSION-update.swu     the same as .swu (recovery web page)
 #   SHA256SUMS, RELEASE_NOTES.md
-# The recovery OS changes rarely and is only in the install zip; a printer
-# already on Kiln OS keeps its recovery OS across updates.
+# The main OS carries the recovery OS too: after an update, a printer
+# rewrites its slot A when that recovery OS differs (S99ad5x-update-recovery).
 set -euo pipefail
 REPO=$(cd "$(dirname "$0")/.." && pwd)
 cd "$REPO"
@@ -98,12 +98,19 @@ if [ -n "$BUILD" ]; then
 	# /etc/kiln-version in the image (post-build.sh): the printer's
 	# update check compares it with the newest release
 	export AD5X_VERSION=$VERSION
-	build buildroot/output ad5x_defconfig
+	# The recovery OS first: the main image carries it (S99ad5x-update-recovery)
 	build buildroot/output-recovery ad5x_recovery_defconfig
+	export AD5X_RECOVERY_IMAGE=$REPO/buildroot/output-recovery/images/rootfs.squashfs
+	build buildroot/output ad5x_defconfig
 fi
 MAIN=buildroot/output/images/rootfs.squashfs
 REC=buildroot/output-recovery/images/rootfs.squashfs
 [ -f "$MAIN" ] && [ -f "$REC" ] || die "missing $MAIN or $REC (build first)"
+# The main image must carry exactly this recovery OS: printers updated with
+# it rewrite their slot A from that copy
+inmain=$(buildroot/output/host/bin/unsquashfs -cat "$MAIN" usr/share/ad5x/recovery/rootfs.sha256 2>/dev/null || true)
+[ "$inmain" = "$(sha256sum < "$REC" | cut -d' ' -f1)" ] ||
+	die "the main image doesn't carry $REC (rebuild the main OS after the recovery OS)"
 
 if [ -n "$PUBLIC" ]; then
 	echo "release: checking that no Flashforge files are in the images"

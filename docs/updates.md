@@ -33,6 +33,17 @@ and the installer), and released only if every test passes. Daily Klipper
 and Moonraker packages go through the same tests inside the newest
 release. Versions: `vMAJOR.MINOR.PATCH`.
 
+Each GitHub release also publishes the source code behind it
+(`tools/publish_sources.sh`): Buildroot's `legal-info` of
+both images, with the licence texts and package list attached to the
+release as `kiln-os-<version>-licenses.tar.gz`, and the source archives in
+the `sources` release (a pre-release, so it is never "latest", which the
+printers' update check reads). Each archive is named by package version and
+uploaded once, so a release adds only what changed (usually Klipper and
+Moonraker). Extra archives cover what `legal-info` can't see: the Ingenic
+SDK's 6.6 kernel tree, kernel.org 5.10.186 (chainload.ko), the Klipper
+commit of the board firmware, Fluidd's source and Buildroot itself.
+
 ### Board firmware
 
 Klipper's host and the boards' firmware must agree on the commands. Each
@@ -72,6 +83,9 @@ update `FLASHED`; the next release then updates every printer's boards.
   print runs, stages it with `ad5x-update` (boot flag on the recovery OS)
   and reboots. The recovery OS installs it into slot B, checks it and
   boots it (about 3 minutes). Log: `/data/ad5x/kiln-update/agent.log`.
+  The update carries the release's recovery OS too: after the first
+  complete start the main OS writes it into slot A if slot A holds
+  another one (docs/recovery-os.md, "Updates of the recovery OS itself").
 - Releases are public on GitHub (github.com/djvalic/kiln-os): no token
   needed. For a private repository, put a read token in
   `/data/ad5x/kiln-os.token`. A failed check shows an error in Fluidd and

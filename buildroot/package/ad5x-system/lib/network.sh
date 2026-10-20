@@ -32,6 +32,9 @@ net_up() {
 		fi
 		echo "network: invalid static setup in /data/ad5x/network.conf (ADDRESS='$ADDRESS'), using DHCP"
 	fi
-	udhcpc -b -i "$iface" -p /var/run/udhcpc.$iface.pid >/dev/null
+	# In the background from the start: the link is only just up, so
+	# udhcpc's first DISCOVERs go unanswered and "-b" alone held the boot
+	# for ~4 s. Nothing in the start-up waits for the address.
+	udhcpc -b -i "$iface" -p /var/run/udhcpc.$iface.pid >/dev/null 2>&1 &
 	echo "network: $iface DHCP"
 }

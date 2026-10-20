@@ -1,0 +1,38 @@
+#!/bin/sh
+# The printer has no battery-backed clock: every start begins at 1970 until
+# chrony reaches an NTP server, so early log lines carried 1970 dates.
+# The last known time is kept on /data and restored as soon as /data is
+# mounted (S05ad5x-data, main and recovery OS); chrony corrects the rest
+# (makestep) once the network is up.
+#
+# usage: ad5x-clock restore   set the clock to the saved time if it is behind
+#        ad5x-clock save      save the current time, if it looks real (after
+#                             2026-01-01) and is newer than the saved one
+#        ad5x-clock keep      save now and then every 15 minutes (S51ad5x-clock)
+# File: /data/ad5x/clock (seconds since 1970, UTC). AD5X_DATA overrides /data.
+: "${AD5X_DATA:=/data}"
+F=$AD5X_DATA/ad5x/clock
+VALID=1767225600	# 2026-01-01 00:00:00 UTC
+
+saved() { s=$(cat "$F" 2>/dev/null); case "$s" in ''|*[!0-9]*) echo 0 ;; *) echo "$s" ;; esac; }
+
+case "$1" in
+restore)
+	s=$(saved) now=$(date +%s)
+	[ "$s" -gt "$now" ] || exit 0
+	date -u -s "$(date -u -d "@$s" '+%Y-%m-%d %H:%M:%S')" >/dev/null &&
+		echo "ad5x-clock: clock set to the last saved time, $(date -u '+%F %T') UTC"
+	;;
+save)
+	now=$(date +%s)
+	[ "$now" -ge $VALID ] && [ "$now" -gt "$(saved)" ] || exit 0
+	mkdir -p "${F%/*}"
+	echo "$now" > "$F.tmp" && mv "$F.tmp" "$F"
+	;;
+keep)
+	while :; do "$0" save; sleep 900; done
+	;;
+*)
+	sed -n '9,13p' "$0" >&2; exit 2
+	;;
+esac

@@ -1,3 +1,3 @@
-# Locally computed (Buildroot git tarball of v1.1.0-beta.9 with submodules)
-sha256  99d9b952b9102e6a67ef39a145862c65d6276d5697350dc57740f14550b4408d  helixscreen-v1.1.0-beta.9-git4.tar.gz
+# Computed by tools/bump_upstream.py (v1.1.0-beta.10)
+sha256  9777cfe64395d652de8af3ef755a12fc7de616d2fbb3fa591f9290ebe18ecb84  helixscreen-v1.1.0-beta.10-git4.tar.gz
 sha256  3972dc9744f6499f0f9b2dbf76696f2ae7ad8af9b23dde66d6af86c9dfb36986  LICENSE

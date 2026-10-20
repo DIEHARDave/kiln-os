@@ -18,6 +18,8 @@ start)
 		echo "data: no usable userdata partition, tmpfs on /data (nothing is kept)"
 		mount -t tmpfs -o mode=0755 tmpfs /data
 	fi
+	# No battery clock: the last time the main OS saved instead of 1970
+	ad5x-clock restore
 	mkdir -p /data/ad5x/ssh/hostkeys /data/ad5x/update /data/ad5x/recovery
 	chmod 700 /data/ad5x/ssh
 	us=$(rc_part usershare)

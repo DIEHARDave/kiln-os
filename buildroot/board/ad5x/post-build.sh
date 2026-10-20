@@ -28,6 +28,26 @@ bundle_stock "$TARGET"
 rm -f "$TARGET/etc/init.d/S50nginx" "$TARGET/etc/logrotate.d/nginx"
 rm -rf "$TARGET/usr/html"
 
+# Room in the 100 MiB slot: Python libraries' test suites, type stubs and C
+# headers, numpy's Fortran wrapper generator and pip's bundled wheel
+# (ensurepip): nothing on the printer uses them. With
+# BR2_PACKAGE_PYTHON3_PYC_ONLY the libraries are bytecode only; Klipper and
+# Moonraker (/usr/lib/klipper, /usr/lib/moonraker) keep their sources.
+PYLIB=$(ls -d "$TARGET"/usr/lib/python3.* 2>/dev/null | head -1)
+if [ -n "$PYLIB" ]; then
+	find "$PYLIB/site-packages" -depth -type d \( -name tests -o -name test \) \
+		-exec rm -rf {} +
+	find "$PYLIB" \( -name '*.pyi' -o -name py.typed \) -delete
+	# Bytecode only: the libraries' .pyc sit next to where the .py was;
+	# __pycache__ copies (numpy installs its own) are never read
+	if [ -f "$PYLIB/os.pyc" ]; then
+		find "$PYLIB" -depth -type d -name __pycache__ -exec rm -rf {} +
+	fi
+	rm -rf "$PYLIB/ensurepip" "$PYLIB/site-packages/numpy/f2py" \
+		"$PYLIB/site-packages/numpy/_core/include" \
+		"$PYLIB"/site-packages/numpy/_pyinstaller
+fi
+
 # Kiln OS version (docs/updates.md): AD5X_VERSION from tools/release.sh,
 # else from git: v0.1.2+3.gabc1234 (3 commits after the tag v0.1.2;
 # "+" is build metadata, so the printer offers v0.1.3 but not v0.1.2).
@@ -45,6 +65,25 @@ fi
 KDATE=$(date -u +%Y-%m-%d)
 printf 'VERSION=%s\nCOMMIT=%s\nDATE=%s\n' "$KVER" "$KCOMMIT" "$KDATE" \
 	> "$TARGET/etc/kiln-version"
+
+# The recovery OS this release goes with (docs/recovery-os.md, "Updates"):
+# S99ad5x-update-recovery writes it into slot A when slot A holds another
+# one. AD5X_RECOVERY_IMAGE (tools/autobuild.sh, tools/release.sh: the
+# recovery image built just before this one); without it the image carries
+# none and the printer keeps the recovery OS it has.
+R=$TARGET/usr/share/ad5x/recovery
+rm -rf "$R"
+if [ -n "${AD5X_RECOVERY_IMAGE:-}" ]; then
+	[ "$(head -c 4 "$AD5X_RECOVERY_IMAGE")" = hsqs ] ||
+		{ echo "post-build: $AD5X_RECOVERY_IMAGE is not a squashfs image" >&2; exit 1; }
+	mkdir -p "$R"
+	cp "$AD5X_RECOVERY_IMAGE" "$R/rootfs.squashfs"
+	sha256sum < "$R/rootfs.squashfs" | cut -d' ' -f1 > "$R/rootfs.sha256"
+	# its content ID (board/ad5x-recovery/post-build.sh): what slot A is compared by
+	cp "${AD5X_RECOVERY_IMAGE%/*}/rootfs.id" "$R/rootfs.id" ||
+		{ echo "post-build: no rootfs.id next to $AD5X_RECOVERY_IMAGE" >&2; exit 1; }
+	echo "post-build: recovery OS image included ($(wc -c < "$R/rootfs.squashfs") bytes)"
+fi
 
 # Marks our root filesystem (USB test mode looks for it)
 echo "Kiln OS $KVER ($KDATE)" > "$TARGET/etc/ad5x-release"

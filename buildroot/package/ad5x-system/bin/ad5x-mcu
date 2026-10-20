@@ -202,15 +202,26 @@ boot() {
 		tools || return 1
 		arm_stock; armed=1; show mcu-updating
 	}
-	failed=
+	failed= mbflashed=
+	# The mainboard's version and whether the eboard's bootloader waits,
+	# at the same time (two ports; each takes 1-2 s at start-up)
+	ver "$MB" > "$ST/.mbver" 2>/dev/null &
+	vpid=$!
+	listen=1
+	boot_eboard --port "$EB" --listen 2>/dev/null && listen=0
+	wait $vpid
+	mv=$(cat "$ST/.mbver" 2>/dev/null); rm -f "$ST/.mbver"
 	# Mainboard: can be flashed at any time
-	mv=$(ver "$MB")
 	if [ "$mv" != "$WANT" ]; then
 		say "mainboard runs '${mv:-nothing}', want $WANT"
 		{ arm && flash_mainboard; } || failed=1
+		mbflashed=1
+		# look again after the mainboard's restart
+		listen=1
+		boot_eboard --port "$EB" --listen 2>/dev/null && listen=0
 	fi
 	# Eboard: in its bootloader only right after power-on
-	if boot_eboard --port "$EB" --listen 2>/dev/null; then
+	if [ $listen = 0 ]; then
 		if [ "$(cat "$ST/eboard" 2>/dev/null)" != "$WANT" ]; then
 			{ arm && flash_eboard; } || failed=1
 		fi
@@ -224,7 +235,8 @@ boot() {
 		say "eboard runs '${ev:-nothing}', want $WANT: needs a power-cycle"
 		[ -n "$failed" ] || failed=power
 	fi
-	mv=$(ver "$MB" 1)
+	# a flashed mainboard: check what it runs now
+	[ -z "$mbflashed" ] || mv=$(ver "$MB" 1)
 	if [ -z "$failed" ] && [ "$mv" = "$WANT" ]; then
 		blog "boards on $WANT"
 		if [ ! -f "$ST/klipper-enabled" ]; then

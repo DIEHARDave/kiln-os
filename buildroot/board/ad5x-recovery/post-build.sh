@@ -55,3 +55,19 @@ fi
 
 rm -f "$TARGET/etc/init.d/S80swupdate" \
 	"$TARGET/usr/lib/swupdate/conf.d/90-start-progress"
+
+# Content ID (docs/recovery-os.md, "Updates"): sha256 over every path, mode
+# and content in the tree, except the marks that carry the build date. The
+# main OS rewrites slot A only when its recovery OS has another ID, not at
+# every update (BR2_REPRODUCIBLE keeps unchanged binaries byte-identical).
+rm -f "$TARGET/etc/ad5x-recovery-id"
+id=$(cd "$TARGET" && find . ! -path ./etc/ad5x-release ! -path ./etc/ad5x-recovery-id \
+		\( -type f -o -type l \) | LC_ALL=C sort | while IFS= read -r f; do
+	if [ -L "$f" ]; then
+		printf '%s l %s\n' "$f" "$(readlink "$f")"
+	else
+		printf '%s %s %s\n' "$f" "$(stat -c %a "$f")" "$(sha256sum < "$f" | cut -d' ' -f1)"
+	fi
+done | sha256sum | cut -c1-16)
+echo "$id" > "$TARGET/etc/ad5x-recovery-id"
+echo "post-build: recovery content ID $id"

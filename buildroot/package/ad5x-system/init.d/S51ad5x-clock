@@ -1,0 +1,16 @@
+#!/bin/sh
+# Keep the last known time on /data (ad5x-clock): saved every 15 minutes
+# while the main OS runs and once more when it stops. S05ad5x-data restores
+# it at the next start.
+PID=/run/ad5x-clock.pid
+case "$1" in
+start)
+	start-stop-daemon -S -b -m -p $PID -x /usr/bin/ad5x-clock -- keep
+	;;
+stop)
+	start-stop-daemon -K -q -p $PID
+	rm -f $PID
+	ad5x-clock save
+	;;
+esac
+exit 0

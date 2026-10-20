@@ -184,6 +184,7 @@ touched; delete it and reboot to get the default again.
 | `nopoop` | on | zMod's purge modes: in a print, `use_trash_on_print` 0 (prime tower) or 2 (slicer flush) makes tool changes prime only, without purge rounds |
 | `bambufy-compat` | off (on when migrating from a zMod with Bambufy) | Bambufy profiles: `_NOPOOP`, `_M106`; needs `zmod-compat` |
 | `recommend` | off (also after zMod; probe speed moves the Z offset) | zMod's recommended probing, mesh and corner values |
+| `spoolman` | off | A Spoolman spool per IFS slot: the loaded slot's spool is the active one (`SPOOLMAN_SET_SLOT`; needs `[spoolman]` in moonraker.conf) |
 
 Each has a `README.md` in its directory.
 

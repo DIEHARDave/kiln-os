@@ -28,6 +28,9 @@ define MOONRAKER_INSTALL_TARGET_CMDS
 	# Kiln OS entry in the update manager (docs/updates.md)
 	$(INSTALL) -D -m 0644 $(BR2_EXTERNAL_AD5X_PATH)/../moonraker/components/kiln_os.py \
 		$(TARGET_DIR)/usr/lib/moonraker/moonraker/components/kiln_os.py
+	# IFS slots for slicers (lane_data, OrcaSlicer's filament sync)
+	$(INSTALL) -D -m 0644 $(BR2_EXTERNAL_AD5X_PATH)/../moonraker/components/kiln_lanes.py \
+		$(TARGET_DIR)/usr/lib/moonraker/moonraker/components/kiln_lanes.py
 endef
 
 $(eval $(generic-package))

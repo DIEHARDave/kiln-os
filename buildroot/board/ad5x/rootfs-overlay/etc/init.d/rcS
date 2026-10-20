@@ -5,9 +5,14 @@
 # script's start and end, and a tick every 2 s for the first 3 minutes, in
 # the ota partition at 64 KiB, readable from stock with:
 #   dd if=/dev/mmcblk0p5 bs=1024 skip=64 count=8 | tr -d '\0'
+# The start/end lines only go to /run/ad5x-boot.log (no fork, no eMMC
+# write: ad5x-bootlog's copy and sync cost ~0.13 s each, ~8 s a boot); each
+# tick and "rcS done" copy the whole trace to the ota partition, so a hang
+# loses at most the last 2 s of lines.
 #
 
 : > /run/ad5x-boot.log 2>/dev/null
+trace() { read -r up _ < /proc/uptime; echo "$up $*" >> /run/ad5x-boot.log; }
 ad5x-bootlog "rcS start $(cat /etc/ad5x-release 2>/dev/null)"
 if . /usr/lib/ad5x/slot.sh && [ -n "$SLOT" ]; then
 	( n=0; while [ $n -lt 90 ]; do sleep 2; ad5x-bootlog tick; n=$((n + 1)); done ) &
@@ -18,7 +23,7 @@ for i in /etc/init.d/S??*; do
 	# Ignore dangling symlinks (if any).
 	[ ! -f "$i" ] && continue
 
-	ad5x-bootlog "start ${i##*/}"
+	trace "start ${i##*/}"
 	case "$i" in
 		*.sh)
 			# Source shell script for speed.
@@ -34,6 +39,6 @@ for i in /etc/init.d/S??*; do
 			"$i" start
 			;;
 	esac
-	ad5x-bootlog "end ${i##*/} rc=$?"
+	trace "end ${i##*/} rc=$?"
 done
 ad5x-bootlog "rcS done"

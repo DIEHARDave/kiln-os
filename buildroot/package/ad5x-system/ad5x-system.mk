@@ -55,10 +55,13 @@ endef
 
 # Vendor files (Flashforge/Ingenic drivers and board tools) come from the
 # printer itself, /data/ad5x/vendor (ad5x-vendor); /usr/bin/cmd_* are our
-# wrappers. Shared with the recovery image (ad5x-recovery.mk).
+# wrappers; ad5x-clock (last known time). Shared with the recovery image
+# (ad5x-recovery.mk).
 define AD5X_SYSTEM_INSTALL_VENDOR_SUPPORT
 	$(INSTALL) -D -m 0755 $(AD5X_SYSTEM_PKGDIR)/bin/ad5x-vendor \
 		$(TARGET_DIR)/usr/bin/ad5x-vendor
+	$(INSTALL) -D -m 0755 $(AD5X_SYSTEM_PKGDIR)/bin/ad5x-clock \
+		$(TARGET_DIR)/usr/bin/ad5x-clock
 	$(INSTALL) -D -m 0755 $(AD5X_SYSTEM_PKGDIR)/lib/vendor-tool \
 		$(TARGET_DIR)/usr/lib/ad5x/vendor-tool
 	for t in cmd_gpio cmd_fb cmd_jpeg_display; do \

@@ -17,6 +17,8 @@ if ad5x_bundle_vendor; then
 		echo "post-image: WARNING no stock kernel in $K/ota_kernel"
 	fi
 fi
+# The content ID next to the image (the main image carries both: post-build.sh)
+cp "$TARGET_DIR/etc/ad5x-recovery-id" "$BINARIES_DIR/rootfs.id"
 size=$(wc -c < "$BINARIES_DIR/rootfs.squashfs")
 [ "$size" -le 104857600 ] || { echo "post-image: rootfs.squashfs $size bytes > 100 MiB slot"; exit 1; }
 cat > "$BINARIES_DIR/IMAGES.txt" <<TXT

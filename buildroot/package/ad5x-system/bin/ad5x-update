@@ -7,8 +7,10 @@
 #       the sha256s, installs slot B, verifies it and boots it.
 #
 #   ad5x-update --install-recovery [--replace-stock] [--reboot] IMAGE|- [SHA256]
-#       One-time: write the recovery OS (buildroot/output-recovery/images/
-#       rootfs.squashfs) into slot A, verify it, keep the kernel. Only from
+#       Write the recovery OS (buildroot/output-recovery/images/
+#       rootfs.squashfs) into slot A, verify it, keep the kernel (first
+#       install: S99ad5x-install-recovery; updates: S99ad5x-update-recovery,
+#       from the image this main OS carries). Only from
 #       slot B, only an image marked /etc/ad5x-recovery. --replace-stock is
 #       needed while slot A still holds stock; its root and kernel are saved
 #       to /data/ad5x/stock first (ad5x-restore-stock puts them back).
@@ -54,8 +56,18 @@ slot_a_holds() {
 
 STAGE=/data/ad5x/update
 mkdir -p $STAGE
+# While the recovery OS is being written (S99ad5x-update-recovery), slot A
+# can't start: an update waits for it before pointing the boot flag there.
+WLOCK=/run/ad5x-recovery-write.pid
+writing() { [ -f $WLOCK ] && kill -0 "$(cat $WLOCK)" 2>/dev/null; }
 
 if [ $mode = swu ]; then
+	n=0
+	while writing; do
+		[ $n = 0 ] && echo "waiting for the recovery OS write to finish"
+		n=$((n + 1)); [ $n -le 90 ] || die "the recovery OS write didn't finish in 3 minutes"
+		sleep 2
+	done
 	[ "$(slot_a_holds)" = recovery ] || \
 		die "slot A doesn't hold the recovery OS; install it first (--install-recovery)"
 	name=$(basename "$FILE")
@@ -84,6 +96,9 @@ fi
 
 # --install-recovery
 grep -q "^$AROOT " /proc/mounts && die "$AROOT is mounted"
+writing && die "another recovery OS write is running"
+echo $$ > $WLOCK
+trap 'rm -f $WLOCK' EXIT
 if [ "$FILE" = - ]; then cat > $STAGE/recovery.squashfs; FILE=$STAGE/recovery.squashfs; fi
 [ -f "$FILE" ] || die "no image $FILE"
 SIZE=$(wc -c < "$FILE")
@@ -113,7 +128,11 @@ stock)
 	;;
 esac
 echo "writing recovery to $AROOT"
-dd if="$FILE" of=$AROOT bs=1M conv=fsync 2>/dev/null
+# Superblock last: a write cut short (power loss) leaves no squashfs magic
+# in slot A, and S01ad5x-tryboot then keeps the boot flag off it.
+dd if=/dev/zero of=$AROOT bs=4096 count=1 conv=fsync,notrunc 2>/dev/null
+dd if="$FILE" of=$AROOT bs=4096 skip=1 seek=1 conv=fsync,notrunc 2>/dev/null
+dd if="$FILE" of=$AROOT bs=4096 count=1 conv=fsync,notrunc 2>/dev/null
 sync
 echo 3 > /proc/sys/vm/drop_caches
 RB=$(head -c $SIZE $AROOT | sha256sum | cut -d' ' -f1)

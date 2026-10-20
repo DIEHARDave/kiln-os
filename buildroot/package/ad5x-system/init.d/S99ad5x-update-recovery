@@ -1,0 +1,60 @@
+#!/bin/sh
+# The recovery OS travels with the main OS (docs/recovery-os.md, "Updates"):
+# each main image carries the recovery image it was released with
+# (/usr/share/ad5x/recovery: rootfs.squashfs, .sha256, .id). After a
+# complete start (S99ad5x-booted has pointed the flag at this slot), slot A
+# is compared by content ID (/etc/ad5x-recovery-id); another ID, or none
+# (recovery OSes before v0.0.5), gets this one written with "ad5x-update
+# --install-recovery" (read-back check, superblock last). Only over a
+# recovery OS, or a slot A left empty by a write cut short; stock in slot A
+# is left to S99ad5x-install-recovery. At most
+# 3 tries per image; log in /data/ad5x/recovery/update.log.
+# /data/ad5x/recovery-update.disable: never.
+. /usr/lib/ad5x/slot.sh
+R=/usr/share/ad5x/recovery
+D=/data/ad5x/recovery
+case "$1" in
+start)
+	[ "$SLOT" = B ] && [ -f $R/rootfs.squashfs ] && [ -f $R/rootfs.id ] || exit 0
+	[ -f /data/ad5x/recovery-update.disable ] &&
+		{ echo "update-recovery: off (/data/ad5x/recovery-update.disable)"; exit 0; }
+	# A first install still writing its recovery OS (S99ad5x-install-recovery)
+	[ -f /data/ad5x/install/recovery.squashfs ] && exit 0
+	[ "$(read_flag)" = ota:kernel2 ] || { echo "update-recovery: start-up not complete, later"; exit 0; }
+	want=$(cat $R/rootfs.id)
+	m=/run/ad5x-recovery-check
+	mkdir -p $m
+	kind=other have=
+	if mount -t squashfs -o ro "$(rootfs_of A)" $m 2>/dev/null; then
+		if [ -f $m/etc/ad5x-recovery ]; then
+			kind=recovery
+			have=$(cat $m/etc/ad5x-recovery-id 2>/dev/null)
+		fi
+		umount $m
+	elif [ "$(head -c 4 "$(rootfs_of A)")" != hsqs ]; then
+		kind=empty	# an earlier write cut short (no superblock): write it again
+		have=none
+	fi
+	[ $kind = recovery ] || [ $kind = empty ] || exit 0
+	[ "$have" = "$want" ] && exit 0
+	mkdir -p $D
+	set -- $(cat $D/update.tries 2>/dev/null)
+	n=0; [ "$1" = "$want" ] && n=${2:-0}
+	if [ "$n" -ge 3 ]; then
+		echo "update-recovery: gave up on $want after 3 tries, see $D/update.log"
+		exit 0
+	fi
+	echo "$want $((n + 1))" > $D/update.tries
+	(
+		echo "=== $(date) recovery OS ${have:-(no ID)} -> $want (try $((n + 1)))"
+		if ad5x-update --install-recovery $R/rootfs.squashfs "$(cat $R/rootfs.sha256)"; then
+			rm -f $D/update.tries
+			echo "update-recovery: OK, recovery OS $want in slot A"
+		else
+			echo "update-recovery: FAILED (tried again at the next start)"
+		fi
+	) >> $D/update.log 2>&1 &
+	echo "update-recovery: writing recovery OS $want into slot A in the background ($D/update.log)"
+	;;
+esac
+exit 0

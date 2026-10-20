@@ -21,7 +21,7 @@ index b6ff580..340d71b 100644
 +    // idle port opens its editor (filament/auto_open_editor), as the stock
 +    // screen asks for the new spool's material and colour.
 +    [[nodiscard]] bool slot_has_prep_sensor(int slot_index) const override {
-+        return slot_index >= 0 && slot_index < NUM_PORTS;
++        return slot_index >= 0 && slot_index < kNumPorts;
 +    }
 +
      AmsError recover() override;

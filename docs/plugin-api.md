@@ -6,7 +6,11 @@ update.
 
 ## Version
 
-Current: **1.1** (1.1, 2026-10-17: factory/user config split,
+Current: **1.2** (1.2, 2026-10-20: additions only: the Klipper event
+`ifs:loaded` (slot), `IFS_AUTO_REFILL` and `printer.ifs` `auto_refill`,
+`refill`, power-loss recovery (`RESUME_INTERRUPTED`, `CLEAR_INTERRUPTED`,
+`printer.ad5x_resume`).
+1.1, 2026-10-17: factory/user config split,
 `docs/config-layout.md`. Additions only: `CONFIG_BACKUPS`,
 `printer.ad5x_config`, the `macros/` files in the config order,
 `PRINT_START`'s `mesh_every_print` and `retract`, `_PRIME_LINE`'s new
@@ -206,6 +210,7 @@ printer` before calling one.
 | `IFS_SET_COLOR` | `CHANNEL=` `COLOR=` |
 | `IFS_SET_CHANNEL` | `CHANNEL=` (0 = none loaded) |
 | `IFS_STATUS`, `IFS_MATERIALS`, `IFS_STOP`, `IFS_RESET_DRIVER` | |
+| `IFS_AUTO_REFILL` | `[ENABLE=0|1]` (1.2) |
 | `IFS_PURGE_TEST`, `IFS_PURGE_RESULT`, `IFS_SET_FLUSH` | Purge tuning |
 | `IFS_TUNE`, `IFS_TUNE_RESET` | Swap tuning |
 
@@ -224,6 +229,13 @@ Purge decision of a swap: `PURGE=` if given; else, while
 `print_stats.state` is `printing` and `purge_mode_variable` is set, that
 save variable: 0 or 2 = prime only, other = purge; else purge.
 
+### Power-loss recovery (`klipper/extras/ad5x_resume.py`, 1.2)
+
+| Command | |
+|---|---|
+| `RESUME_INTERRUPTED` | `CONFIRM=1`: continue the print a power cut ended |
+| `CLEAR_INTERRUPTED` | Forget it |
+
 ### Setup wizard and plugins
 
 | Command | |
@@ -237,7 +249,8 @@ save variable: 0 or 2 = prime only, other = purge; else purge.
 
 | Object | Fields |
 |---|---|
-| `printer.ifs` | `connected`, `version`, `busy`, `channel` (loaded, 0 none), `state`, `selected`, `inserted[4]`, `colors[4]`, `channel_count`, `active_channel`, `loaded_channels`, `pending_insert_channels`, `activity`, `activity_channel`, `error`, `tool_map` (`"0"`-`"3"` -> slot), `tune` |
+| `printer.ifs` | `connected`, `version`, `busy`, `channel` (loaded, 0 none), `state`, `selected`, `inserted[4]`, `colors[4]`, `channel_count`, `active_channel`, `loaded_channels`, `pending_insert_channels`, `activity`, `activity_channel`, `error`, `tool_map` (`"0"`-`"3"` -> slot), `tune`, `auto_refill`, `refill` (1.2: last auto-refill message) |
+| `printer.ad5x_resume` | `available`, `file`, `z`, `time` (1.2: an interrupted print) |
 | `printer.ifs_materials` | `available`, `channel_count`, `slots` (`"1"`-`"4"`: `type`, `color`, `temp`), `loaded`, `temperatures` |
 | `printer.ad5x_setup` | `step`, `state`, `message`, `progress`, `results`, `checks`, `pending_save`, `zoffset` |
 | `printer.ad5x_config` | `notices` (lines of `config-updates.txt`), `backups` (`macros/*.bak-*`) |
@@ -268,6 +281,9 @@ Read them; write only your own (prefixed) variables, except
   3 is the image's (3.14 now); no compiler on the printer, no pip.
 - Our modules' Python classes (`ifs.IFS`, ...) are internal: use their
   commands and status fields.
+- Events (`printer.register_event_handler`): `"ifs:loaded"` (1.2), with
+  the slot now in the nozzle (1-4, 0 = emptied), after every load,
+  unload, swap and `IFS_SET_CHANNEL`.
 
 ## Moonraker
 

@@ -17,6 +17,7 @@ endef
 # the printer's CPU doesn't compress them at every page load.
 define FLUIDD_INSTALL_TARGET_CMDS
 	rm -rf $(TARGET_DIR)/usr/share/fluidd
+	mkdir -p $(TARGET_DIR)/usr/share
 	cp -r $(@D)/dist $(TARGET_DIR)/usr/share/fluidd
 	find $(TARGET_DIR)/usr/share/fluidd -type f \( -name '*.js' \
 		-o -name '*.css' -o -name '*.svg' -o -name '*.json' \

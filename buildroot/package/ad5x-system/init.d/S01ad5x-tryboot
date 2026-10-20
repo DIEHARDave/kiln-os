@@ -8,6 +8,12 @@
 case "$1" in
 start)
 	[ -n "$SLOT" ] || exit 0
+	# A slot whose root has no squashfs superblock can't start (a recovery
+	# write cut short, see ad5x-update): stay on this one.
+	if [ "$(head -c 4 "$(rootfs_of $OTHER)" 2>/dev/null)" != hsqs ]; then
+		echo "tryboot: slot $OTHER holds no root filesystem; boot flag stays on slot $SLOT"
+		exit 0
+	fi
 	set_flag $OTHER
 	echo "tryboot: running slot $SLOT; boot flag on slot $OTHER until start-up completes"
 	;;

@@ -184,3 +184,10 @@ Linux kernel is GPL-2.0. The images contain no Flashforge files. The parts
 that only Flashforge can provide (drivers, board tools, the stock kernel)
 come from your own printer at install time and are never in this
 repository or its releases.
+
+Source code: each release's own code is this repository at its tag. The
+source of every third-party package in the images (with its patches) is in
+the [sources](../../releases/tag/sources) release, including the 6.6 kernel
+tree and the Klipper commit the board firmware is built from. Each release's
+`kiln-os-<version>-licenses.tar.gz` lists every package with its licence,
+version and source archive, and holds the licence texts.

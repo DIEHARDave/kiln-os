@@ -245,18 +245,42 @@ Going back to stock in slot A: from the main OS, write
 `/data/ad5x/stock/rootfs.squashfs` to p2 and `kernel.img` to p1 (or use the
 laptop backup).
 
-## Interaction with the main OS's `ad5x-update` (read this)
+## Updates of the recovery OS itself
 
-The main OS's `ad5x-update` writes the *idle* slot. With recovery installed,
-that is slot A, **the recovery**. It accepts any slot holding
-`/etc/ad5x-release` (the recovery has one), so running it from the main OS
-replaces recovery with a second copy of the main OS. With recovery installed,
-update the main OS through recovery (.swu) only. Open item: teach
-`ad5x-update` to refuse a target holding `/etc/ad5x-recovery` (a change to the
-main OS, not made here).
+The recovery OS travels with the main OS (since v0.0.5). Each main image
+carries the recovery image of the same release in `/usr/share/ad5x/recovery`
+(`rootfs.squashfs`, `.sha256`, and `rootfs.id`, the recovery's content ID);
+the build makes the recovery OS first and puts it into the main image
+(`board/ad5x/post-build.sh`, `AD5X_RECOVERY_IMAGE`; `tools/release.sh`
+refuses a main image that carries another one).
 
-Also: a stock firmware update (an `AD5X-*.tgz` stick) run from slot B would
-write slot A. Never apply one.
+After a complete start (boot flag back on slot B), `S99ad5x-update-recovery`
+compares slot A's `/etc/ad5x-recovery-id` with the carried one. Another ID,
+or none (recovery OSes before v0.0.5), and it writes the carried image with
+`ad5x-update --install-recovery` in the background: sha256 check, write,
+read-back, at most 3 tries per image. Log: `/data/ad5x/recovery/update.log`.
+`/data/ad5x/recovery-update.disable` turns it off.
+
+The content ID is a sha256 over every path, mode and file in the recovery
+tree except `/etc/ad5x-release` (which has the build date), so the slot is
+only rewritten when the recovery OS really changed, not at every update.
+`BR2_REPRODUCIBLE=y` keeps unchanged programs byte-identical between builds
+(BusyBox would otherwise embed its build time).
+
+A write cut short must not leave a slot A the printer would boot:
+- `ad5x-update` writes the squashfs superblock last (block 0 zeroed first,
+  then the rest, then block 0), so a partial write has no superblock;
+- `S01ad5x-tryboot` doesn't point the boot flag at a slot whose root has no
+  superblock;
+- staging a main OS update (`ad5x-update FILE`, Fluidd's Update) waits for a
+  running recovery write before pointing the boot flag at slot A;
+- `S99ad5x-update-recovery` writes a slot A without a superblock again at
+  the next start.
+Only stock in slot A is never touched by it (`S99ad5x-install-recovery` is
+the first install's step, `--replace-stock`).
+
+A stock firmware update (an `AD5X-*.tgz` stick) run from slot B would write
+slot A. Never apply one.
 
 ## Tests (laptop)
 
