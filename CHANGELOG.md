@@ -7,6 +7,22 @@ the release has no section of its own yet (rename it after the release).
 ## Unreleased
 
 ### Added
+- `BED_SOAK_ENABLE ENABLE=0|1`: the bed heat soak on or off for every
+  print (saved; calibrations are kept).
+
+### Changed
+- Bed soak calibration copes with the load cells' scatter (about 0.03 mm):
+  readings are averaged over 3 rounds and "settled" means within 0.02 mm,
+  so it ends on its own instead of running 25 minutes; the saved time is
+  the centre's (where the Z check probes), with the slowest corner's
+  alongside.
+- A bed temperature without its own calibration uses the nearest one,
+  scaled by how far the bed heats (an 80 C PETG print after a 60 C
+  calibration soaks longer, not shorter); at most 10 minutes.
+
+## v0.0.7
+
+### Added
 - **The speaker works:** short chimes when a print starts, finishes,
   fails or pauses and when the IFS auto-refills; `M300` beeps and zMod's
   `PLAY_MIDI FILE=` plays your own MIDI files (config folder `midi/`).
@@ -27,7 +43,7 @@ the release has no section of its own yet (rename it after the release).
   growing when Z is measured; the purge and brushing count. How long:
   measured on your printer with `BED_SOAK_CALIBRATE BED=80` (probes the
   centre and corners until they stop moving, saved per temperature), else
-  3 s per degree the bed rose, at most 5 minutes. Optional "probe until
+  3 s per degree the bed rose, at most 10 minutes. Optional "probe until
   stable" mode; `PRINT_START SOAK=` overrides; settings in the printer's
   `macros/print_start.cfg`.
 

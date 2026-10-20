@@ -5,28 +5,38 @@
 # bed sensor reads the target, so a Z check made at once is a little off.
 #
 # BED_SOAK_CALIBRATE BED=80 [POINTS=5|1] [NOZZLE=140] [INTERVAL=60]
-#     [STABLE=0.005] [WINDOW=120] [MAX=1500] [FORCE=1]
+#     [STABLE=0.02] [WINDOW=240] [MAX=1500] [FORCE=1]
 #   From a cold bed: home, nozzle to NOZZLE (a hot nozzle grows too, so it
 #   stays constant), bed to BED, then probe every INTERVAL seconds, at the
 #   centre and (POINTS=5) 30 mm in from each corner: the heater warms the
-#   middle first, so the centre domes and the corners lag. Ends when every
-#   point has stayed within STABLE mm for WINDOW seconds (or after MAX).
-#   Saves, per bed temperature (save variable ad5x_bed_soak): settle (the
-#   slowest point's time from the bed reaching BED until it stayed within
-#   STABLE of its final value), drift (the centre's total change), warp
-#   (how much the corners moved relative to the centre: the shape change),
-#   from (the starting temperature), date. Heaters off at the end.
+#   middle first, so the centre domes and the corners lag. The load cells
+#   scatter about 0.03 mm between touches (measured, 60 C run 2026-10-20),
+#   so each point's readings are averaged over 3 rounds before judging.
+#   Ends when every point's average has stayed within STABLE mm for WINDOW
+#   seconds (or after MAX). Saves, per bed temperature (save variable
+#   ad5x_bed_soak): settle (the centre's time from the bed reaching BED
+#   until its average stayed within STABLE of its final level: PRINT_START
+#   checks Z there), settle_corners (the slowest corner's), drift (the
+#   centre's total change), warp (how much the corners moved relative to
+#   the centre: the shape change), from (the starting temperature), date.
+#   Heaters off at the end. On the AD5X at 60 C: the centre moved 0.16 mm
+#   and was settled after 5 min, one corner crept for about 13.
 # BED_SOAK_START BED= FROM= [SECONDS=] [PER_DEGREE=3] [MAX=300] [MODE=]
 #   PRINT_START, when the bed has reached BED (FROM: its temperature when
 #   the print started). The soak: SECONDS if given; none when FROM was
 #   within 5 C of BED; else the calibrated settle time of the nearest
-#   calibrated temperature (within 15 C), scaled by how far the bed rose;
-#   else PER_DEGREE seconds per degree risen; at most MAX. MODE=probe:
+#   calibrated temperature, scaled by how far the bed rose (a hotter target
+#   than any calibrated one never gets less than that calibration); else
+#   PER_DEGREE seconds per degree risen; at most MAX. MODE=probe:
 #   instead of a time, probe until two readings 60 s apart agree within
 #   0.005 mm (POINTS=1: the centre, 5: also the corners), at most that time.
 #   Two readings can't tell how much is still to come: on a bed settling
 #   like a measured one this stops with about 0.01 mm left, and the load
 #   cells' own scatter limits it; the calibration is the better guide.
+# BED_SOAK_ENABLE [ENABLE=0|1]
+#   The soak on or off for every print (saved: ad5x_bed_soak_on; a
+#   calibration stays saved either way); without ENABLE says which it is.
+#   PRINT_START SOAK= in a file still sets that print's soak.
 # BED_SOAK_WAIT
 #   Waits for what is left of the soak (the purge and brushing since
 #   BED_SOAK_START count), with a countdown on the screen.
@@ -39,21 +49,33 @@ import logging
 import time
 
 VARIABLE = "ad5x_bed_soak"
+ON_VARIABLE = "ad5x_bed_soak_on"
 CENTRE = (107.5, 107.5)
 # Centre first, then 30 mm in from each corner (bed 0-215 x 0-215)
 POINTS5 = (CENTRE, (30., 30.), (185., 30.), (185., 185.), (30., 185.))
-NEAREST = 15.   # C: a calibration this close to the target is used
 HOT = 5.        # C: a bed this close to the target at the start needs none
 
 
+def smooth(readings):
+    """Each reading averaged with its neighbours (3 rounds): the load
+    cells scatter more than the settling we look for."""
+    out = []
+    for i, (t, z) in enumerate(readings):
+        near = [r[1] for r in readings[max(0, i - 1):i + 2]]
+        out.append((t, sum(near) / len(near)))
+    return out
+
+
 def settle_time(readings, stable):
-    """Seconds from the first reading until Z stayed within stable of the
-    last reading (readings: [(seconds, z)])."""
+    """Seconds from the first reading until the smoothed Z stayed within
+    stable of its final level (the mean of the last 4 readings)."""
     if not readings:
         return 0.
-    final = readings[-1][1]
-    settle = readings[-1][0]
-    for t, z in reversed(readings):
+    sm = smooth(readings)
+    tail = [z for t, z in readings[-4:]]
+    final = sum(tail) / len(tail)
+    settle = sm[-1][0]
+    for t, z in reversed(sm):
         if abs(z - final) > stable:
             break
         settle = t
@@ -61,12 +83,13 @@ def settle_time(readings, stable):
 
 
 def is_stable(readings, stable, window):
-    """Z within stable over the last window seconds (and that long run)."""
+    """Smoothed Z within stable over the last window seconds (and that
+    long run, and at least 4 readings in it)."""
     if not readings or readings[-1][0] - readings[0][0] < window:
         return False
     end = readings[-1][0]
-    zs = [z for t, z in readings if t >= end - window]
-    return len(zs) >= 2 and max(zs) - min(zs) <= stable
+    zs = [z for t, z in smooth(readings) if t >= end - window]
+    return len(zs) >= 4 and max(zs) - min(zs) <= stable
 
 
 def soak_seconds(bed, start, calibration, per_degree, max_s):
@@ -80,13 +103,16 @@ def soak_seconds(bed, start, calibration, per_degree, max_s):
             t = float(key)
         except ValueError:
             continue
-        if abs(t - bed) <= NEAREST and (near is None or
-                                        abs(t - bed) < abs(near[0] - bed)):
+        if near is None or abs(t - bed) < abs(near[0] - bed):
             near = (t, cal)
     if near is not None:
         t, cal = near
+        settle = float(cal.get('settle', 0.))
         cal_rise = max(t - float(cal.get('from', 20.)), 1.)
-        s = float(cal.get('settle', 0.)) * min(rise / cal_rise, 2.)
+        s = settle * min(rise / cal_rise, 2.)
+        if bed > t and (bed - start) >= (t - float(cal.get('from', 20.))):
+            # Hotter and at least as big a rise: not less than measured
+            s = max(s, settle)
         return min(s, max_s), "calibrated at %d C" % (t,)
     return min(rise * per_degree, max_s), "%.0f s per degree" % (per_degree,)
 
@@ -103,12 +129,15 @@ class BedSoak:
         self.until = 0.
         self.mode = "time"
         self.points = 1
+        self.enabled = True
         self.printer.register_event_handler("klippy:connect", self._load)
         for cmd, desc in (
                 ("BED_SOAK_CALIBRATE", "Measure how long the bed's Z keeps "
                  "moving after heating: BED= (from a cold bed)"),
                 ("BED_SOAK_START", "PRINT_START: decide the bed soak: BED= "
                  "FROM= [SECONDS=]"),
+                ("BED_SOAK_ENABLE", "Bed heat soak on or off for every "
+                 "print: ENABLE=0|1"),
                 ("BED_SOAK_WAIT", "PRINT_START: wait for the rest of the "
                  "bed soak")):
             self.gcode.register_command(cmd, getattr(self, "cmd_" + cmd),
@@ -120,6 +149,9 @@ class BedSoak:
         if isinstance(v, dict):
             self.calibration = {str(k): c for k, c in v.items()
                                 if isinstance(c, dict)}
+        on = sv.allVariables.get(ON_VARIABLE) if sv is not None else None
+        if on in (0, 1) and not isinstance(on, float):
+            self.enabled = bool(on)
 
     def _save(self):
         if self.printer.lookup_object('save_variables', None) is None:
@@ -165,8 +197,8 @@ class BedSoak:
         nozzle = gcmd.get_float('NOZZLE', 140., minval=0., maxval=200.)
         interval = gcmd.get_float('INTERVAL', 60. if npts == 5 else 30.,
                                   minval=10.)
-        stable = gcmd.get_float('STABLE', .005, above=0.)
-        window = gcmd.get_float('WINDOW', 120., minval=interval)
+        stable = gcmd.get_float('STABLE', .02, above=0.)
+        window = gcmd.get_float('WINDOW', 240., minval=interval)
         max_s = gcmd.get_float('MAX', 1500., minval=window)
         start = self._temp('heater_bed')
         if start > 40. and not gcmd.get_int('FORCE', 0):
@@ -216,23 +248,27 @@ class BedSoak:
             self._status("")
         if not readings[0]:
             return
-        settle = max(settle_time(r, stable) for r in readings)
-        change = [r[-1][1] - r[0][1] for r in readings]
+        settle = settle_time(readings[0], stable)
+        corners = max([settle_time(r, stable) for r in readings[1:]] or [0.])
+        last4 = [sum(z for t, z in r[-4:]) / len(r[-4:]) for r in readings]
+        change = [f - r[0][1] for f, r in zip(last4, readings)]
         warp = max([abs(c - change[0]) for c in change[1:]] or [0.])
         done = all(is_stable(r, stable, window) for r in readings)
         self.calibration["%d" % (round(bed),)] = {
-            'settle': round(settle), 'drift': round(change[0], 4),
+            'settle': round(settle), 'settle_corners': round(corners),
+            'drift': round(change[0], 4),
             'warp': round(warp, 4), 'points': npts, 'from': round(start),
             'stable': done, 'date': time.strftime("%Y-%m-%d")}
         self._save()
         gcmd.respond_info(
-            "Bed soak at %.0f C: the centre moved %+.3f mm%s; every point "
-            "stayed within %.3f mm after %d s%s. PRINT_START now soaks about "
-            "that long (less what the purge takes)."
-            % (bed, change[0], "" if npts == 1 else
-               ", the corners up to %.3f mm more or less than the centre"
-               % (warp,), stable, settle, "" if done else
-               " (not settled within MAX: the result is a lower bound)"))
+            "Bed soak at %.0f C: the centre moved %+.3f mm and stayed within "
+            "%.3f mm after %d s%s%s. PRINT_START now soaks %d s after the bed"
+            " is hot (the purge and brushing count)."
+            % (bed, change[0], stable, settle,
+               "" if npts == 1 else "; the corners moved up to %.3f mm more "
+               "or less than the centre, the slowest settled after %d s"
+               % (warp, corners),
+               "" if done else " (not all settled within MAX)", settle))
 
     # Print start
     def cmd_BED_SOAK_START(self, gcmd):
@@ -246,16 +282,32 @@ class BedSoak:
             raise gcmd.error("POINTS is 1 or 5")
         if gcmd.get('SECONDS', '') != '':
             soak, why = gcmd.get_float('SECONDS', minval=0.), "SOAK="
+        elif not self.enabled:
+            soak, why = 0., "off"
         else:
             soak, why = soak_seconds(
                 bed, start, self.calibration,
                 gcmd.get_float('PER_DEGREE', 3., minval=0.),
-                gcmd.get_float('MAX', 300., minval=0.))
+                gcmd.get_float('MAX', 600., minval=0.))
         self.soak = soak
         self.until = self.reactor.monotonic() + soak
         if soak > 0:
             gcmd.respond_info("Bed heat soak: %s%d s (%s)" % (
                 "up to " if self.mode == 'probe' else "", soak, why))
+
+    def cmd_BED_SOAK_ENABLE(self, gcmd):
+        if gcmd.get('ENABLE', None) is not None:
+            self.enabled = gcmd.get_int('ENABLE', minval=0, maxval=1) == 1
+            if self.printer.lookup_object('save_variables', None) is not None:
+                self.gcode.run_script_from_command(
+                    "SAVE_VARIABLE VARIABLE=%s VALUE=%d"
+                    % (ON_VARIABLE, self.enabled))
+        cal = ", ".join("%s C: %s s" % (t, c.get('settle'))
+                        for t, c in sorted(self.calibration.items()))
+        gcmd.respond_info("Bed heat soak is %s%s" % (
+            "on" if self.enabled else "off (PRINT_START SOAK= still works)",
+            "; calibrated: " + cal if cal else "; not calibrated (3 s per "
+            "degree the bed rises)"))
 
     def cmd_BED_SOAK_WAIT(self, gcmd):
         if self.soak <= 0:
@@ -286,7 +338,8 @@ class BedSoak:
         self.soak = 0.
 
     def get_status(self, eventtime):
-        return {'calibration': self.calibration, 'running': self.running,
+        return {'enabled': self.enabled,
+                'calibration': self.calibration, 'running': self.running,
                 'soak': self.soak, 'last': self.last}
 
 

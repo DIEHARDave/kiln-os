@@ -24,7 +24,7 @@ PRINT_START BED=[bed_temperature_initial_layer_single] EXTRUDER=[nozzle_temperat
 | `EXTRUDER` | 220 | Nozzle temperature |
 | `TOOL` | -1 | First slicer tool; loads IFS channel `tool_map[TOOL]` (`TOOL+1` unless `IFS_MAP_TOOL` changed it). -1 or no IFS: skipped |
 | `LEVEL` | `mesh_every_print` (1; factory: 0) | 1 = new bed mesh instead of the centre Z check, 0 = the stock check |
-| `SOAK` | the calibrated settle time for the nearest calibrated bed temperature (within 15 °C, scaled by how far the bed rose), else `soak_per_degree` 3 s per °C it rose; at most `soak_max` 300 s; 0 when the bed was within 5 °C of `BED` already | Bed heat soak in seconds before the Z check / mesh, counted from when the bed reached `BED` (the purge and brushing count). Set it when the slicer heats the bed (`M190`) before `PRINT_START` |
+| `SOAK` | the calibrated settle time of the nearest calibrated bed temperature, scaled by how far the bed rose (a hotter target never gets less than the calibration), else `soak_per_degree` 3 s per °C it rose; at most `soak_max` 600 s; 0 when the bed was within 5 °C of `BED` already | Bed heat soak in seconds before the Z check / mesh, counted from when the bed reached `BED` (the purge and brushing count). Set it when the slicer heats the bed (`M190`) before `PRINT_START` |
 | `ADAPTIVE` | `adaptive_mesh` (1; factory: 0) | 1 = the mesh covers only the print area (slicer object labels; whole bed without them). Not saved as a profile: the full `default` mesh stays |
 
 ## Steps (stock order)
@@ -84,19 +84,32 @@ The bed sensor reaches its target minutes before the plate's surface
 stops warming and growing; a Z check made at once is off by what is still
 to come. `BED_SOAK_CALIBRATE BED=80` measures it on this printer: from a
 cold bed (below 40 °C), nozzle held at 140 °C, it probes the centre and
-four points 30 mm in from the corners every 60 s until every point stayed
-within 0.005 mm for 2 minutes (at most 25 minutes), prints each round, and
-saves per temperature the settle time (slowest point), the centre's total
-change and the shape change (corners against the centre) in the save
-variable `ad5x_bed_soak` (`printer.ad5x_soak.calibration`). Run it once per
-bed temperature you use (60, 80, 100). `PRINT_START` then soaks that long
-after the bed is hot, minus the purge and brushing time.
+four points 30 mm in from the corners every 60 s, prints each round, and
+stops when every point's 3-round average has stayed within 0.02 mm for 4
+minutes (at most 25 minutes). The load cells scatter about 0.03 mm between
+touches, hence the averaging and the 0.02 mm band. It saves per
+temperature the centre's settle time (`PRINT_START` checks Z there), the
+slowest corner's, the centre's total change and the shape change (corners
+against the centre) in the save variable `ad5x_bed_soak`
+(`printer.ad5x_soak.calibration`). Run it once per bed temperature you use
+(60, 80, 100). `PRINT_START` then soaks the centre's settle time after the
+bed is hot, minus the purge and brushing time.
+
+Measured (2026-10-20, 60 °C from 17 °C): the centre moved 0.16 mm and was
+within 0.02 mm of its final level after 5 minutes; the corners moved
+0.06-0.12 mm, the front-right one crept about 0.03 mm more until 13
+minutes. Saved soak: 300 s.
+
+On or off for every print: `BED_SOAK_ENABLE ENABLE=0` / `ENABLE=1`
+(saved; a calibration stays saved either way; `BED_SOAK_ENABLE` alone
+says which it is). `PRINT_START SOAK=` in a file still sets that print's
+soak.
 
 `soak_mode: "probe"` in `macros/print_start.cfg` instead probes until two
 readings 60 s apart agree within 0.005 mm (`soak_points` 1 or 5), at most
-the soak time. Two readings can't see what is still to come (on a bed
-settling like a measured one it stops with about 0.01 mm left) and the
-load cells' scatter limits it, so the calibrated time is the default.
+the soak time. With the load cells' 0.03 mm scatter two readings rarely
+agree that closely, so in practice it waits the whole soak time with extra
+probing: the calibrated time (the default) is the better choice.
 
 ## Not in the macro
 

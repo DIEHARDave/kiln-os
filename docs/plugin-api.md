@@ -221,6 +221,7 @@ printer` before calling one.
 | `PLAY_SOUND`, `SOUND_STOP` | `EVENT=` startup\|start\|complete\|error\|cancelled\|paused\|refill (1.4) |
 | `SOUND_SETUP` | `[ENABLE=0\|1]` `[VOLUME=0-100]` `[<EVENT>=<file>\|0]` (1.4) |
 | `BED_SOAK_CALIBRATE` | `BED=` `[POINTS=5\|1]` `[NOZZLE=140]` `[INTERVAL=]` `[STABLE=0.005]` `[WINDOW=120]` `[MAX=1500]` `[FORCE=1]` (1.4): measure the bed's settling after heating (`docs/print-start.md`) |
+| `BED_SOAK_ENABLE` | `[ENABLE=0\|1]` (1.4): the soak on/off for every print, saved |
 | `BED_SOAK_START`, `BED_SOAK_WAIT` | `PRINT_START`'s soak (1.4; `BED=` `FROM=` `[SECONDS=]` `[MODE=time\|probe]` `[POINTS=]`) |
 | `CONFIG_BACKUPS` | `ACK=1` (clear the notice) | List `macros/` files an update replaced and the backups of edited ones |
 | `G10`, `G11`, `SET_RETRACTION` | Klipper's `[firmware_retraction]` | |
@@ -283,7 +284,7 @@ save variable: 0 or 2 = prime only, other = purge; else purge.
 |---|---|
 | `printer.ifs` | `connected`, `version`, `busy`, `channel` (loaded, 0 none), `state`, `selected`, `inserted[4]`, `colors[4]`, `channel_count`, `active_channel`, `loaded_channels`, `pending_insert_channels`, `activity`, `activity_channel`, `error`, `tool_map` (`"0"`-`"3"` -> slot), `tune`, `auto_refill`, `refill` (1.2: last auto-refill message) |
 | `printer.ad5x_sound` | `speaker`, `enabled`, `volume`, `events` (event -> file, "" off), `files`, `playing` (1.4) |
-| `printer.ad5x_soak` | `calibration` (1.4: per bed temperature `settle`, `drift`, `warp`, `points`, `from`, `stable`, `date`), `running`, `soak`, `last` |
+| `printer.ad5x_soak` | `enabled`, `calibration` (1.4: per bed temperature `settle`, `drift`, `warp`, `points`, `from`, `stable`, `date`), `running`, `soak`, `last` |
 | `printer.ad5x_resume` | `available`, `file`, `z`, `time` (1.2: an interrupted print) |
 | `printer.ifs_materials` | `available`, `channel_count`, `slots` (`"1"`-`"4"`: `type`, `color`, `temp`), `loaded`, `temperatures` |
 | `printer.ad5x_setup` | `step`, `state`, `message`, `progress`, `results`, `checks`, `pending_save`, `zoffset` |
