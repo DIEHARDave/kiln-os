@@ -11,11 +11,24 @@ the release has no section of its own yet (rename it after the release).
   print (saved; calibrations are kept).
 
 ### Changed
+- **Our 6.6 kernel always.** No more choice of kernel (`ad5x-kernel own`
+  / `stock` are gone): Kiln OS runs our kernel on every printer, new
+  installs included. The stock kernel stays in its boot slot only as the
+  fallback when a start of ours fails, until an update brings another
+  release of ours (`ad5x-kernel retry` tries again).
+
+- Bed soak calibration holds the nozzle at its temperature for 5 minutes
+  before heating the bed (`NOZZLE_SOAK=`), so the hotend still growing
+  isn't counted as bed movement.
 - Bed soak calibration copes with the load cells' scatter (about 0.03 mm):
   readings are averaged over 3 rounds and "settled" means within 0.02 mm,
   so it ends on its own instead of running 25 minutes; the saved time is
   the centre's (where the Z check probes), with the slowest corner's
   alongside.
+- zMod's `START_PRINT` (zMod-sliced files) passes `SOAK=` on to
+  `PRINT_START`; the soak applied to those files already.
+- A cooler bed than the calibrated one never soaks longer than measured
+  (a 55 °C PLA print after the 60 °C calibration: 420 s, not 565 s).
 - A bed temperature without its own calibration uses the nearest one,
   scaled by how far the bed heats (an 80 C PETG print after a 60 C
   calibration soaks longer, not shorter); at most 10 minutes.

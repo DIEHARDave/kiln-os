@@ -83,7 +83,9 @@ print are not part of this macro.
 The bed sensor reaches its target minutes before the plate's surface
 stops warming and growing; a Z check made at once is off by what is still
 to come. `BED_SOAK_CALIBRATE BED=80` measures it on this printer: from a
-cold bed (below 40 °C), nozzle held at 140 °C, it probes the centre and
+cold bed (below 40 °C), nozzle at 140 °C and held there 5 minutes
+first (`NOZZLE_SOAK=`: the hotend keeps growing after its sensor reads
+the target, which would count as bed movement), it probes the centre and
 four points 30 mm in from the corners every 60 s, prints each round, and
 stops when every point's 3-round average has stayed within 0.02 mm for 4
 minutes (at most 25 minutes). The load cells scatter about 0.03 mm between
@@ -98,7 +100,15 @@ bed is hot, minus the purge and brushing time.
 Measured (2026-10-20, 60 °C from 17 °C): the centre moved 0.16 mm and was
 within 0.02 mm of its final level after 5 minutes; the corners moved
 0.06-0.12 mm, the front-right one crept about 0.03 mm more until 13
-minutes. Saved soak: 300 s.
+minutes. Saved soak: 300 s. At 80 °C (from 21 °C) the centre moved only
+0.03-0.07 mm, within the probe's scatter (saved 540 s, capped to 300 s).
+The difference was mostly the hotend: the 60 °C bed reached its
+temperature 2 minutes after the nozzle, the 80 °C one 4; hence
+`NOZZLE_SOAK`. Re-run at 60 °C with the nozzle held 5 minutes first (bed
+from 34 °C): the centre moved 0.09 mm (0.07 mm in the first 7 minutes,
+then about 0.005 mm a minute, the frame warming), the corners up to
+0.04 mm less; settled within 0.02 mm after 420 s. Saved: 420 s for 60 and
+80 °C.
 
 On or off for every print: `BED_SOAK_ENABLE ENABLE=0` / `ENABLE=1`
 (saved; a calibration stays saved either way; `BED_SOAK_ENABLE` alone

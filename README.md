@@ -45,14 +45,24 @@ for if it goes wrong, and how to go back.
   tested packages. Every release is built and tested against the boards'
   flashed firmware first ([docs/updates.md](docs/updates.md)).
 - **Print start.** Every print probes a mesh of the print area, then draws
-  a prime line in front of the objects. Both can be turned off per printer
+  a prime line in front of the objects. Both can be turned off per printer.
+  From a cold bed it first waits for the plate to stop moving, measured
+  on your printer with the load cells (`BED_SOAK_CALIBRATE`)
   ([docs/print-start.md](docs/print-start.md)).
-- **Setup wizard** on the touch screen at first boot: self-check, PID,
-  bed mesh, input shaper, IFS tuning and a first-layer Z offset test
-  ([docs/setup-wizard.md](docs/setup-wizard.md)).
-- **Plugins.** Optional bundles of config and Klipper extras, switched with
-  `ENABLE_PLUGIN` / `DISABLE_PLUGIN`, with a documented API for your own
+- **Setup wizard** on the touch screen at first boot: time zone,
+  self-check, PID, bed mesh, input shaper, IFS tuning and a first-layer Z
+  offset test ([docs/setup-wizard.md](docs/setup-wizard.md)).
+- **Plugins.** Optional bundles of config and Klipper extras, switched on
+  the touch screen (Settings > Plugins) or with `ENABLE_PLUGIN` /
+  `DISABLE_PLUGIN`, with a documented API for your own. The screen also
+  installs the tested ones from their own repositories: notifications
+  with a camera photo ([kiln-notify](https://github.com/djvalic/kiln-notify)),
+  timelapse ([kiln-timelapse](https://github.com/djvalic/kiln-timelapse)),
+  Spoolman ([kiln-spoolman](https://github.com/djvalic/kiln-spoolman))
   ([docs/plugins.md](docs/plugins.md), [docs/plugin-api.md](docs/plugin-api.md)).
+- **Sound.** The speaker plays chimes on print events, `M300` and your own
+  MIDI files (zMod's `PLAY_MIDI`), set on the screen
+  ([docs/sound.md](docs/sound.md)).
 - **Editable config.** The image holds the hardware and stock behaviour.
   This system's choices live in editable files on the printer, and your
   own changes go in `local.cfg`. Updates refresh the editable files and
@@ -91,29 +101,31 @@ start-up, next to Flashforge's system. Kiln OS replaces that system:
 
 ## The kernel
 
-By default Kiln OS boots the printer's own stock kernel (5.10). Updates
-carry no kernel, and the boot slots keep the stock one.
-
-Optionally (`ad5x-kernel own`, what the developer's printer runs every
-day), the system starts **our own Linux 6.6**,
-built from Ingenic's X2600 SDK kernel with AD5X patches
-([kernel-ingenic66/](kernel-ingenic66/)). The stock kernel has no kexec,
-so a small module (`chainload.ko`) loads the 6.6 kernel from RAM at every
-boot. Nothing is written to the boot slots or the boot flag. A start that
-doesn't complete sets the choice back to stock, so the next boot uses the
-stock kernel. `ad5x-kernel stock` switches back by hand.
-
-With the 6.6 kernel, the drivers are built in from source instead of
-Flashforge's out-of-tree modules:
+Kiln OS runs **our own Linux 6.6**, built from Ingenic's X2600 SDK kernel
+with AD5X patches ([kernel-ingenic66/](kernel-ingenic66/)). Its drivers are
+built in from source instead of Flashforge's out-of-tree modules:
 
 - the display: an LVDS panel driver for the KX070 and fixes to Ingenic's
   display driver, so the kernel starts the screen itself;
+- the speaker on its PWM pin ([docs/sound.md](docs/sound.md));
 - RS-485 transmit enable for the IFS port;
 - Wi-Fi through mainline `rtw88`, and the touch screen through mainline
   `tsc2007`.
 
-Klipper, the IFS, the screen and touch all run on it
-([docs/deviations-from-stock.md](docs/deviations-from-stock.md), last
+The printer's stock 5.10 kernel stays in its boot slot, and every boot
+still begins with it: the first boot script (`S00ad5x-kernel`) loads our
+kernel from the release image and starts it from RAM (`chainload.ko`; the
+stock kernel has no kexec). Nothing is written to the boot slots or the
+boot flag, and there is no setting to choose a kernel.
+
+The stock kernel is only the safety net: if a start of ours doesn't
+complete (a hang, then a power cycle; or a panic, which reboots by itself),
+the printer comes up on the stock kernel instead, with Flashforge's drivers
+(Klipper, the screen and the network still run; no speaker), and stays on
+it until an update brings another release of our kernel, which is tried
+at once. `ad5x-kernel` shows the running kernel and any failure;
+`ad5x-kernel retry` tries ours again from the next boot. Details:
+[docs/deviations-from-stock.md](docs/deviations-from-stock.md) (last
 section).
 
 ## IFS

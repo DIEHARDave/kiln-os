@@ -20,6 +20,14 @@ Sources (read 2026-10-15):
 for `FX` `https://github.com/prestonbrown/ff5m/blob/422a4ce36d8d6f76d1f89d2538a86f4bd931be4a/<path>`,
 for `LW` `https://github.com/Hrybmo/lesswaste/blob/3d42421a6ed020baaa7563c94a56ad76ead2a799/<path>`.
 
+## Our patches
+
+`buildroot/package/helixscreen/000*.patch`, listed with what each does in
+`docs/setup-wizard.md` ("HelixScreen side"): the AD5X setup steps (0001,
+0002, 0003, 0006 time zone), the IFS port sensors (0004), Settings >
+Plugins (0005, `docs/plugins.md`) and the speaker with Settings > Sound >
+Printer Sounds (0007, `docs/sound.md`).
+
 ## 0. Implemented (2026-10-15)
 
 Our `ifs` module speaks the `FX` "module" contract; HelixScreen latches

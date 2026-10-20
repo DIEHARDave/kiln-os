@@ -426,7 +426,7 @@ an update.
 
 ## HelixScreen side (`buildroot/package/helixscreen/000*.patch`)
 
-Three patches on HelixScreen v1.1.0-beta.9, applied by Buildroot after
+Patches on HelixScreen v1.1.0-beta.10, applied by Buildroot after
 extract (after the `GIT_INIT` hook has committed the pristine tree, so
 upstream's own submodule patching is unaffected; they touch only `src/`,
 `include/` and `ui_xml/`). Regenerate them from a clean clone of the build
@@ -437,6 +437,10 @@ dir's `import` commit with `git format-patch`.
 | `0001-wizard-ad5x-setup-steps` | The seven AD5X steps, the `ad5x_setup` subscription, telemetry step skipped on AD5X |
 | `0002-settings-run-setup-wizard` | Settings > Printer > **Run Setup Wizard** |
 | `0003-application-wizard-rerun-flag-file` | `HELIX_WIZARD_FLAG_FILE` at start; `action:ad5x_setup_wizard` while running |
+| `0004-ams-ad5x-ifs-ports-are-prep-sensors` | The IFS's port sensors shown as prep sensors |
+| `0005-settings-plugins-panel` | Settings > Printer > **Plugins** (`docs/plugins.md`) |
+| `0006-wizard-ad5x-time-zone-step` | **Time Zone**, the first AD5X step (below) |
+| `0007-sound-pwm-backend-and-printer-sounds` | HelixScreen's sounds on the speaker, Settings > Sound > **Printer Sounds** (`docs/sound.md`) |
 
 ### Steps
 
@@ -499,10 +503,19 @@ The status object is subscribed with the app's main subscription (whole
 object) when `objects/list` has `ad5x_setup`; the step also queries it
 when it opens, after every request and whenever Klipper becomes ready.
 
+### Time zone (patch 0006)
+
+The first AD5X step, before the self-check: a dropdown of HelixScreen's
+time zones (the same list as Settings > Language & Time), set to the
+current one; a choice is applied and saved at once (the screen's clock and
+screensaver; the printer itself keeps UTC). It runs nothing on the printer
+and always offers Next. It is in the first-start wizard and in every
+"Run Setup Wizard" session.
+
 ### Running it again
 
 - **Settings > Printer > Run Setup Wizard** (only where the steps exist):
-  confirm, then the seven AD5X steps run as a targeted wizard session over
+  confirm, then the time zone and the seven AD5X steps run as a targeted wizard session over
   the current screen. `wizard_completed`, the preset and the hardware
   selections are not touched; Back on the first step or Finish on the last
   returns to Settings.

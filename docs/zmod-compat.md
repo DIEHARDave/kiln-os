@@ -21,7 +21,7 @@ exists and does what is described below.
 | zMod / slicer | Count in the files | Here | Plugin |
 |---|---|---|---|
 | `START_PRINT EXTRUDER_TEMP= BED_TEMP=` | 140 | `PRINT_START EXTRUDER= BED=`, then `LINE_PURGE` | zmod-compat |
-| `START_PRINT` without `FORCE_*` | | `PRINT_START` decides: the printer's `macros/print_start.cfg` meshes the print area every print (zMod's `print_leveling: 1` + `use_kamp: 1`); the factory one does the stock Z check | zmod-compat |
+| `START_PRINT` without `FORCE_*` | | `PRINT_START` decides: the printer's `macros/print_start.cfg` meshes the print area every print (zMod's `print_leveling: 1` + `use_kamp: 1`); the factory one does the stock Z check. The bed heat soak applies too; `SOAK=<s>` is passed on (ours, not zMod's) | zmod-compat |
 | `START_PRINT FORCE_LEVELING=1` / `FORCE_KAMP=1` | | `PRINT_START LEVEL=1 ADAPTIVE=0` / `ADAPTIVE=1` | zmod-compat |
 | `START_PRINT TOOL=n` (Bambufy) | | `PRINT_START TOOL=n` (loads it at the end of the start) | zmod-compat |
 | `START_PRINT SKIP_LEVELING= MESH= INTERNAL= EXTERNAL=` | | accepted, not needed | zmod-compat |

@@ -4,10 +4,13 @@
 # The plate's surface keeps warming (and growing) for minutes after the
 # bed sensor reads the target, so a Z check made at once is a little off.
 #
-# BED_SOAK_CALIBRATE BED=80 [POINTS=5|1] [NOZZLE=140] [INTERVAL=60]
-#     [STABLE=0.02] [WINDOW=240] [MAX=1500] [FORCE=1]
-#   From a cold bed: home, nozzle to NOZZLE (a hot nozzle grows too, so it
-#   stays constant), bed to BED, then probe every INTERVAL seconds, at the
+# BED_SOAK_CALIBRATE BED=80 [POINTS=5|1] [NOZZLE=140] [NOZZLE_SOAK=300]
+#     [INTERVAL=60] [STABLE=0.02] [WINDOW=240] [MAX=1500] [FORCE=1]
+#   From a cold bed: home, nozzle to NOZZLE, held there NOZZLE_SOAK seconds
+#   before the bed heats (the hotend keeps growing for minutes after its
+#   sensor reads the target; without the wait that shows up as bed
+#   movement: the 60 C and 80 C runs of 2026-10-20 disagreed 5x), bed to
+#   BED, then probe every INTERVAL seconds, at the
 #   centre and (POINTS=5) 30 mm in from each corner: the heater warms the
 #   middle first, so the centre domes and the corners lag. The load cells
 #   scatter about 0.03 mm between touches (measured, 60 C run 2026-10-20),
@@ -25,8 +28,9 @@
 #   PRINT_START, when the bed has reached BED (FROM: its temperature when
 #   the print started). The soak: SECONDS if given; none when FROM was
 #   within 5 C of BED; else the calibrated settle time of the nearest
-#   calibrated temperature, scaled by how far the bed rose (a hotter target
-#   than any calibrated one never gets less than that calibration); else
+#   calibrated temperature, scaled by how far the bed rose: a hotter target
+#   at least that time (more for a bigger rise, up to twice), a cooler or
+#   equal one at most that time (less for a smaller rise); else
 #   PER_DEGREE seconds per degree risen; at most MAX. MODE=probe:
 #   instead of a time, probe until two readings 60 s apart agree within
 #   0.005 mm (POINTS=1: the centre, 5: also the corners), at most that time.
@@ -109,10 +113,12 @@ def soak_seconds(bed, start, calibration, per_degree, max_s):
         t, cal = near
         settle = float(cal.get('settle', 0.))
         cal_rise = max(t - float(cal.get('from', 20.)), 1.)
-        s = settle * min(rise / cal_rise, 2.)
-        if bed > t and (bed - start) >= (t - float(cal.get('from', 20.))):
-            # Hotter and at least as big a rise: not less than measured
-            s = max(s, settle)
+        if bed > t:
+            # Hotter: scaled up by the bigger rise, never less than measured
+            s = settle * min(max(rise / cal_rise, 1.), 2.)
+        else:
+            # Not hotter: at most the measured time, less for a smaller rise
+            s = settle * min(rise / cal_rise, 1.)
         return min(s, max_s), "calibrated at %d C" % (t,)
     return min(rise * per_degree, max_s), "%.0f s per degree" % (per_degree,)
 
@@ -195,6 +201,7 @@ class BedSoak:
         if npts not in (1, 5):
             raise gcmd.error("POINTS is 1 or 5")
         nozzle = gcmd.get_float('NOZZLE', 140., minval=0., maxval=200.)
+        nozzle_soak = gcmd.get_float('NOZZLE_SOAK', 300., minval=0.)
         interval = gcmd.get_float('INTERVAL', 60. if npts == 5 else 30.,
                                   minval=10.)
         stable = gcmd.get_float('STABLE', .02, above=0.)
@@ -219,6 +226,12 @@ class BedSoak:
             self._status("Bed soak test: heating nozzle")
             self.gcode.run_script_from_command(
                 "G90\nG1 X%.1f Y%.1f Z10 F30000\nM109 S%.0f" % (CENTRE + (nozzle,)))
+            end = self.reactor.monotonic() + nozzle_soak
+            while self.reactor.monotonic() < end:
+                left = end - self.reactor.monotonic()
+                self._status("Bed soak test: nozzle settling %d:%02d"
+                             % (left // 60, left % 60))
+                self._sleep(min(left, 5.))
             self.gcode.run_script_from_command("M140 S%.0f" % (bed,))
             while self._temp('heater_bed') < bed - 1.:
                 self._status("Bed soak test: bed %.0f / %.0f C"

@@ -90,7 +90,7 @@ not reset automatically.
 
 ## At boot (S00ad5x-kernel)
 
-With `ad5x-kernel own` the stock kernel starts ours at every boot; ours
+The stock kernel starts ours at every boot (S00ad5x-kernel); ours
 starts the display itself. Until 2026-10-17 a cold start of our display
 driver left the LVDS panel in its no-signal self-test, and S00 first
 brought the display up with stock's driver. The cause was in Ingenic's

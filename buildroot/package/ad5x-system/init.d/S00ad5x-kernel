@@ -1,17 +1,21 @@
 #!/bin/sh
-# Our own kernel (6.6, kernel-ingenic66/) without touching the boot slots.
-# The slots keep the printer's stock 5.10 kernel. When "ad5x-kernel own" is
-# set, this runs first thing on the stock kernel and starts our kernel from
-# RAM (chainload.ko, kernel-ingenic66/chainload): same command line, same
-# root, plus ad5x.kernel=own panic=10. The boot flag and the eMMC are not
-# written, only a marker on /data:
-#   /data/ad5x/kernel/use      "own" (ad5x-kernel own) or absent (stock)
-#   /data/ad5x/kernel/pending  written before the jump, removed by
-#                              S99ad5x-booted once our kernel has started
+# Kiln OS runs our own kernel (6.6, kernel-ingenic66/), without touching
+# the boot slots: they keep the printer's stock 5.10 kernel, every boot
+# starts with it, and this runs first thing on it and starts our kernel
+# from RAM (chainload.ko, kernel-ingenic66/chainload): same command line,
+# same root, plus ad5x.kernel=own panic=10. The boot flag and the eMMC are
+# not written, only markers on /data/ad5x/kernel:
+#   pending   written before the jump, removed by S99ad5x-booted once our
+#             kernel has started
+#   failed    the release of ours that didn't finish starting
+#   history   one line per failed start
 # If our kernel hangs, a power cycle comes back here with "pending" still
-# there: this boot stays on the stock kernel, records the failure and sets
-# "use" back to stock (ad5x-kernel status shows it). A panic reboots after
-# 10 s with the same result.
+# there (a panic reboots after 10 s with the same result): this boot stays
+# on the stock kernel and that release is recorded as failed. Boots stay on
+# the stock kernel (Klipper, the screen and the network still run, with
+# Flashforge's drivers) until an update brings another release of ours,
+# which is tried at once, or "ad5x-kernel retry". There is no setting to
+# choose the stock kernel: this OS is made and tested for ours.
 . /usr/lib/ad5x/kernel.sh
 . /usr/lib/ad5x/slot.sh
 K=/usr/lib/ad5x/kernel66
@@ -23,17 +27,23 @@ start)
 	mkdir -p /tmp/kdata
 	mount -t ext4 -o noatime $dev /tmp/kdata 2>/dev/null || exit 0
 	d=/tmp/kdata/ad5x/kernel
-	if [ "$(cat $d/use 2>/dev/null)" != own ]; then
-		umount /tmp/kdata; exit 0
-	fi
+	mkdir -p $d
+	# Before 2026-10-20 a choice file said which kernel: gone, ours always
+	rm -f $d/use
+	rel=$(cat $K/release 2>/dev/null)
 	if [ -f $d/pending ]; then
-		echo "ad5x-kernel: our kernel did not finish starting last time; staying on the stock kernel"
+		echo "ad5x-kernel: our kernel ($rel) did not finish starting last time; stock kernel until an update brings another (ad5x-kernel retry)"
 		echo "$(cat $d/pending) failed" >> $d/history
+		echo "$rel" > $d/failed
 		rm -f $d/pending
-		echo stock > $d/use
 		sync; umount /tmp/kdata
 		exit 0
 	fi
+	if [ -f $d/failed ] && [ "$(cat $d/failed)" = "$rel" ]; then
+		echo "ad5x-kernel: our kernel $rel failed to start before; stock kernel (ad5x-kernel retry)"
+		umount /tmp/kdata; exit 0
+	fi
+	rm -f $d/failed
 	krp=$(sed -n 's/^\([0-9a-f]*\) T kernel_restart_prepare$/\1/p' /proc/kallsyms)
 	if [ -z "$krp" ]; then
 		echo "ad5x-kernel: no kernel_restart_prepare in kallsyms; stock kernel"

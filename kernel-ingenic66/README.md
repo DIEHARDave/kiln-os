@@ -1,9 +1,11 @@
 # AD5X on Ingenic's Linux 6.6 SDK kernel (the shortcut)
 
-Status: **runs the developer's printer daily**, started from RAM at every
-boot by the stock kernel (`chainload/`, `ad5x-kernel own`): Klipper, IFS,
-screen and touch work. Nothing is written to the boot slots; a start that
-doesn't complete falls back to the stock kernel.
+Status: **the kernel Kiln OS runs** (always, since 2026-10-20), started
+from RAM at every boot by the stock kernel (`chainload/`,
+`S00ad5x-kernel`): Klipper, IFS, screen, touch and the speaker work.
+Nothing is written to the boot slots; a start that doesn't complete falls
+back to the stock kernel until an update brings another release of ours
+(`ad5x-kernel retry`).
 
 ## Why this kernel
 
