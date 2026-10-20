@@ -98,7 +98,9 @@ rescue-system updater that writes the *other* slot (B):
   2. **Drop folder**: copy `*.swu` to `/data/ad5x/update/` (e.g. with
      `scp` from the main OS, or with the main OS running), then boot
      recovery. At boot each file is installed (oldest first) and then
-     renamed `*.swu.done` or `*.swu.failed`. The result goes to
+     renamed `*.swu.done` or `*.swu.failed`; after a success only that
+     one is kept (older `.done`/`.failed` files are deleted, as the main
+     OS does when it stages an update). The result goes to
      `/data/ad5x/update/last.log`. After a success the printer reboots into
      the main OS.
   3. **USB stick**: `.swu` files in the top directory of a FAT/ext4/exFAT

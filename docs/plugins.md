@@ -184,9 +184,23 @@ touched; delete it and reboot to get the default again.
 | `nopoop` | on | zMod's purge modes: in a print, `use_trash_on_print` 0 (prime tower) or 2 (slicer flush) makes tool changes prime only, without purge rounds |
 | `bambufy-compat` | off (on when migrating from a zMod with Bambufy) | Bambufy profiles: `_NOPOOP`, `_M106`; needs `zmod-compat` |
 | `recommend` | off (also after zMod; probe speed moves the Z offset) | zMod's recommended probing, mesh and corner values |
-| `spoolman` | off | A Spoolman spool per IFS slot: the loaded slot's spool is the active one (`SPOOLMAN_SET_SLOT`; needs `[spoolman]` in moonraker.conf) |
 
 Each has a `README.md` in its directory.
+
+## Plugins in their own repositories
+
+Installed into `/data/ad5x/plugins` ("Keeping a git plugin up to date"
+below) and updated from Fluidd, separately from Kiln OS:
+
+| Plugin | Repository | What |
+|---|---|---|
+| `spoolman` | [kiln-spoolman](https://github.com/djvalic/kiln-spoolman) | A Spoolman spool per IFS slot: the loaded slot's spool is the active one (plugin API 1.2, `ifs:loaded`) |
+| `notify` | [kiln-notify](https://github.com/djvalic/kiln-notify) | Notifications with a camera photo through Apprise (Telegram, Discord, ntfy, e-mail, ...): print events, progress, auto-refill, interrupted prints; set up with `NOTIFY_SETUP` (plugin API 1.3) |
+| `timelapse` | [kiln-timelapse](https://github.com/djvalic/kiln-timelapse) | moonraker-timelapse with an ffmpeg built from source for the printer; Fluidd's Timelapse tab (plugin API 1.3) |
+
+Each release is tested with them (`tools/test_plugin_repos.sh`,
+`tools/plugin-repos.txt`): their own tests, and Moonraker starting with
+all of them enabled.
 
 ## Writing a plugin
 

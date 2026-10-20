@@ -29,8 +29,12 @@
 # Moonraker: run as a script (S62moonraker does, before Moonraker starts)
 # it writes moonraker-plugins.conf, the [include] list of the enabled
 # plugins' moonraker.conf files; Klipper rewrites it when plugins change.
-# Moonraker reads it at its next start. See docs/plugins.md and
-# docs/plugin-api.md.
+# Moonraker reads it at its next start. A plugin's python/ (libraries) and
+# moonraker/components/ (Moonraker components) directories (plugin API
+# 1.3): Klipper gets python/ on sys.path before the extras load;
+# "ad5x_plugins.py env" prints both lists for S62moonraker, which passes
+# them to Moonraker (our patch to its components package). See
+# docs/plugins.md and docs/plugin-api.md.
 #
 # Copyright (C) 2026  ad5x-open contributors
 #
@@ -45,7 +49,7 @@ import sys
 # The plugin API this system offers (docs/plugin-api.md): major.minor.
 # Minor: additions only. Major: something plugins may use changed or went.
 # post-build.sh copies it to /usr/lib/os-release as AD5X_PLUGIN_API.
-PLUGIN_API_VERSION = "1.2"
+PLUGIN_API_VERSION = "1.3"
 
 CONFIG_DIR = "/home/klipper/printer_data/config"
 SHIPPED_DIR = "/usr/share/ad5x/plugins"
@@ -141,7 +145,10 @@ def scan(shipped_dir=SHIPPED_DIR, user_dir=USER_DIR):
                 'compatible': api_compatible(info['requires_os']),
                 'extras': os.path.isdir(os.path.join(d, 'extras')),
                 'moonraker': os.path.isfile(os.path.join(d,
-                                                         'moonraker.conf'))})
+                                                         'moonraker.conf')),
+                'python': os.path.isdir(os.path.join(d, 'python')),
+                'components': os.path.isdir(os.path.join(
+                    d, 'moonraker', 'components'))})
             found[name] = info
     return found
 
@@ -180,6 +187,28 @@ def moonraker_text(names, found):
         # manager for Moonraker's system updates.
         lines += ["[update_manager]", "enable_system_updates: False"]
     return "\n".join(lines) + "\n"
+
+def plugin_paths(names, found):
+    """(python dirs, Moonraker component dirs) of the enabled, compatible
+    plugins, in plugins.cfg order."""
+    python, components = [], []
+    for name in names:
+        info = found.get(name)
+        if info is None or not info['compatible'] or info['error']:
+            continue
+        if info['python']:
+            python.append(os.path.join(info['dir'], 'python'))
+        if info['components']:
+            components.append(os.path.join(info['dir'], 'moonraker',
+                                           'components'))
+    return python, components
+
+def env_text(names, found):
+    """Shell assignments for S62moonraker (plugin directory names are
+    checked against NAME_RE, so they need no quoting beyond this)."""
+    python, components = plugin_paths(names, found)
+    return "AD5X_PLUGIN_PYTHON='%s'\nAD5X_MOONRAKER_COMPONENTS='%s'\n" % (
+        ":".join(python), ":".join(components))
 
 def write_if_changed(path, text):
     """Write text atomically unless the file already holds it. True if
@@ -250,6 +279,10 @@ class AD5XPlugins:
         return info
     def _load_extras(self, config):
         core = os.path.dirname(os.path.abspath(__file__))
+        # Libraries the plugins bring (python/), after Klipper's own
+        for d in plugin_paths(self.loaded, self.found)[0]:
+            if d not in sys.path:
+                sys.path.append(d)
         wanted = {}
         for name in self.loaded:
             info = self._usable(name)
@@ -449,14 +482,20 @@ def load_config(config):
     return AD5XPlugins(config)
 
 def main(argv):
-    """S62moonraker: write the Moonraker include list before Moonraker
-    starts. usage: ad5x_plugins.py moonraker [PLUGINS_CFG [OUT]]"""
-    if len(argv) < 2 or argv[1] != "moonraker":
+    """S62moonraker, before Moonraker starts: write the Moonraker include
+    list, or print the plugins' library and component directories.
+    usage: ad5x_plugins.py moonraker [PLUGINS_CFG [OUT]]
+           ad5x_plugins.py env [PLUGINS_CFG]"""
+    if len(argv) < 2 or argv[1] not in ("moonraker", "env"):
         sys.stderr.write("usage: ad5x_plugins.py moonraker [PLUGINS_CFG "
-                         "[OUT]]\n")
+                         "[OUT]] | env [PLUGINS_CFG]\n")
         return 2
     plugins_file = argv[2] if len(argv) > 2 else os.path.join(
         CONFIG_DIR, 'plugins.cfg')
+    if argv[1] == "env":
+        names = read_enabled(plugins_file)[0]
+        sys.stdout.write(env_text(names, scan(SHIPPED_DIR, USER_DIR)))
+        return 0
     out = argv[3] if len(argv) > 3 else os.path.join(
         CONFIG_DIR, 'moonraker-plugins.conf')
     names = read_enabled(plugins_file)[0]

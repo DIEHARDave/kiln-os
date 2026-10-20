@@ -170,7 +170,7 @@ Image requirements:
 - Kernel: legacy uImage, `ih_os` = Linux, size + 64 ≤ 8 MiB. The
   printer's own stock kernel, copied from the slot stock runs in (releases
   carry no kernel; see "Kernel partitions" below), until we have our own.
-- Rootfs: squashfs (LZO, as stock) ≤ 100 MiB (ours is ~79 MB with the recovery OS inside, v0.0.5). It
+- Rootfs: squashfs (LZO, as stock) ≤ 100 MiB (ours is ~83 MB with the recovery OS inside, v0.0.6; git adds ~4 MB). It
   must provide `/linuxrc` (`init=/linuxrc` is fixed; Buildroot's links to
   busybox) and must work with `root=/dev/mmcblk0p4 ro`.
 

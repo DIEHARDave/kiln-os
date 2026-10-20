@@ -3,7 +3,8 @@
 # - Vendor files as the main image (board/ad5x/bundle-stock.sh): none by
 #   default, bundled only in a private build.
 # - rcS (boot trace), S10mdev and mdev.conf from the main image's overlay.
-# - Release marks: /etc/ad5x-release ("Kiln OS recovery <date>"), /etc/ad5x-recovery
+# - Release marks: /etc/ad5x-release ("Kiln OS recovery <version> (<date>)"),
+#   /etc/ad5x-recovery
 #   (tells it from the main OS), /etc/hwrevision for SWUpdate's hardware check.
 # - SWUpdate's public key /etc/swupdate/public.pem (docs/recovery-os.md):
 #   AD5X_SWU_PUBKEY (a PEM public key), else ~/.config/ad5x/swupdate-public.pem,
@@ -25,7 +26,12 @@ install -D -m 0755 "$MAIN/etc/init.d/S10mdev" "$TARGET/etc/init.d/S10mdev"
 install -D -m 0644 "$MAIN/etc/mdev.conf" "$TARGET/etc/mdev.conf"
 install -D -m 0644 "$MAIN/etc/network/interfaces" "$TARGET/etc/network/interfaces"
 
-echo "Kiln OS recovery $(date -u +%Y-%m-%d)" > "$TARGET/etc/ad5x-release"
+# The release it was built for (AD5X_VERSION, else git as the main image's
+# post-build.sh) and the real build date: BR2_REPRODUCIBLE's date wrapper
+# returns SOURCE_DATE_EPOCH (Buildroot's own date) unless that is empty.
+# Neither counts in the content ID below.
+RVER=${AD5X_VERSION:-$(git -C "$EXT/.." describe --tags --match 'v[0-9]*' 2>/dev/null || echo dev)}
+echo "Kiln OS recovery $RVER ($(SOURCE_DATE_EPOCH= date -u +%Y-%m-%d))" > "$TARGET/etc/ad5x-release"
 echo "Kiln OS recovery (slot A); see docs/recovery-os.md" > "$TARGET/etc/ad5x-recovery"
 echo "ad5x 1.0" > "$TARGET/etc/hwrevision"
 

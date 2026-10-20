@@ -34,5 +34,5 @@ Read it by hand:
 
 A slicer tool T0-T3 loads IFS slot 1-4 unless the file maps it otherwise
 with `IFS_MAP_TOOL TOOL=n SLOT=m` (per print). The separate OrcaSlicer
-plugin **kiln-orca** (its own repository) adds those lines to exported
+plugin [kiln-orca](https://github.com/djvalic/kiln-orca) adds those lines to exported
 G-code by matching each tool's material and colour against the slots.

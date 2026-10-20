@@ -3,7 +3,9 @@
 # /run/ad5x/auto.log), in this order:
 # 1. /data/ad5x/update/*.swu and *.zip (oldest first): installed with ad5x-swu-apply;
 #    each file is then renamed to *.swu.done or *.swu.failed; the result
-#    goes to /data/ad5x/update/last.log. Success: reboot into the main OS.
+#    goes to /data/ad5x/update/last.log. Success: reboot into the main OS,
+#    keeping only this update (older *.done and *.failed are deleted: each
+#    is a whole image).
 # 2. USB sticks (mounted at /run/ad5x/usb): if a partition of the stick
 #    holds a file "ad5x-autoupdate", the .swu/.zip files in its top directory are
 #    installed the same way (the stick isn't changed; result in last.log and
@@ -41,6 +43,7 @@ done_reboot() {
 # 1. Update drop folder on userdata
 for f in $(ls -tr "$UPD"/*.swu "$UPD"/*.zip 2>/dev/null); do
 	if apply "$f"; then
+		rm -f "$UPD"/*.done "$UPD"/*.failed
 		mv "$f" "$f.done"; done_reboot
 	else
 		mv "$f" "$f.failed"

@@ -72,6 +72,9 @@ if [ $mode = swu ]; then
 		die "slot A doesn't hold the recovery OS; install it first (--install-recovery)"
 	name=$(basename "$FILE")
 	[ "$FILE" = - ] && name=update-$(date +%Y%m%d%H%M%S)
+	# Earlier updates the recovery OS installed (*.done) or refused
+	# (*.failed) are of no further use: each is a whole image (~80 MB)
+	rm -f $STAGE/*.done $STAGE/*.failed
 	tmp=$STAGE/.incoming
 	if [ "$FILE" = - ]; then cat > $tmp; else cp "$FILE" $tmp; fi
 	magic=$(head -c 6 $tmp)

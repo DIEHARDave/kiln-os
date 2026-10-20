@@ -6,7 +6,10 @@ update.
 
 ## Version
 
-Current: **1.2** (1.2, 2026-10-20: additions only: the Klipper event
+Current: **1.3** (1.3, 2026-10-20: additions only: a plugin's
+`python/` libraries (Klipper and Moonraker) and `moonraker/components/`
+(Moonraker components), and `git` on the printer for installing plugins.
+1.2, 2026-10-20: additions only: the Klipper event
 `ifs:loaded` (slot), `IFS_AUTO_REFILL` and `printer.ifs` `auto_refill`,
 `refill`, power-loss recovery (`RESUME_INTERRUPTED`, `CLEAR_INTERRUPTED`,
 `printer.ad5x_resume`).
@@ -20,7 +23,7 @@ files instead of the image.)
 
 - In Klipper: `printer.ad5x_plugins.api_version` (also printed by
   `LIST_PLUGINS`).
-- On the system: `AD5X_PLUGIN_API="1.1"` in `/usr/lib/os-release`
+- On the system: `AD5X_PLUGIN_API="1.3"` in `/usr/lib/os-release`
   (`/etc/os-release`), for scripts.
 - In the code: `PLUGIN_API_VERSION` in `klipper/extras/ad5x_plugins.py`
   (the build copies it to os-release).
@@ -54,6 +57,8 @@ ad5x-myplugin/            the git repository; cloned as /data/ad5x/plugins/myplu
   extras/                 optional: Klipper modules
     myplugin_led.py
   moonraker.conf          optional: Moonraker sections (update manager, ...)
+  python/                 optional (1.3): pure-Python libraries the plugin needs
+  moonraker/components/   optional (1.3): Moonraker components (name.py)
 ```
 
 The clone's directory name must match `name` in `plugin.json`
@@ -119,6 +124,19 @@ def load_config(config):
 
 `moonraker.conf` example: see "Keeping a git plugin up to date" in
 `docs/plugins.md`.
+
+`python/` and `moonraker/components/` (1.3) are used only while the
+plugin is enabled and compatible:
+
+- `python/` goes at the end of Klipper's and Moonraker's `sys.path`
+  (after their own libraries, so it can't replace them). For libraries
+  the image lacks; pure Python (no compiler on the printer, no pip).
+- `moonraker/components/<name>.py` is loaded by Moonraker like its own
+  components when a `[<name>]` section names it (the plugin's
+  `moonraker.conf` can hold that section). A name Moonraker already has
+  is Moonraker's.
+- Moonraker sees changes at its next start (reboot, or
+  `/etc/init.d/S62moonraker restart`).
 
 Rules for plugins:
 

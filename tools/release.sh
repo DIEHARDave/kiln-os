@@ -157,6 +157,14 @@ else
 		echo "\`ad5x-update --reboot FILE\`, or put it on a USB stick while the"
 		echo "recovery OS runs."
 		echo
+		# What's new: the release's CHANGELOG.md section
+		new=$(tools/changelog_section.sh "$VERSION")
+		if [ -n "$new" ]; then
+			echo "## What's new"
+			echo
+			echo "$new"
+			echo
+		fi
 		if [ -n "$PREV" ]; then
 			echo "## Changes since $PREV"
 			RANGE=$PREV..$COMMIT

@@ -33,6 +33,12 @@ and the installer), and released only if every test passes. Daily Klipper
 and Moonraker packages go through the same tests inside the newest
 release. Versions: `vMAJOR.MINOR.PATCH`.
 
+Release notes: a "What's new" section from `CHANGELOG.md` (the release's
+`## vX.Y.Z` section, else `## Unreleased`, which is renamed after the
+release; `tools/changelog_section.sh`). Gitea's notes also list the
+commits. After editing the changelog, `tools/publish_github.sh notes TAG`
+rewrites a GitHub release's notes.
+
 Each GitHub release also publishes the source code behind it
 (`tools/publish_sources.sh`): Buildroot's `legal-info` of
 both images, with the licence texts and package list attached to the

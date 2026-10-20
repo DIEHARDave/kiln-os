@@ -48,6 +48,23 @@ if [ -n "$PYLIB" ]; then
 		"$PYLIB"/site-packages/numpy/_pyinstaller
 fi
 
+# git: only what cloning and updating a plugin over https needs (all
+# builtins, plus git-remote-http(s)); its servers, mail/svn/p4/cvs tools
+# and Perl/Python scripts (no Perl on the printer) go.
+GC=$TARGET/usr/libexec/git-core
+if [ -d "$GC" ]; then
+	for f in "$GC"/*; do
+		[ "$f" -ef "$TARGET/usr/bin/git" ] && continue
+		case ${f##*/} in
+		git-remote-http|git-remote-https|git-sh-setup|git-sh-i18n) ;;
+		*) rm -rf "$f" ;;
+		esac
+	done
+	rm -rf "$TARGET/usr/share/gitweb" "$TARGET/usr/share/git-core/templates/hooks" \
+		"$TARGET/usr/bin/scalar" "$TARGET/usr/bin/git-shell" \
+		"$TARGET/usr/bin/git-upload-archive" "$TARGET/usr/bin/git-cvsserver"
+fi
+
 # Kiln OS version (docs/updates.md): AD5X_VERSION from tools/release.sh,
 # else from git: v0.1.2+3.gabc1234 (3 commits after the tag v0.1.2;
 # "+" is build metadata, so the printer offers v0.1.3 but not v0.1.2).

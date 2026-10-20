@@ -34,7 +34,7 @@ exists and does what is described below.
 | `_DISABLE_SENSOR` / `_ENABLE_SENSOR` | 81 / 81 | toolhead runout sensor (`toolhead`) off / back on, only if it was on | zmod-compat |
 | `_NOPOOP` | 1,962 | next tool change: prime only (the prime tower purges) | bambufy-compat |
 | `_M106 FAN_MAX_SPEED=` | | part fan at the percentage x 0.5 | bambufy-compat |
-| `TIMELAPSE_TAKE_FRAME` | 9,469 | nothing; moonraker-timelapse's `timelapse.cfg` in `local.cfg` replaces it | zmod-compat |
+| `TIMELAPSE_TAKE_FRAME` | 9,469 | nothing; the `timelapse` plugin ([kiln-timelapse](https://github.com/djvalic/kiln-timelapse)) replaces it | zmod-compat |
 | `SET_ACTIVE_SPOOL ID=` / `CLEAR_ACTIVE_SPOOL` | 9 | Spoolman through Moonraker once `variable_spoolman: 1` (otherwise a message; without Moonraker's `[spoolman]` Klipper would stop the print) | zmod-compat |
 | `SET_PRINT_STATS_INFO` | 138 | Klipper's, plus pause at a layer | zmod-compat |
 | `SET_PAUSE_NEXT_LAYER`, `SET_PAUSE_AT_LAYER` | | pause when the layer starts (`MACRO=` default `PAUSE`); Fluidd/Mainsail use these too | zmod-compat |

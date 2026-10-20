@@ -38,6 +38,12 @@ start)
 		fi
 	} > $TOP
 	[ "$MROOT" = /usr/lib/moonraker ] || echo "moonraker: $(cat $MROOT/moonraker/.version) from $MROOT"
+	# The enabled plugins' Python libraries and Moonraker components
+	# (plugin API 1.3; our patch to Moonraker's components package)
+	AD5X_PLUGIN_PYTHON= AD5X_MOONRAKER_COMPONENTS=
+	eval "$(/usr/bin/python3 $KROOT/klippy/extras/ad5x_plugins.py env \
+		$PD/config/plugins.cfg 2>/dev/null)"
+	export AD5X_PLUGIN_PYTHON AD5X_MOONRAKER_COMPONENTS
 	HOME=/home/klipper start-stop-daemon -S -b -m -p $PID -c klipper \
 		-x /usr/bin/python3 -- $MROOT/moonraker/moonraker.py \
 		-d $PD -c $TOP

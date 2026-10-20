@@ -65,6 +65,11 @@ BR2_PACKAGE_E2FSPROGS=y
 BR2_PACKAGE_CA_CERTIFICATES=y
 # ip -json, for Moonraker's network status
 BR2_PACKAGE_IPROUTE2=y
+# git over https: plugins from their own repositories (docs/plugins.md),
+# cloned and kept up to date by Moonraker's update manager. Trimmed in
+# post-build.sh.
+BR2_PACKAGE_GIT=y
+BR2_PACKAGE_LIBCURL=y
 
 # This project
 BR2_PACKAGE_KLIPPER=y
