@@ -23,7 +23,10 @@ directory is the one used).
 
 ## Using plugins
 
-From the console (Fluidd, HelixScreen, or a macro):
+On the touch screen: **Settings > Plugins** lists the installed plugins
+with an on/off switch each, and the catalog's plugins with an Install
+button (HelixScreen, our patch `0005`). The same from the console
+(Fluidd, HelixScreen, or a macro):
 
 ```
 LIST_PLUGINS
@@ -198,9 +201,11 @@ below) and updated from Fluidd, separately from Kiln OS:
 | `notify` | [kiln-notify](https://github.com/djvalic/kiln-notify) | Notifications with a camera photo through Apprise (Telegram, Discord, ntfy, e-mail, ...): print events, progress, auto-refill, interrupted prints; set up with `NOTIFY_SETUP` (plugin API 1.3) |
 | `timelapse` | [kiln-timelapse](https://github.com/djvalic/kiln-timelapse) | moonraker-timelapse with an ffmpeg built from source for the printer; Fluidd's Timelapse tab (plugin API 1.3) |
 
-Each release is tested with them (`tools/test_plugin_repos.sh`,
-`tools/plugin-repos.txt`): their own tests, and Moonraker starting with
-all of them enabled.
+They are listed in the image's catalog (`klipper/plugin-catalog.json`,
+`/usr/share/ad5x/plugin-catalog.json`), which `INSTALL_PLUGIN` and
+HelixScreen's Settings > Plugins offer, and each release is tested with
+them (`tools/test_plugin_repos.sh`): their own tests, and Moonraker
+starting with all of them enabled.
 
 ## Writing a plugin
 
@@ -210,6 +215,24 @@ the plugin, with `plugin.json`, `plugin.cfg`, `README.md`, and optionally
 `extras/*.py` and `moonraker.conf`. Put it in `/data/ad5x/plugins/<name>`
 (as user `klipper`, or `chown -R klipper:klipper` it), then
 `ENABLE_PLUGIN NAME=<name>`.
+
+### Installing from the catalog
+
+The plugins in their own repositories that this release offers and was
+tested with are in its catalog (`/usr/share/ad5x/plugin-catalog.json`):
+
+```
+INSTALL_PLUGIN NAME=notify ENABLE=1   (clone it into /data/ad5x/plugins, switch it on)
+UPDATE_PLUGIN NAME=notify             (git pull; restarts what it needs if on)
+REMOVE_PLUGIN NAME=notify             (switch it off and delete it)
+```
+
+`git` runs in the background (`printer.ad5x_plugins.job`, the result also
+in the console); not during a print. When a switch changes what Moonraker
+loads (a plugin's `moonraker.conf`, `python/` or components), Moonraker is
+restarted too (by the root update agent, `S68ad5x-update-agent`), so no
+reboot is needed. A plugin not in the catalog is installed by hand as
+below.
 
 ### Keeping a git plugin up to date
 
@@ -234,8 +257,8 @@ cd /data/ad5x/plugins
 su klipper -s /bin/sh -c 'git clone https://github.com/someone/ad5x-myplugin.git myplugin'
 ```
 
-then `ENABLE_PLUGIN NAME=myplugin` and reboot (Moonraker reads the new
-`[update_manager]` at its start). Fluidd then shows it under updates.
+then `ENABLE_PLUGIN NAME=myplugin` (Moonraker restarts and reads the new
+`[update_manager]`). Fluidd then shows it under updates.
 This system's Moonraker has no service manager (`provider: none`), so
 `managed_services: klipper` can't restart Klipper after an update: run
 `RESTART` (or `FIRMWARE_RESTART`) yourself. A plugin that isn't enabled

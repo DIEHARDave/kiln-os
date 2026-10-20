@@ -41,7 +41,7 @@ exists and does what is described below.
 | `M600` | | `PAUSE`, then wait at the purge box; `RESUME` returns | zmod-compat |
 | `LINE_PURGE` | | `_PRIME_LINE FORCE=1` (line in front of the labelled objects; the printer's `macros/prime_line.cfg`, a message without it) | zmod-compat |
 | `LED_ON`, `LED_OFF`, `LED S=0-100` | | chamber light | zmod-compat |
-| `M300` | | nothing (no beeper) | zmod-compat |
+| `M300`, `PLAY_MIDI FILE=` | | the speaker (`ad5x_sound`, system): beep, MIDI files from the config folder's `midi/` or the image's sounds | system |
 | `G10`, `G11`, `SET_RETRACTION` | 128,759 / 128,704 / 2 | Klipper `[firmware_retraction]`: 0.7 mm at 35 mm/s (zMod's values; the Home profile says 1.4 mm, which zMod didn't apply) | core (`ad5x.cfg`) |
 | `G17` (and `G2`/`G3`) | 3,527 | Klipper `[gcode_arcs]` | core |
 | `SET_VELOCITY_LIMIT`, `M204`, `M220`, `M106`, `SET_FAN_SPEED FAN=fanM106`, `G92`, `M104`/`M109`/`M190`, `M400`, `G4`, `M73`, `RESPOND`, `SAVE_VARIABLE`, `EXCLUDE_OBJECT_*`, `SET_PRESSURE_ADVANCE` | | Klipper's own, or `ad5x.cfg` (M106 P2 is ignored: no chamber fan) | core |

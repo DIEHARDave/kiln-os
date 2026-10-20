@@ -1,0 +1,29 @@
+{
+  "comment": "Plugins in their own repositories that this release offers (INSTALL_PLUGIN, HelixScreen Settings > Plugins) and is tested with (tools/test_plugin_repos.sh). components: Moonraker components that must load (test only).",
+  "plugins": [
+    {
+      "name": "notify",
+      "title": "Notifications",
+      "description": "Print notifications with a camera photo: Telegram, Discord, ntfy, e-mail and 100+ more (set up with NOTIFY_SETUP)",
+      "url": "https://github.com/djvalic/kiln-notify.git",
+      "requires_os": "1.3",
+      "components": ["kiln_notify"]
+    },
+    {
+      "name": "timelapse",
+      "title": "Timelapse",
+      "description": "Timelapse videos of your prints from the camera (Fluidd's Timelapse tab)",
+      "url": "https://github.com/djvalic/kiln-timelapse.git",
+      "requires_os": "1.3",
+      "components": ["timelapse"]
+    },
+    {
+      "name": "spoolman",
+      "title": "Spoolman",
+      "description": "A Spoolman spool per IFS slot: the loaded slot's spool is the active one (needs a Spoolman server)",
+      "url": "https://github.com/djvalic/kiln-spoolman.git",
+      "requires_os": "1.2",
+      "components": []
+    }
+  ]
+}

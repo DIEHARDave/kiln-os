@@ -38,6 +38,8 @@ define AD5X_SYSTEM_INSTALL_TARGET_CMDS
 		$(TARGET_DIR)/usr/bin/ad5x-touch-units
 	$(INSTALL) -D -m 0755 $(@D)/bin/ad5x-kernel \
 		$(TARGET_DIR)/usr/bin/ad5x-kernel
+	$(INSTALL) -D -m 0755 $(@D)/bin/ad5x-sound \
+		$(TARGET_DIR)/usr/bin/ad5x-sound
 	$(INSTALL) -D -m 0755 $(@D)/bin/ad5x-update \
 		$(TARGET_DIR)/usr/bin/ad5x-update
 	$(INSTALL) -D -m 0755 $(@D)/ad5x-fbstream \

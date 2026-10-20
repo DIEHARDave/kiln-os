@@ -7,6 +7,33 @@ the release has no section of its own yet (rename it after the release).
 ## Unreleased
 
 ### Added
+- **The speaker works:** short chimes when a print starts, finishes,
+  fails or pauses and when the IFS auto-refills; `M300` beeps and zMod's
+  `PLAY_MIDI FILE=` plays your own MIDI files (config folder `midi/`).
+  On/off, volume and the sound per event on the touch screen (Settings >
+  Sound > Printer sounds) or with `SOUND_SETUP`. HelixScreen's own sounds
+  play on it too.
+- **Time zone** as the first step of the setup wizard (also in "Run Setup
+  Wizard"), for the screen's clock.
+- **Plugins on the touch screen:** Settings > Plugins switches plugins on
+  and off and installs, updates and removes the ones from the catalog
+  (Notifications, Timelapse, Spoolman). No SSH, no reboot: Moonraker
+  restarts by itself when needed. Console: `INSTALL_PLUGIN NAME=`,
+  `UPDATE_PLUGIN`, `REMOVE_PLUGIN` (plugin API 1.4).
+
+### Changed
+- **Bed heat soak** before the Z check: the bed waits a little after
+  reaching its temperature when it started cold, so the plate has stopped
+  growing when Z is measured; the purge and brushing count. How long:
+  measured on your printer with `BED_SOAK_CALIBRATE BED=80` (probes the
+  centre and corners until they stop moving, saved per temperature), else
+  3 s per degree the bed rose, at most 5 minutes. Optional "probe until
+  stable" mode; `PRINT_START SOAK=` overrides; settings in the printer's
+  `macros/print_start.cfg`.
+
+## v0.0.6
+
+### Added
 - `git` on the printer, so plugins from their own repositories can be
   installed and then updated from Fluidd (docs/plugins.md).
 - Plugin API 1.3: plugins can bring Python libraries and Moonraker

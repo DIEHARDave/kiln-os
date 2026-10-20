@@ -287,5 +287,17 @@
 	status = "okay";
 };
 
+/* Speaker: a piezo on PC12 = PWM channel 13 (stock plays its tone tables
+ * there; x2600-pinctrl.dtsi pwm13_pc). The PWM driver doesn't mux pins
+ * itself, so without this the channel runs but PC12 stays a GPIO.
+ * Userspace: /sys/class/pwm/pwmchip0/pwm13 (S35ad5x-sound, ad5x-sound,
+ * HelixScreen). Never write the channel's "polarity": this driver applies
+ * it to channel 0. */
+&pwm {
+	pinctrl-names = "default";
+	pinctrl-0 = <&pwm13_pc>;
+	status = "okay";
+};
+
 /* Display: DPU + LVDS panel. */
 #include "ad5x-display.dtsi"

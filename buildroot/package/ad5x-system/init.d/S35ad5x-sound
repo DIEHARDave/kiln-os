@@ -1,0 +1,29 @@
+#!/bin/sh
+# The speaker: a piezo on PC12, PWM channel 13 of pwmchip0 (our kernel's
+# device tree muxes the pin, kernel-ingenic66/ad5x.dts). Exports the channel,
+# lets user klipper drive it (Klipper's ad5x_sound runs /usr/bin/ad5x-sound,
+# HelixScreen its own PWM sounds) and writes /run/ad5x-sound.conf, which
+# tells them where it is. Without the channel (the stock kernel, whose PWM
+# driver is Flashforge's) there is no speaker and no conf file.
+CHIP=/sys/class/pwm/pwmchip0
+CH=13
+CONF=/run/ad5x-sound.conf
+case "$1" in
+start)
+	rm -f $CONF
+	[ -d $CHIP ] && [ "$(cat $CHIP/npwm 2>/dev/null)" -gt $CH ] 2>/dev/null || exit 0
+	[ -d $CHIP/pwm$CH ] || echo $CH > $CHIP/export 2>/dev/null
+	[ -d $CHIP/pwm$CH ] || { echo "ad5x-sound: can't export pwm$CH"; exit 0; }
+	echo 0 > $CHIP/pwm$CH/enable 2>/dev/null
+	# Not "polarity": this driver applies it to channel 0
+	chown klipper:klipper $CHIP/pwm$CH/period $CHIP/pwm$CH/duty_cycle \
+		$CHIP/pwm$CH/enable
+	mkdir -p /run/ad5x-sound
+	chown klipper:klipper /run/ad5x-sound
+	echo "PWM=pwmchip0/pwm$CH" > $CONF
+	;;
+stop)
+	[ -f $CHIP/pwm$CH/enable ] && echo 0 > $CHIP/pwm$CH/enable
+	;;
+esac
+exit 0

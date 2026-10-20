@@ -9,6 +9,9 @@
 #   klipper-*.tar.gz,        daily package: unpacked into /data/ad5x/apps/
 #   moonraker-*.tar.gz       NAME (lib/apps.sh), service restarted
 # Result for Moonraker in "status", log in /data/ad5x/kiln-update/agent.log.
+# Also: "restart-moonraker" (written by Klipper's ad5x_plugins when a
+# plugin switch changes what Moonraker loads): Moonraker is restarted, so it
+# reads the plugins' parts again (not while printing).
 D=/data/ad5x/kiln-update
 PID=/run/ad5x-update-agent.pid
 LOG=$D/agent.log
@@ -58,6 +61,15 @@ install_app() {
 
 agent() {
 	while :; do
+		if [ -f $D/restart-moonraker ]; then
+			rm -f $D/restart-moonraker
+			if printing; then
+				log "Moonraker restart for plugins refused: printing"
+			else
+				log "restarting Moonraker (plugins changed)"
+				/etc/init.d/S62moonraker restart >> $LOG 2>&1
+			fi
+		fi
 		if [ -f $D/install ]; then
 			f=$(sed -n 1p $D/install)
 			sum=$(sed -n 2p $D/install)

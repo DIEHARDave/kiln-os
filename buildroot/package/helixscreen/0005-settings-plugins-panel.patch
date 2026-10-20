@@ -1,0 +1,1121 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: ad5xrecon <ad5xrecon@localhost>
+Date: Tue, 20 Oct 2026 10:50:00 -0400
+Subject: [PATCH] settings: Plugins overlay for the AD5X plugin system
+
+A "Plugins" row in Settings > Printer (shown only where Klipper has the
+ad5x_plugins object) opens an overlay listing the printer's plugins: the
+installed ones with an on/off switch (Update and Remove for user-installed
+ones), the catalog plugins not installed yet with Install, and a status
+card with the running install/update job, its result and any warnings.
+Switching, removing an enabled plugin and installing ask first, since
+Klipper restarts; nothing can be changed during a print or while a job
+runs. The object joins the status subscription so the rows follow the job
+and are rebuilt after each Klipper restart.
+
+Upstream: not applicable (AD5X OS specific)
+---
+ include/ui_panel_settings.h               |   2 +
+ include/ui_settings_ad5x_plugins.h        | 144 ++++++
+ src/api/moonraker_discovery_sequence.cpp  |   9 +
+ src/ui/ui_panel_settings.cpp              |   5 +
+ src/ui/ui_settings_ad5x_plugins.cpp       | 550 ++++++++++++++++++++++
+ tests/unit/test_settings_ad5x_plugins.cpp |  84 ++++
+ ui_xml/components/ad5x_catalog_row.xml    |  43 ++
+ ui_xml/components/ad5x_plugin_row.xml     |  77 +++
+ ui_xml/settings_ad5x_plugins_overlay.xml  |  68 +++
+ ui_xml/settings_panel.xml                 |   6 +
+ 10 files changed, 988 insertions(+)
+
+diff --git a/include/ui_panel_settings.h b/include/ui_panel_settings.h
+index e132344..fce561f 100644
+--- a/include/ui_panel_settings.h
++++ b/include/ui_panel_settings.h
+@@ -137,6 +137,8 @@ class SettingsPanel : public PanelBase {
+     lv_subject_t plugins_available_subject_{};
+     // 1 when the printer has the AD5X setup steps: unhides "Run Setup Wizard"
+     lv_subject_t show_ad5x_setup_subject_{};
++    // 1 when the printer has the AD5X plugin object: unhides the printer's "Plugins"
++    lv_subject_t show_ad5x_plugins_subject_{};
+ 
+     // Live status line shown under each stateful root row (settings_panel.xml),
+     // refreshed by refresh_status_lines().
+diff --git a/include/ui_settings_ad5x_plugins.h b/include/ui_settings_ad5x_plugins.h
+new file mode 100644
+index 0000000..cc80efa
+--- /dev/null
++++ b/include/ui_settings_ad5x_plugins.h
+@@ -0,0 +1,144 @@
++// SPDX-License-Identifier: GPL-3.0-or-later
++
++/**
++ * @file ui_settings_ad5x_plugins.h
++ * @brief Settings > Plugins on the AD5X: the printer's own plugins (Klipper add-ons)
++ *
++ * Shows the `ad5x_plugins` Klipper status object: the installed plugins with
++ * an on/off switch (Update and Remove for user-installed ones), the catalog
++ * plugins not installed yet with Install, and the running install/update job.
++ * Every change is a G-code command (ENABLE_PLUGIN, DISABLE_PLUGIN,
++ * INSTALL_PLUGIN, UPDATE_PLUGIN, REMOVE_PLUGIN); most of them restart Klipper,
++ * after which the object comes back and the rows are rebuilt from it.
++ *
++ * Not HelixScreen's own plugin host (plugins_overlay.h): those are screen
++ * plugins, these live in Klipper.
++ *
++ * @pattern Overlay (lazy init), rows rebuilt from the cached status object
++ * @threading Main thread only; Moonraker callbacks hop over via lifetime tokens
++ */
++
++#pragma once
++
++#include "ui_observer_guard.h"
++#include "ui_subscription_guard.h"
++
++#include "json_fwd.h"
++#include "overlay_base.h"
++#include "static_panel_registry.h"
++#include "subject_managed_panel.h"
++
++#include <string>
++#include <vector>
++
++namespace helix::settings {
++
++/// One installed plugin, as its row shows it.
++struct Ad5xInstalledPlugin {
++    std::string name;        ///< NAME= value
++    std::string title;       ///< Catalog title when listed there, else the name
++    std::string description; ///< May be empty
++    std::string version;     ///< May be empty
++    bool builtin = false;    ///< Shipped with the OS: can be switched, not removed
++    bool enabled = false;    ///< On at this Klipper start
++    bool compatible = true;  ///< Plugin API new enough
++};
++
++/// One catalog plugin that is not installed.
++struct Ad5xCatalogPlugin {
++    std::string name;
++    std::string title;
++    std::string description;
++    bool compatible = true;
++};
++
++/// Installed plugins from the status object, sorted by name.
++std::vector<Ad5xInstalledPlugin> ad5x_installed_plugins(const json& status);
++
++/// Catalog plugins offered but not installed, sorted by name.
++std::vector<Ad5xCatalogPlugin> ad5x_catalog_plugins(const json& status);
++
++/// Catalog title for @p name, else @p name itself.
++std::string ad5x_plugin_title(const json& status, const std::string& name);
++
++/// What the status line says about the job.
++enum class Ad5xJobLine {
++    None = 0,    ///< Nothing to report: the line is hidden
++    Working = 1, ///< A job runs, or Klipper is not ready yet
++    Done = 2,    ///< The last job finished
++    Failed = 3,  ///< The last job failed
++};
++
++class Ad5xPluginsOverlay : public OverlayBase {
++  public:
++    ~Ad5xPluginsOverlay() override;
++
++    const char* get_name() const override {
++        return "AD5X Plugins";
++    }
++    const char* xml_component() const override {
++        return "settings_ad5x_plugins_overlay";
++    }
++    /// Freed on close; the next open rebuilds it.
++    bool destroy_on_close() const override {
++        return true;
++    }
++
++    void init_subjects() override;
++    void deinit_subjects();
++    void register_callbacks() override;
++    lv_obj_t* create(lv_obj_t* parent) override;
++
++    /// Subscribe, query the object, follow Klipper's restarts.
++    void on_activate() override;
++
++    /// Whether the printer publishes the `ad5x_plugins` object.
++    static bool available();
++
++    void handle_toggle(const std::string& name, bool on);
++    void handle_install(const std::string& name);
++    void handle_update(const std::string& name);
++    void handle_remove(const std::string& name);
++
++  protected:
++    void on_deactivating(DeactivateReason reason) override;
++    void on_ui_destroyed() override;
++
++  private:
++    void query_status();
++    void merge_status(const json& delta);
++    /// Status line, warnings and the busy flag from the cached object.
++    void refresh();
++    /// Rebuilds the rows when the plugin lists changed, or always with @p force.
++    void render_rows(bool force);
++    /// Sends @p gcode; @p restarts says Klipper restarts right after it.
++    void send(const std::string& gcode, bool restarts);
++    const Ad5xInstalledPlugin* installed(const std::string& name) const;
++
++    SubjectManager subjects_;
++    lv_subject_t status_subject_{};
++    lv_subject_t status_kind_subject_{};
++    lv_subject_t warnings_subject_{};
++    lv_subject_t has_warnings_subject_{};
++    lv_subject_t busy_subject_{};
++    lv_subject_t catalog_state_subject_{};
++    char status_buf_[256] = "";
++    char warnings_buf_[512] = "";
++
++    json status_ = json::object();
++    std::vector<Ad5xInstalledPlugin> installed_;
++    /// enabled + available + catalog as last rendered; rows rebuild when it changes
++    std::string rows_key_;
++    bool loaded_ = false;
++    bool klippy_ready_ = true;
++    bool command_in_flight_ = false;
++
++    SubscriptionGuard subscription_;
++    ObserverGuard klippy_observer_;
++};
++
++inline Ad5xPluginsOverlay& get_ad5x_plugins_overlay() {
++    return lazy_global<Ad5xPluginsOverlay>("Ad5xPluginsOverlay");
++}
++
++} // namespace helix::settings
+diff --git a/src/api/moonraker_discovery_sequence.cpp b/src/api/moonraker_discovery_sequence.cpp
+index ccdbf28..1b5220f 100644
+--- a/src/api/moonraker_discovery_sequence.cpp
++++ b/src/api/moonraker_discovery_sequence.cpp
+@@ -1493,6 +1493,15 @@ json MoonrakerDiscoverySequence::build_subscription_objects(
+         }
+     }
+ 
++    // AD5X plugins (ui_settings_ad5x_plugins.cpp): the job and the plugin
++    // lists change rarely, so the whole object.
++    {
++        const auto& objects = hw.printer_objects();
++        if (std::find(objects.begin(), objects.end(), "ad5x_plugins") != objects.end()) {
++            subscription_objects["ad5x_plugins"] = nullptr;
++        }
++    }
++
+     // Print start macros — only the boolean flags PrintStartCollector reads.
+     // Other variables on these macros (slicer args, profile names, etc.) are
+     // irrelevant to the start-detection logic.
+diff --git a/src/ui/ui_panel_settings.cpp b/src/ui/ui_panel_settings.cpp
+index 681b526..c9827bf 100644
+--- a/src/ui/ui_panel_settings.cpp
++++ b/src/ui/ui_panel_settings.cpp
+@@ -13,6 +13,7 @@
+ #include "ui_nav.h"
+ #include "ui_panel_memory_stats.h"
+ #include "ui_printer_manager_overlay.h"
++#include "ui_settings_ad5x_plugins.h"
+ #include "ui_settings_appearance.h"
+ #include "ui_settings_connection.h"
+ #include "ui_settings_display.h"
+@@ -137,6 +138,7 @@ void SettingsPanel::init_subjects() {
+ 
+     // Set from the live printer on every return to the root (refresh_status_lines())
+     UI_MANAGED_SUBJECT_INT(show_ad5x_setup_subject_, 0, "settings_show_ad5x_setup", subjects_);
++    UI_MANAGED_SUBJECT_INT(show_ad5x_plugins_subject_, 0, "settings_show_ad5x_plugins", subjects_);
+ 
+     // Live status line under each stateful root row; refresh_status_lines()
+     // fills these in, first from setup() and then on every return to the root.
+@@ -220,6 +222,8 @@ void SettingsPanel::refresh_status_lines() {
+     using namespace helix::settings::status;
+ 
+     lv_subject_set_int(&show_ad5x_setup_subject_, helix::ad5x_setup::available() ? 1 : 0);
++    lv_subject_set_int(&show_ad5x_plugins_subject_,
++                       helix::settings::Ad5xPluginsOverlay::available() ? 1 : 0);
+ 
+     // Formatted here rather than once at init, so it is in the language of the
+     // latest return to the settings root.
+@@ -392,6 +396,7 @@ void register_settings_panel_callbacks() {
+         {"on_touch_input_clicked", nav_row<get_touch_settings_overlay>()},
+         {"on_connection_clicked", nav_row<get_connection_settings_overlay>()},
+         {"on_updates_clicked", nav_row<get_updates_settings_overlay>()},
++        {"on_ad5x_plugins_clicked", nav_row<get_ad5x_plugins_overlay>()},
+ #if HELIX_HAS_PLUGINS
+         {"on_plugins_clicked", nav_row<helix::plugin::get_plugins_overlay>()},
+ #else
+diff --git a/src/ui/ui_settings_ad5x_plugins.cpp b/src/ui/ui_settings_ad5x_plugins.cpp
+new file mode 100644
+index 0000000..787788c
+--- /dev/null
++++ b/src/ui/ui_settings_ad5x_plugins.cpp
+@@ -0,0 +1,550 @@
++// SPDX-License-Identifier: GPL-3.0-or-later
++
++#include "ui_settings_ad5x_plugins.h"
++
++#include "ui_callback_helpers.h"
++#include "ui_emergency_stop.h"
++#include "ui_error_reporting.h"
++#include "ui_modal.h"
++#include "ui_update_queue.h"
++#include "ui_utils.h"
++
++#include "app_globals.h"
++#include "helix-xml/src/xml/lv_xml.h"
++#include "i_moonraker_api.h"
++#include "i_moonraker_client.h"
++#include "json_utils.h"
++#include "lvgl/src/others/translation/lv_translation.h"
++#include "macro_executor.h"
++#include "observer_factory.h"
++#include "printer_discovery.h"
++#include "printer_state.h"
++#include "ui/ui_widget_helpers.h"
++
++#include <spdlog/fmt/fmt.h>
++#include <spdlog/spdlog.h>
++
++#include <algorithm>
++#include <cctype>
++#include <cstring>
++
++namespace helix::settings {
++
++namespace {
++
++constexpr const char* kObject = "ad5x_plugins";
++
++/// Rows of a setting_group other than its header.
++void clear_group_rows(lv_obj_t* group) {
++    for (int32_t i = static_cast<int32_t>(lv_obj_get_child_count(group)) - 1; i >= 0; --i) {
++        lv_obj_t* child = lv_obj_get_child(group, i);
++        const char* name = lv_obj_get_name(child);
++        if (name && (std::strcmp(name, "setting_group_header") == 0 ||
++                     std::strcmp(name, "ad5x_catalog_all_installed") == 0)) {
++            continue;
++        }
++        helix::ui::safe_delete_deferred(child);
++    }
++}
++
++/// Plugin names are directory names ("zmod-compat"); anything else never
++/// reaches a G-code line.
++bool safe_plugin_name(const std::string& name) {
++    return !name.empty() && std::all_of(name.begin(), name.end(), [](unsigned char c) {
++        return std::isalnum(c) || c == '-' || c == '_' || c == '.';
++    });
++}
++
++/// The plugin name an event_cb was bound with (user_data="$plugin").
++std::string event_plugin(lv_event_t* e) {
++    const char* s = static_cast<const char*>(lv_event_get_user_data(e));
++    return s ? std::string(s) : std::string();
++}
++
++} // namespace
++
++// ============================================================================
++// STATUS OBJECT
++// ============================================================================
++
++std::string ad5x_plugin_title(const json& status, const std::string& name) {
++    if (const json* catalog = json_util::find_member(status, "catalog")) {
++        if (const json* entry = json_util::find_member(*catalog, name.c_str())) {
++            std::string title = json_util::safe_string(*entry, "title");
++            if (!title.empty()) {
++                return title;
++            }
++        }
++    }
++    return name;
++}
++
++std::vector<Ad5xInstalledPlugin> ad5x_installed_plugins(const json& status) {
++    std::vector<Ad5xInstalledPlugin> out;
++    const json* available = json_util::find_member(status, "available");
++    if (!available || !available->is_object()) {
++        return out;
++    }
++    std::vector<std::string> enabled;
++    if (const json* list = json_util::find_member(status, "enabled"); list && list->is_array()) {
++        for (const auto& item : *list) {
++            enabled.push_back(json_util::as_string(item));
++        }
++    }
++    for (auto it = available->begin(); it != available->end(); ++it) {
++        if (!it.value().is_object()) {
++            continue;
++        }
++        Ad5xInstalledPlugin p;
++        p.name = it.key();
++        p.title = ad5x_plugin_title(status, p.name);
++        p.description = json_util::safe_string(it.value(), "description");
++        p.version = json_util::safe_string(it.value(), "version");
++        p.builtin = json_util::safe_string(it.value(), "source") != "user";
++        p.compatible = json_util::safe_bool(it.value(), "compatible", true);
++        p.enabled = std::find(enabled.begin(), enabled.end(), p.name) != enabled.end();
++        out.push_back(std::move(p));
++    }
++    std::sort(
++        out.begin(), out.end(),
++        [](const Ad5xInstalledPlugin& a, const Ad5xInstalledPlugin& b) { return a.name < b.name; });
++    return out;
++}
++
++std::vector<Ad5xCatalogPlugin> ad5x_catalog_plugins(const json& status) {
++    std::vector<Ad5xCatalogPlugin> out;
++    const json* catalog = json_util::find_member(status, "catalog");
++    if (!catalog || !catalog->is_object()) {
++        return out;
++    }
++    const json* available = json_util::find_member(status, "available");
++    for (auto it = catalog->begin(); it != catalog->end(); ++it) {
++        // A shipped plugin of the same name counts as installed too
++        if (!it.value().is_object() || json_util::safe_bool(it.value(), "installed") ||
++            (available && json_util::find_member(*available, it.key().c_str()))) {
++            continue;
++        }
++        Ad5xCatalogPlugin p;
++        p.name = it.key();
++        p.title = json_util::safe_string(it.value(), "title", p.name);
++        p.description = json_util::safe_string(it.value(), "description");
++        p.compatible = json_util::safe_bool(it.value(), "compatible", true);
++        out.push_back(std::move(p));
++    }
++    std::sort(out.begin(), out.end(), [](const Ad5xCatalogPlugin& a, const Ad5xCatalogPlugin& b) {
++        return a.name < b.name;
++    });
++    return out;
++}
++
++// ============================================================================
++// LIFECYCLE
++// ============================================================================
++
++Ad5xPluginsOverlay::~Ad5xPluginsOverlay() {
++    deinit_subjects();
++}
++
++bool Ad5xPluginsOverlay::available() {
++    IMoonrakerAPI* api = get_moonraker_api();
++    if (!api) {
++        return false;
++    }
++    const auto& objects = api->hardware().printer_objects();
++    return std::find(objects.begin(), objects.end(), kObject) != objects.end();
++}
++
++void Ad5xPluginsOverlay::init_subjects() {
++    init_subjects_guarded([this]() {
++        UI_MANAGED_SUBJECT_STRING(status_subject_, status_buf_, "", "ad5x_plugins_status",
++                                  subjects_);
++        // Ad5xJobLine: hides the line, shows the spinner or colours a failure
++        UI_MANAGED_SUBJECT_INT(status_kind_subject_, 0, "ad5x_plugins_status_kind", subjects_);
++        UI_MANAGED_SUBJECT_STRING(warnings_subject_, warnings_buf_, "", "ad5x_plugins_warnings",
++                                  subjects_);
++        UI_MANAGED_SUBJECT_INT(has_warnings_subject_, 0, "ad5x_plugins_has_warnings", subjects_);
++        // 1 while a job or a command runs, or Klipper is not ready: every
++        // switch and button binds it (print_active is the other reason)
++        UI_MANAGED_SUBJECT_INT(busy_subject_, 1, "ad5x_plugins_busy", subjects_);
++        // 0 no catalog, 1 plugins to install, 2 all of them installed
++        UI_MANAGED_SUBJECT_INT(catalog_state_subject_, 0, "ad5x_plugins_catalog_state", subjects_);
++    });
++}
++
++void Ad5xPluginsOverlay::deinit_subjects() {
++    deinit_subjects_base(subjects_);
++}
++
++void Ad5xPluginsOverlay::register_callbacks() {
++    register_xml_callbacks({
++        {"on_ad5x_plugin_toggled",
++         [](lv_event_t* e) {
++             get_ad5x_plugins_overlay().handle_toggle(event_plugin(e), helix::ui::event_checked(e));
++         }},
++        {"on_ad5x_plugin_install",
++         [](lv_event_t* e) { get_ad5x_plugins_overlay().handle_install(event_plugin(e)); }},
++        {"on_ad5x_plugin_update",
++         [](lv_event_t* e) { get_ad5x_plugins_overlay().handle_update(event_plugin(e)); }},
++        {"on_ad5x_plugin_remove",
++         [](lv_event_t* e) { get_ad5x_plugins_overlay().handle_remove(event_plugin(e)); }},
++    });
++}
++
++lv_obj_t* Ad5xPluginsOverlay::create(lv_obj_t* parent) {
++    if (!OverlayBase::create(parent)) {
++        return nullptr;
++    }
++    rows_key_.clear();
++    render_rows(true);
++    return overlay_root_;
++}
++
++void Ad5xPluginsOverlay::on_ui_destroyed() {
++    rows_key_.clear();
++}
++
++void Ad5xPluginsOverlay::on_activate() {
++    OverlayBase::on_activate();
++
++    if (IMoonrakerAPI* api = get_moonraker_api()) {
++        const auto token = lifetime_.token();
++        // Runs on the WebSocket thread: copy the object out, apply it on the main thread.
++        const SubscriptionId id = api->subscribe_notifications([this, token](const json& note) {
++            const json* params = json_util::find_member(note, "params");
++            if (!params || !params->is_array() || params->empty()) {
++                return;
++            }
++            const json* obj = json_util::find_member((*params)[0], kObject);
++            if (!obj || !obj->is_object()) {
++                return;
++            }
++            json delta = *obj;
++            token.defer("Ad5xPluginsOverlay::status_update", [this, delta]() {
++                merge_status(delta);
++                refresh();
++                render_rows(false);
++            });
++        });
++        subscription_ = SubscriptionGuard(api, id);
++    }
++
++    // ENABLE/DISABLE/INSTALL/REMOVE restart Klipper: the object goes away
++    // and comes back with the new lists.
++    klippy_observer_ = ui::observe<int>(
++        get_printer_state().network_state().get_klippy_state_subject(), this,
++        [](Ad5xPluginsOverlay* self, int state) {
++            const bool ready = static_cast<KlippyState>(state) == KlippyState::READY;
++            if (!ready) {
++                // The rows stay (disabled) until the new object arrives
++                self->loaded_ = false;
++            } else if (!self->klippy_ready_) {
++                self->query_status();
++            }
++            self->klippy_ready_ = ready;
++            self->refresh();
++        },
++        get_printer_state().get_subjects_lifetime());
++
++    query_status();
++    refresh();
++}
++
++void Ad5xPluginsOverlay::on_deactivating(DeactivateReason /*reason*/) {
++    subscription_.reset();
++    klippy_observer_.reset();
++    command_in_flight_ = false;
++}
++
++// ============================================================================
++// STATUS
++// ============================================================================
++
++void Ad5xPluginsOverlay::query_status() {
++    IMoonrakerClient* client = get_moonraker_client();
++    if (!client || client->get_connection_state() != ConnectionState::CONNECTED) {
++        return;
++    }
++    const auto token = lifetime_.token();
++    json params = {{"objects", {{kObject, nullptr}}}};
++    client->send_jsonrpc(
++        "printer.objects.query", params,
++        [this, token](const json& response) {
++            const json* result = json_util::find_member(response, "result");
++            const json* status = result ? json_util::find_member(*result, "status") : nullptr;
++            const json* obj = status ? json_util::find_member(*status, kObject) : nullptr;
++            if (!obj || !obj->is_object()) {
++                return;
++            }
++            json full = *obj;
++            token.defer("Ad5xPluginsOverlay::status_query", [this, full]() {
++                status_ = full;
++                loaded_ = true;
++                refresh();
++                render_rows(false);
++            });
++        },
++        [](const MoonrakerError& err) {
++            spdlog::debug("[AD5X plugins] {} query failed: {}", kObject, err.message);
++        },
++        0, /*silent=*/true);
++}
++
++void Ad5xPluginsOverlay::merge_status(const json& delta) {
++    // Deltas only patch a full object; the query in flight brings one
++    if (!loaded_ || !status_.is_object()) {
++        return;
++    }
++    for (auto it = delta.begin(); it != delta.end(); ++it) {
++        status_[it.key()] = it.value();
++    }
++}
++
++void Ad5xPluginsOverlay::refresh() {
++    if (!subjects_initialized_) {
++        return;
++    }
++
++    std::string line;
++    Ad5xJobLine kind = Ad5xJobLine::None;
++    const json* job = json_util::find_member(status_, "job");
++    const std::string job_state = job ? json_util::safe_string(*job, "state") : "";
++    const bool job_running = job_state == "running";
++    if (!klippy_ready_ || !loaded_) {
++        line = lv_tr("Waiting for Klipper...");
++        kind = Ad5xJobLine::Working;
++    } else if (job && (job_running || job_state == "done" || job_state == "failed")) {
++        const std::string title = ad5x_plugin_title(status_, json_util::safe_string(*job, "name"));
++        const std::string action = json_util::safe_string(*job, "action");
++        if (job_running) {
++            if (action == "install") {
++                line = fmt::format(lv_tr("Installing {}..."), title);
++            } else if (action == "update") {
++                line = fmt::format(lv_tr("Updating {}..."), title);
++            } else {
++                line = fmt::format(lv_tr("Working on {}..."), title);
++            }
++            kind = Ad5xJobLine::Working;
++        } else {
++            // Klipper's own result text ("installed and enabled", "up to date (abc123)", ...)
++            line = fmt::format("{}: {}", title, json_util::safe_string(*job, "message"));
++            kind = job_state == "failed" ? Ad5xJobLine::Failed : Ad5xJobLine::Done;
++        }
++    }
++    lv_subject_copy_string(&status_subject_, line.c_str());
++    lv_subject_set_int(&status_kind_subject_, static_cast<int>(kind));
++
++    std::string warnings;
++    if (const json* list = json_util::find_member(status_, "warnings"); list && list->is_array()) {
++        for (const auto& w : *list) {
++            if (!warnings.empty()) {
++                warnings += '\n';
++            }
++            warnings += json_util::as_string(w);
++        }
++    }
++    lv_subject_copy_string(&warnings_subject_, warnings.c_str());
++    lv_subject_set_int(&has_warnings_subject_, warnings.empty() ? 0 : 1);
++
++    const bool busy = !klippy_ready_ || !loaded_ || job_running || command_in_flight_;
++    lv_subject_set_int(&busy_subject_, busy ? 1 : 0);
++}
++
++const Ad5xInstalledPlugin* Ad5xPluginsOverlay::installed(const std::string& name) const {
++    for (const auto& p : installed_) {
++        if (p.name == name) {
++            return &p;
++        }
++    }
++    return nullptr;
++}
++
++void Ad5xPluginsOverlay::render_rows(bool force) {
++    json lists = json::object();
++    for (const char* key : {"enabled", "available", "catalog"}) {
++        if (const json* v = json_util::find_member(status_, key)) {
++            lists[key] = *v;
++        }
++    }
++    const std::string key = json_util::safe_dump(lists);
++    installed_ = ad5x_installed_plugins(status_);
++    const std::vector<Ad5xCatalogPlugin> catalog = ad5x_catalog_plugins(status_);
++
++    if (subjects_initialized_) {
++        const json* raw_catalog = json_util::find_member(status_, "catalog");
++        const bool has_catalog = raw_catalog && raw_catalog->is_object() && !raw_catalog->empty();
++        lv_subject_set_int(&catalog_state_subject_, !has_catalog ? 0 : catalog.empty() ? 2 : 1);
++    }
++
++    // A rebuild inside the status deferral would also reset a switch the user
++    // is about to confirm; only a change of the lists themselves rebuilds.
++    if (!overlay_root_ || (!force && key == rows_key_)) {
++        return;
++    }
++    rows_key_ = key;
++
++    lv_obj_t* group = helix::ui::find_required(overlay_root_, "ad5x_plugins_installed", get_name());
++    if (group) {
++        clear_group_rows(group);
++        for (const auto& p : installed_) {
++            std::string details = p.version.empty() ? std::string() : "v" + p.version;
++            // Switching off stays possible for a plugin that is on
++            const bool blocked = !p.compatible && !p.enabled;
++            const char* attrs[] = {
++                "plugin",      p.name.c_str(),
++                "title",       p.title.c_str(),
++                "description", p.description.c_str(),
++                "details",     details.c_str(),
++                "builtin",     p.builtin ? lv_tr("Built-in") : "",
++                "checked",     p.enabled ? "true" : "false",
++                "blocked",     blocked ? "1" : "0",
++                "note",        p.compatible ? "" : lv_tr("Needs a newer Kiln OS"),
++                "manage",      p.builtin ? "" : "1",
++                nullptr};
++            if (!lv_xml_create(group, "ad5x_plugin_row", attrs)) {
++                spdlog::warn("[AD5X plugins] cannot create a row for {}", p.name);
++            }
++        }
++    }
++
++    group = helix::ui::find_required(overlay_root_, "ad5x_plugins_catalog", get_name());
++    if (group) {
++        clear_group_rows(group);
++        for (const auto& p : catalog) {
++            const char* attrs[] = {
++                "plugin",      p.name.c_str(),
++                "title",       p.title.c_str(),
++                "description", p.description.c_str(),
++                "blocked",     p.compatible ? "0" : "1",
++                "note",        p.compatible ? "" : lv_tr("Needs a newer Kiln OS"),
++                nullptr};
++            if (!lv_xml_create(group, "ad5x_catalog_row", attrs)) {
++                spdlog::warn("[AD5X plugins] cannot create a row for {}", p.name);
++            }
++        }
++    }
++}
++
++// ============================================================================
++// COMMANDS
++// ============================================================================
++
++void Ad5xPluginsOverlay::send(const std::string& gcode, bool restarts) {
++    IMoonrakerAPI* api = get_moonraker_api();
++    if (!api) {
++        render_rows(true);
++        return;
++    }
++    spdlog::info("[AD5X plugins] {}", gcode);
++    command_in_flight_ = true;
++    refresh();
++
++    const auto token = lifetime_.token();
++    const MacroHostEffect effect = restarts ? MacroHostEffect::Restarts : MacroHostEffect::None;
++    api->execute_gcode(
++        gcode,
++        [this, token, restarts]() {
++            if (restarts) {
++                helix::ui::begin_expected_klippy_restart("Firmware restarting...");
++            }
++            token.defer("Ad5xPluginsOverlay::command_done", [this]() {
++                command_in_flight_ = false;
++                query_status();
++                refresh();
++            });
++        },
++        [this, token, effect](const MoonrakerError& err) {
++            // Klipper restarting drops the reply: that is the command working
++            if (classify_macro_rpc_failure(effect, err) == MacroFailureReport::ExpectedRestart) {
++                helix::ui::begin_expected_klippy_restart("Firmware restarting...");
++                token.defer("Ad5xPluginsOverlay::command_restart", [this]() {
++                    command_in_flight_ = false;
++                    refresh();
++                });
++                return;
++            }
++            const std::string message = err.message;
++            helix::ui::queue_update("Ad5xPluginsOverlay::command_error",
++                                    [message]() { NOTIFY_WARNING("{}", message); });
++            token.defer("Ad5xPluginsOverlay::command_error", [this]() {
++                command_in_flight_ = false;
++                query_status();
++                refresh();
++                // Puts a switch the command did not change back
++                render_rows(true);
++            });
++        },
++        0, /*silent=*/false, /*on_queued=*/nullptr, /*caller_surfaces_errors=*/true);
++}
++
++void Ad5xPluginsOverlay::handle_toggle(const std::string& name, bool on) {
++    spdlog::debug("[AD5X plugins] {} switched {}", name, on ? "on" : "off");
++    const Ad5xInstalledPlugin* p = installed(name);
++    if (!p || p->enabled == on || !safe_plugin_name(name)) {
++        render_rows(true);
++        return;
++    }
++    const std::string title =
++        fmt::format(on ? lv_tr("Turn on {}?") : lv_tr("Turn off {}?"), p->title);
++    const std::string gcode =
++        fmt::format("{} NAME={}", on ? "ENABLE_PLUGIN" : "DISABLE_PLUGIN", name);
++    helix::ui::ConfirmOptions opts;
++    opts.owner_token = object_lifetime_.token();
++    // Cancelling puts the switch back
++    opts.on_cancel = [this]() { render_rows(true); };
++    opts.on_dismiss = [this]() { render_rows(true); };
++    helix::ui::modal_confirm(
++        title.c_str(), lv_tr("Klipper restarts to apply this. Continue?"), ModalSeverity::Warning,
++        on ? lv_tr("Turn On") : lv_tr("Turn Off"), [this, gcode]() { send(gcode, true); }, opts);
++}
++
++void Ad5xPluginsOverlay::handle_install(const std::string& name) {
++    if (!safe_plugin_name(name)) {
++        return;
++    }
++    const std::string title = fmt::format(lv_tr("Install {}?"), ad5x_plugin_title(status_, name));
++    const std::string gcode = fmt::format("INSTALL_PLUGIN NAME={} ENABLE=1", name);
++    helix::ui::ConfirmOptions opts;
++    opts.owner_token = object_lifetime_.token();
++    helix::ui::modal_confirm(
++        title.c_str(),
++        lv_tr("Downloads the plugin and turns it on. Klipper restarts when it is installed."),
++        ModalSeverity::Info, lv_tr("Install"), [this, gcode]() { send(gcode, false); }, opts);
++}
++
++void Ad5xPluginsOverlay::handle_update(const std::string& name) {
++    const Ad5xInstalledPlugin* p = installed(name);
++    if (!p || !safe_plugin_name(name)) {
++        return;
++    }
++    const std::string gcode = fmt::format("UPDATE_PLUGIN NAME={}", name);
++    if (!p->enabled) {
++        send(gcode, false);
++        return;
++    }
++    const std::string title = fmt::format(lv_tr("Update {}?"), p->title);
++    helix::ui::ConfirmOptions opts;
++    opts.owner_token = object_lifetime_.token();
++    helix::ui::modal_confirm(
++        title.c_str(), lv_tr("When there is a new version, Klipper restarts to load it."),
++        ModalSeverity::Info, lv_tr("Update"), [this, gcode]() { send(gcode, false); }, opts);
++}
++
++void Ad5xPluginsOverlay::handle_remove(const std::string& name) {
++    const Ad5xInstalledPlugin* p = installed(name);
++    if (!p || p->builtin || !safe_plugin_name(name)) {
++        return;
++    }
++    const bool restarts = p->enabled;
++    const std::string title = fmt::format(lv_tr("Remove {}?"), p->title);
++    const std::string gcode = fmt::format("REMOVE_PLUGIN NAME={}", name);
++    helix::ui::ConfirmOptions opts;
++    opts.owner_token = object_lifetime_.token();
++    helix::ui::modal_confirm(
++        title.c_str(),
++        restarts ? lv_tr("Turns the plugin off and deletes it from the printer. Klipper restarts.")
++                 : lv_tr("Deletes the plugin from the printer."),
++        ModalSeverity::Warning, lv_tr("Remove"),
++        [this, gcode, restarts]() { send(gcode, restarts); }, opts);
++}
++
++} // namespace helix::settings
+diff --git a/tests/unit/test_settings_ad5x_plugins.cpp b/tests/unit/test_settings_ad5x_plugins.cpp
+new file mode 100644
+index 0000000..976830a
+--- /dev/null
++++ b/tests/unit/test_settings_ad5x_plugins.cpp
+@@ -0,0 +1,84 @@
++// SPDX-License-Identifier: GPL-3.0-or-later
++
++#include "ui_settings_ad5x_plugins.h"
++
++#include "../catch_amalgamated.hpp"
++#include "hv/json.hpp"
++
++using namespace helix::settings;
++
++namespace {
++
++/// The `ad5x_plugins` object as Klipper publishes it.
++json sample_status() {
++    return json::parse(R"({
++        "api_version": "1.4",
++        "enabled": ["zmod-compat", "notify"],
++        "available": {
++            "zmod-compat": {"source": "shipped", "description": "zMod macros",
++                            "version": "1.1.0", "compatible": true},
++            "notify": {"source": "user", "description": "Print notifications",
++                       "version": "0.3.0", "compatible": true},
++            "bambufy-compat": {"source": "shipped", "description": "", "version": "",
++                               "compatible": false}
++        },
++        "catalog": {
++            "notify": {"title": "Notifications", "description": "Telegram, ntfy, ...",
++                       "compatible": true, "installed": true},
++            "timelapse": {"title": "Timelapse", "description": "Videos of the print",
++                          "compatible": true, "installed": false},
++            "spoolman": {"title": "Spoolman", "description": "Spool tracking",
++                         "compatible": false, "installed": false}
++        },
++        "job": {"name": "", "action": "", "state": "idle", "message": ""},
++        "warnings": []
++    })");
++}
++
++} // namespace
++
++TEST_CASE("installed plugins are sorted, titled from the catalog and carry their state",
++          "[ad5x_plugins]") {
++    const auto rows = ad5x_installed_plugins(sample_status());
++    REQUIRE(rows.size() == 3);
++    CHECK(rows[0].name == "bambufy-compat");
++    CHECK(rows[1].name == "notify");
++    CHECK(rows[2].name == "zmod-compat");
++
++    CHECK(rows[0].title == "bambufy-compat");
++    CHECK_FALSE(rows[0].compatible);
++    CHECK_FALSE(rows[0].enabled);
++
++    CHECK(rows[1].title == "Notifications");
++    CHECK_FALSE(rows[1].builtin);
++    CHECK(rows[1].enabled);
++    CHECK(rows[1].version == "0.3.0");
++
++    CHECK(rows[2].builtin);
++    CHECK(rows[2].enabled);
++}
++
++TEST_CASE("the catalog section lists only plugins not installed", "[ad5x_plugins]") {
++    const auto rows = ad5x_catalog_plugins(sample_status());
++    REQUIRE(rows.size() == 2);
++    CHECK(rows[0].name == "spoolman");
++    CHECK_FALSE(rows[0].compatible);
++    CHECK(rows[1].name == "timelapse");
++    CHECK(rows[1].title == "Timelapse");
++    CHECK(rows[1].compatible);
++}
++
++TEST_CASE("a catalog entry shipped with the OS counts as installed", "[ad5x_plugins]") {
++    json status = sample_status();
++    status["available"]["timelapse"] = {{"source", "shipped"}, {"compatible", true}};
++    const auto rows = ad5x_catalog_plugins(status);
++    REQUIRE(rows.size() == 1);
++    CHECK(rows[0].name == "spoolman");
++}
++
++TEST_CASE("an object without lists yields no rows", "[ad5x_plugins]") {
++    const json status = json::parse(R"({"api_version": "1.3", "enabled": []})");
++    CHECK(ad5x_installed_plugins(status).empty());
++    CHECK(ad5x_catalog_plugins(status).empty());
++    CHECK(ad5x_plugin_title(status, "notify") == "notify");
++}
+diff --git a/ui_xml/components/ad5x_catalog_row.xml b/ui_xml/components/ad5x_catalog_row.xml
+new file mode 100644
+index 0000000..093eca3
+--- /dev/null
++++ b/ui_xml/components/ad5x_catalog_row.xml
+@@ -0,0 +1,43 @@
++<?xml version="1.0"?>
++<!-- SPDX-License-Identifier: GPL-3.0-or-later -->
++<!-- One catalog plugin not installed yet in Settings > Plugins: title, description -->
++<!-- and Install. Created by Ad5xPluginsOverlay::render_rows(). -->
++<component>
++  <api>
++    <prop name="plugin" type="string" default=""/>
++    <prop name="title" type="string" default=""/>
++    <prop name="description" type="string" default=""/>
++    <!-- 1: Install never works (plugin API too old), on top of print/busy -->
++    <prop name="blocked" type="string" default="0"/>
++    <prop name="note" type="string" default=""/>
++  </api>
++  <styles>
++    <style name="pad_standard"
++           pad_left="#space_lg" pad_right="#space_lg" pad_top="#space_md" pad_bottom="#space_md" pad_gap="#space_md"/>
++    <style name="pad_micro"
++           pad_left="#space_md" pad_right="#space_md" pad_top="#space_sm" pad_bottom="#space_sm" pad_gap="#space_sm"/>
++  </styles>
++  <view name="ad5x_catalog_row"
++        extends="lv_obj" width="100%" height="content" flex_flow="row" style_flex_cross_place="center"
++        style_bg_opa="0" style_border_width="0" scrollable="false">
++    <bind_style_if_eq name="pad_micro" subject="ui_breakpoint" ref_value="0"/>
++    <bind_style_if_ge name="pad_standard" subject="ui_breakpoint" ref_value="1"/>
++    <icon src="download" size="sm" variant="secondary"/>
++    <lv_obj width="0"
++            height="content" flex_grow="1" style_pad_all="0" flex_flow="column" style_pad_gap="#space_xs"
++            style_bg_opa="0" style_border_width="0" scrollable="false">
++      <text_body name="title" width="100%" text="$title" long_mode="wrap"/>
++      <text_small name="description"
++                  width="100%" text="$description" long_mode="wrap" style_text_color="#text_muted"
++                  hidden_if_empty="$description"/>
++      <text_small name="note"
++                  width="100%" text="$note" long_mode="wrap" style_text_color="#warning" hidden_if_empty="$note"/>
++    </lv_obj>
++    <ui_button name="install_btn"
++               width="content" height="#button_height_sm" style_min_width="96" text="Install" icon="download"
++               variant="primary">
++      <bind_state_if cond="print_active or ad5x_plugins_busy or ${blocked}" state="disabled"/>
++      <event_cb trigger="clicked" callback="on_ad5x_plugin_install" user_data="$plugin"/>
++    </ui_button>
++  </view>
++</component>
+diff --git a/ui_xml/components/ad5x_plugin_row.xml b/ui_xml/components/ad5x_plugin_row.xml
+new file mode 100644
+index 0000000..77b15d3
+--- /dev/null
++++ b/ui_xml/components/ad5x_plugin_row.xml
+@@ -0,0 +1,77 @@
++<?xml version="1.0"?>
++<!-- SPDX-License-Identifier: GPL-3.0-or-later -->
++<!-- One installed AD5X plugin in Settings > Plugins: title, description, version, -->
++<!-- Built-in tag and an on/off switch; Update and Remove for user-installed plugins. -->
++<!-- Created by Ad5xPluginsOverlay::render_rows(); every value is fixed at creation -->
++<!-- (the rows are rebuilt when the plugin lists change). -->
++<component>
++  <api>
++    <prop name="plugin" type="string" default=""/>
++    <prop name="title" type="string" default=""/>
++    <prop name="description" type="string" default=""/>
++    <prop name="details" type="string" default=""/>
++    <!-- Tag text for a plugin shipped with the OS, empty for user plugins -->
++    <prop name="builtin" type="string" default=""/>
++    <prop name="checked" type="string" default="false"/>
++    <!-- 1: the switch never works (plugin API too old), on top of print/busy -->
++    <prop name="blocked" type="string" default="0"/>
++    <prop name="note" type="string" default=""/>
++    <!-- Non-empty: show Update and Remove -->
++    <prop name="manage" type="string" default=""/>
++  </api>
++  <styles>
++    <style name="pad_standard"
++           pad_left="#space_lg" pad_right="#space_lg" pad_top="#space_md" pad_bottom="#space_md" pad_gap="#space_sm"/>
++    <style name="pad_micro"
++           pad_left="#space_md" pad_right="#space_md" pad_top="#space_sm" pad_bottom="#space_sm" pad_gap="#space_xs"/>
++  </styles>
++  <view name="ad5x_plugin_row"
++        extends="lv_obj" width="100%" height="content" flex_flow="column" style_bg_opa="0" style_border_width="0"
++        scrollable="false">
++    <bind_style_if_eq name="pad_micro" subject="ui_breakpoint" ref_value="0"/>
++    <bind_style_if_ge name="pad_standard" subject="ui_breakpoint" ref_value="1"/>
++    <lv_obj width="100%"
++            height="content" style_pad_all="0" flex_flow="row" style_flex_cross_place="center" style_pad_gap="#space_md"
++            style_bg_opa="0" style_border_width="0" scrollable="false">
++      <icon src="puzzle_outline" size="sm" variant="secondary"/>
++      <lv_obj width="0"
++              height="content" flex_grow="1" style_pad_all="0" flex_flow="column" style_pad_gap="#space_xs"
++              style_bg_opa="0" style_border_width="0" scrollable="false">
++        <lv_obj width="100%"
++                height="content" style_pad_all="0" flex_flow="row_wrap" style_flex_cross_place="center"
++                style_pad_gap="#space_sm" style_bg_opa="0" style_border_width="0" scrollable="false">
++          <text_body name="title" text="$title"/>
++          <text_small name="details" text="$details" style_text_color="#text_muted" hidden_if_empty="$details"/>
++          <status_pill name="builtin" text="$builtin" variant="muted" hidden_if_empty="$builtin"/>
++        </lv_obj>
++        <text_small name="description"
++                    width="100%" text="$description" long_mode="wrap" style_text_color="#text_muted"
++                    hidden_if_empty="$description"/>
++        <text_small name="note"
++                    width="100%" text="$note" long_mode="wrap" style_text_color="#warning" hidden_if_empty="$note"/>
++      </lv_obj>
++      <ui_switch name="toggle" size="small" checked="$checked">
++        <bind_state_if cond="print_active or ad5x_plugins_busy or ${blocked}" state="disabled"/>
++        <event_cb trigger="value_changed" callback="on_ad5x_plugin_toggled" user_data="$plugin"/>
++      </ui_switch>
++    </lv_obj>
++    <!-- User plugins: Update and Remove, right-aligned under the switch -->
++    <lv_obj name="manage"
++            width="100%" height="content" style_pad_all="0" style_pad_top="#space_sm" flex_flow="row"
++            style_flex_main_place="end" style_pad_gap="#space_sm" style_bg_opa="0" style_border_width="0"
++            scrollable="false" hidden_if_empty="$manage">
++      <ui_button name="update_btn"
++                 width="content" height="#button_height_sm" style_min_width="96" text="Update" icon="update"
++                 variant="secondary">
++        <bind_state_if cond="print_active or ad5x_plugins_busy" state="disabled"/>
++        <event_cb trigger="clicked" callback="on_ad5x_plugin_update" user_data="$plugin"/>
++      </ui_button>
++      <ui_button name="remove_btn"
++                 width="content" height="#button_height_sm" style_min_width="96" text="Remove" icon="delete"
++                 variant="danger">
++        <bind_state_if cond="print_active or ad5x_plugins_busy" state="disabled"/>
++        <event_cb trigger="clicked" callback="on_ad5x_plugin_remove" user_data="$plugin"/>
++      </ui_button>
++    </lv_obj>
++  </view>
++</component>
+diff --git a/ui_xml/settings_ad5x_plugins_overlay.xml b/ui_xml/settings_ad5x_plugins_overlay.xml
+new file mode 100644
+index 0000000..28c8693
+--- /dev/null
++++ b/ui_xml/settings_ad5x_plugins_overlay.xml
+@@ -0,0 +1,68 @@
++<?xml version="1.0"?>
++<!-- SPDX-License-Identifier: GPL-3.0-or-later -->
++<!-- Settings > Plugins on the AD5X: the printer's Klipper plugins (ad5x_plugins object) -->
++<!-- Ad5xPluginsOverlay builds one row per plugin into the INSTALLED and AVAILABLE groups -->
++<component>
++  <styles>
++    <style name="pad_standard" pad_left="#space_lg" pad_right="#space_lg" pad_top="#space_md" pad_bottom="#space_md"/>
++    <style name="pad_micro" pad_left="#space_md" pad_right="#space_md" pad_top="#space_sm" pad_bottom="#space_sm"/>
++    <style name="text_failed" text_color="#danger"/>
++  </styles>
++  <view name="settings_ad5x_plugins_overlay" extends="overlay_panel" title="Plugins" bg_color="#screen_bg">
++    <!-- Content Area - no padding, rows handle their own -->
++    <lv_obj name="overlay_content"
++            width="100%" flex_grow="1" style_pad_top="0" style_pad_left="0" style_pad_right="0"
++            style_pad_bottom="#space_lg" scrollable="true" flex_flow="column">
++      <!-- Running job or last result, warnings, print lock; collapses when all are hidden -->
++      <setting_group name="ad5x_plugins_status_group">
++        <setting_group_header title="STATUS"/>
++        <lv_obj name="ad5x_plugins_status_row"
++                width="100%" height="content" flex_flow="row" style_flex_cross_place="center" style_pad_gap="#space_sm"
++                style_bg_opa="0" style_border_width="0" scrollable="false">
++          <bind_style_if_eq name="pad_micro" subject="ui_breakpoint" ref_value="0"/>
++          <bind_style_if_ge name="pad_standard" subject="ui_breakpoint" ref_value="1"/>
++          <bind_flag_if_eq subject="ad5x_plugins_status_kind" flag="hidden" ref_value="0"/>
++          <spinner size="sm">
++            <bind_flag_if_not_eq subject="ad5x_plugins_status_kind" flag="hidden" ref_value="1"/>
++          </spinner>
++          <text_small name="ad5x_plugins_status" width="0" flex_grow="1" bind_text="ad5x_plugins_status" long_mode="wrap">
++            <bind_style_if_eq name="text_failed" subject="ad5x_plugins_status_kind" ref_value="3"/>
++          </text_small>
++        </lv_obj>
++        <lv_obj name="ad5x_plugins_warnings_row"
++                width="100%" height="content" flex_flow="row" style_flex_cross_place="start" style_pad_gap="#space_sm"
++                style_bg_opa="0" style_border_width="0" scrollable="false">
++          <bind_style_if_eq name="pad_micro" subject="ui_breakpoint" ref_value="0"/>
++          <bind_style_if_ge name="pad_standard" subject="ui_breakpoint" ref_value="1"/>
++          <bind_flag_if_eq subject="ad5x_plugins_has_warnings" flag="hidden" ref_value="0"/>
++          <icon src="alert" size="xs" variant="warning"/>
++          <text_small name="ad5x_plugins_warnings"
++                      width="0" flex_grow="1" bind_text="ad5x_plugins_warnings" long_mode="wrap" style_text_color="#warning"/>
++        </lv_obj>
++        <lv_obj name="ad5x_plugins_print_lock_row"
++                width="100%" height="content" flex_flow="row" style_flex_cross_place="center" style_pad_gap="#space_sm"
++                style_bg_opa="0" style_border_width="0" scrollable="false">
++          <bind_style_if_eq name="pad_micro" subject="ui_breakpoint" ref_value="0"/>
++          <bind_style_if_ge name="pad_standard" subject="ui_breakpoint" ref_value="1"/>
++          <bind_flag_if_eq subject="print_active" flag="hidden" ref_value="0"/>
++          <icon src="lock" size="xs" variant="secondary"/>
++          <text_small width="0" flex_grow="1" text="Plugins can't be changed during a print" long_mode="wrap"/>
++        </lv_obj>
++      </setting_group>
++      <setting_group name="ad5x_plugins_installed">
++        <setting_group_header title="INSTALLED"/>
++      </setting_group>
++      <!-- Catalog plugins not installed yet; hidden when the OS offers none -->
++      <setting_group name="ad5x_plugins_catalog">
++        <setting_group_header title="AVAILABLE"/>
++        <lv_obj name="ad5x_catalog_all_installed"
++                width="100%" height="content" style_bg_opa="0" style_border_width="0" scrollable="false">
++          <bind_style_if_eq name="pad_micro" subject="ui_breakpoint" ref_value="0"/>
++          <bind_style_if_ge name="pad_standard" subject="ui_breakpoint" ref_value="1"/>
++          <bind_flag_if_not_eq subject="ad5x_plugins_catalog_state" flag="hidden" ref_value="2"/>
++          <text_small text="All catalog plugins are installed"/>
++        </lv_obj>
++      </setting_group>
++    </lv_obj>
++  </view>
++</component>
+diff --git a/ui_xml/settings_panel.xml b/ui_xml/settings_panel.xml
+index f6cb809..0f16557 100644
+--- a/ui_xml/settings_panel.xml
++++ b/ui_xml/settings_panel.xml
+@@ -51,6 +51,12 @@
+                           description="Self-check, PID, bed mesh, vibration, IFS, Z offset" description_min_bp="0">
+         <bind_flag_if_eq subject="settings_show_ad5x_setup" flag="hidden" ref_value="0"/>
+       </setting_action_row>
++      <!-- AD5X: the printer's own plugins (Klipper add-ons), not HelixScreen's -->
++      <setting_action_row name="row_ad5x_plugins"
++                          label="Plugins" icon="puzzle_outline" callback="on_ad5x_plugins_clicked"
++                          description="Printer add-ons: switch on or off, install, update" description_min_bp="0">
++        <bind_flag_if_eq subject="settings_show_ad5x_plugins" flag="hidden" ref_value="0"/>
++      </setting_action_row>
+     </setting_group>
+     <setting_group name="group_helixscreen">
+       <setting_group_header title="HELIXSCREEN"/>
+-- 
+2.56.0
+

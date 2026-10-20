@@ -1,0 +1,761 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: ad5xrecon <ad5xrecon@localhost>
+Date: Tue, 20 Oct 2026 16:00:00 -0400
+Subject: [PATCH] sound: sysfs PWM speaker on MIPS, printer sounds in Sound
+
+The unified MIPS build (PLATFORM_TARGET=mips) now carries the sysfs PWM
+sound backend. AD5X OS's kernel exposes the speaker as a pwmchip channel
+and its start script names it with HELIX_PWM_SOUND=0:13 only when the
+speaker is there; a named channel wins over every other backend. Without
+one nothing probes sysfs PWM on this platform (no HELIX_PWM_AUTO_EXPORT),
+so the stock kernel keeps the jz_pwm path. The backend writes only
+export, period, duty_cycle and enable, never polarity.
+
+Settings > Sound gets a "Printer Sounds" section, shown only where Klipper
+has the ad5x_sound object and found a speaker: an on/off switch, the
+volume (sent when the slider is released) and one row per print event
+with the sound it plays (Off or one of the printer's sound files) and a
+button that plays it. Every change is a SOUND_SETUP command, the play
+button PLAY_SOUND. The object joins the status subscription; the controls
+follow it, except one being changed and while a change is unanswered.
+
+Upstream: not applicable (AD5X OS specific)
+---
+ Makefile                                   |   6 +-
+ include/ui_settings_sound.h                |  66 ++++-
+ src/api/moonraker_discovery_sequence.cpp   |   9 +
+ src/ui/ui_settings_sound.cpp               | 388 +++++++++++++++++++++++++++
+ ui_xml/components/ad5x_sound_event_row.xml |  35 +++
+ ui_xml/settings_sound_overlay.xml          |  71 +++++
+ 6 files changed, 573 insertions(+), 2 deletions(-)
+
+diff --git a/Makefile b/Makefile
+index 2980ca7..9afe7eb 100644
+--- a/Makefile
++++ b/Makefile
+@@ -501,11 +501,15 @@ endif
+ # must, or the user naming the channel. M300 (the PRINTER's beeper, over gcode) is deliberately NOT gated and
+ # keeps working everywhere. Neither MIPS board exposes a sysfs pwmchip (the
+ # FlashForge MIPS boards' piezo goes through jz_pwm below, the K1 has no audio at all).
++# AD5X OS: the unified MIPS build (mips) carries it too. Its own kernel exposes the
++# AD5X piezo as a sysfs pwmchip channel, which the start script names through
++# HELIX_PWM_SOUND only when the speaker is there; without a named channel nothing
++# probes it (no HELIX_PWM_AUTO_EXPORT), so the stock kernel keeps the jz_pwm path.
+ #
+ # Decided HERE, above APP_OBJS, and not down in the sound-flags section: APP_OBJS
+ # is computed from APP_SRCS a few lines below, so a filter-out placed after it is
+ # a silent no-op that still compiles and still links the backend.
+-ifneq (,$(filter ad5m ad5m-br pi pi-fbdev pi-both pi32 pi32-fbdev pi32-both x86 x86-fbdev x86-both yocto native,$(PLATFORM_TARGET)))
++ifneq (,$(filter ad5m ad5m-br mips pi pi-fbdev pi-both pi32 pi32-fbdev pi32-both x86 x86-fbdev x86-both yocto native,$(PLATFORM_TARGET)))
+     PWM_SOUND_CXXFLAGS := -DHELIX_HAS_PWM_SOUND
+     # Auto-export: the stock AD5M kernel ships the beeper channel unexported
+     # and nothing materializes pwm6, so initialize() writes the channel to
+diff --git a/include/ui_settings_sound.h b/include/ui_settings_sound.h
+index 83591f4..41804ed 100644
+--- a/include/ui_settings_sound.h
++++ b/include/ui_settings_sound.h
+@@ -5,21 +5,42 @@
+  * @file ui_settings_sound.h
+  * @brief Sound settings overlay - master toggle, volume, UI sounds, theme, output device
+  *
++ * On AD5X OS also the printer's own sounds: the `ad5x_sound` Klipper object
++ * (the speaker Klipper plays print events on), shown only when the printer has
++ * one. Every change is a SOUND_SETUP command; the controls follow the object.
++ *
+  * @pattern Overlay (lazy init)
+- * @threading Main thread only
++ * @threading Main thread only; Moonraker callbacks hop over via lifetime tokens
+  *
+  * @see AudioSettingsManager for persistence
+  */
+ 
+ #pragma once
+ 
++#include "ui_observer_guard.h"
++#include "ui_subscription_guard.h"
++
++#include "json_fwd.h"
+ #include "overlay_base.h"
+ #include "static_panel_registry.h"
++#include "subject_managed_panel.h"
++
++#include <cstddef>
++#include <string>
++#include <vector>
+ 
+ namespace helix::settings {
+ 
++/// Name of an AD5X printer sound file as the dropdown shows it ("complete.mid" -> "complete").
++std::string ad5x_sound_file_label(const std::string& file);
++
+ class SoundSettingsOverlay : public OverlayBase {
+   public:
++    /// Print events of the `ad5x_sound` object, one row each
++    static constexpr std::size_t kPrinterSoundEvents = 7;
++
++    ~SoundSettingsOverlay() override;
++
+     const char* get_name() const override {
+         return "Sound";
+     }
+@@ -27,6 +48,8 @@ class SoundSettingsOverlay : public OverlayBase {
+         return "settings_sound_overlay";
+     }
+ 
++    void init_subjects() override;
++    void deinit_subjects();
+     void register_callbacks() override;
+     void on_activate() override;
+ 
+@@ -41,13 +64,54 @@ class SoundSettingsOverlay : public OverlayBase {
+     void handle_preview_sounds();
+     void handle_test_tracker();
+ 
++    // Printer sounds (AD5X `ad5x_sound` object)
++    void handle_printer_sounds_changed(bool enabled);
++    void handle_printer_volume_changed(int value);
++    void handle_printer_volume_commit(int value);
++    void handle_printer_sound_selected(const std::string& event, int index);
++    void handle_printer_sound_play(const std::string& event);
++
++  protected:
++    void on_deactivating(DeactivateReason reason) override;
++
+   private:
+     void init_volume_slider();
+     void init_sound_theme_dropdown();
+     void init_audio_device_dropdown();
+ 
++    /// Whether the printer publishes the `ad5x_sound` object.
++    static bool printer_sounds_available();
++    /// Subscribe, query the object, follow Klipper's restarts.
++    void activate_printer_sounds();
++    void query_printer_sounds();
++    void merge_printer_sounds(const json& delta);
++    /// Controls from the cached object, except one the user is changing.
++    void apply_printer_sounds();
++    /// Sends @p gcode; @p changes_settings holds the controls until Klipper answers.
++    void send_printer_sounds(const std::string& gcode, bool changes_settings);
++    void set_printer_volume_text(int value);
++
+     /// Volume value label text
+     char volume_value_buf_[8]; // e.g., "100%"
++
++    SubjectManager subjects_;
++    lv_subject_t printer_sounds_available_subject_{};
++    lv_subject_t printer_sounds_enabled_subject_{};
++    lv_subject_t printer_volume_subject_{};
++    lv_subject_t printer_volume_text_subject_{};
++    lv_subject_t printer_sound_on_subjects_[kPrinterSoundEvents]{};
++    char printer_volume_text_buf_[8] = "";
++
++    json printer_sounds_ = json::object();
++    /// Sound files offered after "Off", in dropdown order
++    std::vector<std::string> printer_sound_files_;
++    bool printer_sounds_loaded_ = false;
++    bool printer_klippy_ready_ = true;
++    /// SOUND_SETUP commands not answered yet
++    int printer_sounds_pending_ = 0;
++
++    SubscriptionGuard printer_sounds_subscription_;
++    ObserverGuard printer_klippy_observer_;
+ };
+ 
+ inline SoundSettingsOverlay& get_sound_settings_overlay() {
+diff --git a/src/api/moonraker_discovery_sequence.cpp b/src/api/moonraker_discovery_sequence.cpp
+index 1b5220f..1e58015 100644
+--- a/src/api/moonraker_discovery_sequence.cpp
++++ b/src/api/moonraker_discovery_sequence.cpp
+@@ -1502,6 +1502,15 @@ json MoonrakerDiscoverySequence::build_subscription_objects(
+         }
+     }
+ 
++    // AD5X printer sounds (ui_settings_sound.cpp): the settings, the sound files
++    // and whether one plays; small and rarely changing, so the whole object.
++    {
++        const auto& objects = hw.printer_objects();
++        if (std::find(objects.begin(), objects.end(), "ad5x_sound") != objects.end()) {
++            subscription_objects["ad5x_sound"] = nullptr;
++        }
++    }
++
+     // Print start macros — only the boolean flags PrintStartCollector reads.
+     // Other variables on these macros (slicer args, profile names, etc.) are
+     // irrelevant to the start-detection logic.
+diff --git a/src/ui/ui_settings_sound.cpp b/src/ui/ui_settings_sound.cpp
+index a87ea22..b7581de 100644
+--- a/src/ui/ui_settings_sound.cpp
++++ b/src/ui/ui_settings_sound.cpp
+@@ -4,18 +4,33 @@
+ #include "ui_settings_sound.h"
+ 
+ #include "ui_callback_helpers.h"
++#include "ui_error_reporting.h"
+ #include "ui_event_safety.h"
+ #include "ui_sound_preview_overlay.h"
++#include "ui_update_queue.h"
+ 
+ #include "alsa_device_enum.h"
++#include "app_globals.h"
+ #include "audio_settings_manager.h"
+ #include "format_utils.h"
++#include "i_moonraker_api.h"
++#include "i_moonraker_client.h"
++#include "json_utils.h"
++#include "lvgl/src/others/translation/lv_translation.h"
++#include "observer_factory.h"
++#include "printer_discovery.h"
++#include "printer_state.h"
+ #include "sound_manager.h"
+ #include "ui/ui_widget_helpers.h"
+ 
++#include <spdlog/fmt/fmt.h>
+ #include <spdlog/spdlog.h>
+ 
++#include <algorithm>
++#include <cctype>
+ #include <cstdlib>
++#include <cstring>
++#include <iterator>
+ #include <string>
+ 
+ namespace helix::settings {
+@@ -36,8 +51,103 @@ int event_slider_value(lv_event_t* e) {
+     return lv_slider_get_value(lv_event_get_current_target_obj(e));
+ }
+ 
++// ----------------------------------------------------------------------------
++// AD5X printer sounds: the `ad5x_sound` Klipper object
++// ----------------------------------------------------------------------------
++
++constexpr const char* kPrinterSoundObject = "ad5x_sound";
++
++/// One print event: SOUND_SETUP parameter (upper-cased), its row in
++/// settings_sound_overlay.xml and the subject that enables its play button.
++struct PrinterSoundEvent {
++    const char* event;
++    const char* row;
++    const char* on_subject;
++};
++
++constexpr PrinterSoundEvent kPrinterSoundEventList[] = {
++    {"startup", "ad5x_sound_row_startup", "ad5x_sound_on_startup"},
++    {"start", "ad5x_sound_row_start", "ad5x_sound_on_start"},
++    {"complete", "ad5x_sound_row_complete", "ad5x_sound_on_complete"},
++    {"error", "ad5x_sound_row_error", "ad5x_sound_on_error"},
++    {"cancelled", "ad5x_sound_row_cancelled", "ad5x_sound_on_cancelled"},
++    {"paused", "ad5x_sound_row_paused", "ad5x_sound_on_paused"},
++    {"refill", "ad5x_sound_row_refill", "ad5x_sound_on_refill"},
++};
++static_assert(std::size(kPrinterSoundEventList) == SoundSettingsOverlay::kPrinterSoundEvents,
++              "one subject per printer sound event");
++
++int printer_sound_event_index(const std::string& event) {
++    for (int i = 0; i < static_cast<int>(std::size(kPrinterSoundEventList)); ++i) {
++        if (event == kPrinterSoundEventList[i].event) {
++            return i;
++        }
++    }
++    return -1;
++}
++
++/// File names are plain names ("complete.mid"); anything else never reaches a G-code line.
++bool safe_sound_file(const std::string& name) {
++    return !name.empty() && std::all_of(name.begin(), name.end(), [](unsigned char c) {
++        return std::isalnum(c) || c == '-' || c == '_' || c == '.';
++    });
++}
++
++std::string upper(std::string s) {
++    for (auto& c : s) {
++        c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
++    }
++    return s;
++}
++
++/// The event an event_cb was bound with (user_data="$event").
++std::string event_name(lv_event_t* e) {
++    const char* s = static_cast<const char*>(lv_event_get_user_data(e));
++    return s ? std::string(s) : std::string();
++}
++
+ } // namespace
+ 
++std::string ad5x_sound_file_label(const std::string& file) {
++    for (const char* ext : {".midi", ".mid"}) {
++        const size_t n = std::strlen(ext);
++        if (file.size() > n) {
++            std::string tail = file.substr(file.size() - n);
++            std::transform(tail.begin(), tail.end(), tail.begin(),
++                           [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
++            if (tail == ext) {
++                return file.substr(0, file.size() - n);
++            }
++        }
++    }
++    return file;
++}
++
++SoundSettingsOverlay::~SoundSettingsOverlay() {
++    deinit_subjects();
++}
++
++void SoundSettingsOverlay::init_subjects() {
++    init_subjects_guarded([this]() {
++        // 1 when the printer has the ad5x_sound object and a speaker: unhides the section
++        UI_MANAGED_SUBJECT_INT(printer_sounds_available_subject_, 0, "ad5x_sound_available",
++                               subjects_);
++        UI_MANAGED_SUBJECT_INT(printer_sounds_enabled_subject_, 0, "ad5x_sound_enabled", subjects_);
++        UI_MANAGED_SUBJECT_INT(printer_volume_subject_, 70, "ad5x_sound_volume", subjects_);
++        UI_MANAGED_SUBJECT_STRING(printer_volume_text_subject_, printer_volume_text_buf_, "",
++                                  "ad5x_sound_volume_text", subjects_);
++        // Per event: 1 when it plays a sound, which enables its play button
++        for (size_t i = 0; i < kPrinterSoundEvents; ++i) {
++            UI_MANAGED_SUBJECT_INT(printer_sound_on_subjects_[i], 0,
++                                   kPrinterSoundEventList[i].on_subject, subjects_);
++        }
++    });
++}
++
++void SoundSettingsOverlay::deinit_subjects() {
++    deinit_subjects_base(subjects_);
++}
++
+ void SoundSettingsOverlay::register_callbacks() {
+     register_xml_callbacks({
+         {"on_sounds_changed",
+@@ -66,6 +176,25 @@ void SoundSettingsOverlay::register_callbacks() {
+          [](lv_event_t*) { get_sound_settings_overlay().handle_preview_sounds(); }},
+         {"on_test_tracker",
+          [](lv_event_t*) { get_sound_settings_overlay().handle_test_tracker(); }},
++        {"on_ad5x_sound_enabled_changed",
++         [](lv_event_t* e) {
++             get_sound_settings_overlay().handle_printer_sounds_changed(event_checked(e));
++         }},
++        {"on_ad5x_sound_volume_changed",
++         [](lv_event_t* e) {
++             get_sound_settings_overlay().handle_printer_volume_changed(event_slider_value(e));
++         }},
++        {"on_ad5x_sound_volume_commit",
++         [](lv_event_t* e) {
++             get_sound_settings_overlay().handle_printer_volume_commit(event_slider_value(e));
++         }},
++        {"on_ad5x_sound_selected",
++         [](lv_event_t* e) {
++             get_sound_settings_overlay().handle_printer_sound_selected(event_name(e),
++                                                                        event_selected(e));
++         }},
++        {"on_ad5x_sound_play",
++         [](lv_event_t* e) { get_sound_settings_overlay().handle_printer_sound_play(event_name(e)); }},
+     });
+ }
+ 
+@@ -81,6 +210,15 @@ void SoundSettingsOverlay::on_activate() {
+         lv_obj_add_flag(container, LV_OBJ_FLAG_HIDDEN);
+     }
+ #endif
++
++    activate_printer_sounds();
++}
++
++void SoundSettingsOverlay::on_deactivating(DeactivateReason /*reason*/) {
++    printer_sounds_subscription_.reset();
++    printer_klippy_observer_.reset();
++    // Answers to commands still in flight are dropped with the lifetime token
++    printer_sounds_pending_ = 0;
+ }
+ 
+ // ============================================================================
+@@ -239,3 +377,253 @@ void SoundSettingsOverlay::handle_test_tracker() {
+ }
+ 
+ } // namespace helix::settings
++
++// ============================================================================
++// PRINTER SOUNDS (AD5X ad5x_sound object)
++// ============================================================================
++
++namespace helix::settings {
++
++bool SoundSettingsOverlay::printer_sounds_available() {
++    IMoonrakerAPI* api = get_moonraker_api();
++    if (!api) {
++        return false;
++    }
++    const auto& objects = api->hardware().printer_objects();
++    return std::find(objects.begin(), objects.end(), kPrinterSoundObject) != objects.end();
++}
++
++void SoundSettingsOverlay::activate_printer_sounds() {
++    printer_sounds_pending_ = 0;
++    if (!printer_sounds_available()) {
++        printer_sounds_loaded_ = false;
++        apply_printer_sounds();
++        return;
++    }
++    // The last object stays on screen until the query below replaces it
++
++    if (IMoonrakerAPI* api = get_moonraker_api()) {
++        const auto token = lifetime_.token();
++        // Runs on the WebSocket thread: copy the object out, apply it on the main thread.
++        const SubscriptionId id = api->subscribe_notifications([this, token](const json& note) {
++            const json* params = json_util::find_member(note, "params");
++            if (!params || !params->is_array() || params->empty()) {
++                return;
++            }
++            const json* obj = json_util::find_member((*params)[0], kPrinterSoundObject);
++            if (!obj || !obj->is_object()) {
++                return;
++            }
++            json delta = *obj;
++            token.defer("SoundSettingsOverlay::printer_sounds_update", [this, delta]() {
++                merge_printer_sounds(delta);
++                apply_printer_sounds();
++            });
++        });
++        printer_sounds_subscription_ = SubscriptionGuard(api, id);
++    }
++
++    // A Klipper restart brings the object back, maybe with other sound files
++    printer_klippy_observer_ = ui::observe<int>(
++        get_printer_state().network_state().get_klippy_state_subject(), this,
++        [](SoundSettingsOverlay* self, int state) {
++            const bool ready = static_cast<KlippyState>(state) == KlippyState::READY;
++            if (!ready) {
++                self->printer_sounds_loaded_ = false;
++            } else if (!self->printer_klippy_ready_) {
++                self->query_printer_sounds();
++            }
++            self->printer_klippy_ready_ = ready;
++            self->apply_printer_sounds();
++        },
++        get_printer_state().get_subjects_lifetime());
++
++    query_printer_sounds();
++    apply_printer_sounds();
++}
++
++void SoundSettingsOverlay::query_printer_sounds() {
++    IMoonrakerClient* client = get_moonraker_client();
++    if (!client || client->get_connection_state() != ConnectionState::CONNECTED) {
++        return;
++    }
++    const auto token = lifetime_.token();
++    json params = {{"objects", {{kPrinterSoundObject, nullptr}}}};
++    client->send_jsonrpc(
++        "printer.objects.query", params,
++        [this, token](const json& response) {
++            const json* result = json_util::find_member(response, "result");
++            const json* status = result ? json_util::find_member(*result, "status") : nullptr;
++            const json* obj = status ? json_util::find_member(*status, kPrinterSoundObject) : nullptr;
++            if (!obj || !obj->is_object()) {
++                return;
++            }
++            json full = *obj;
++            token.defer("SoundSettingsOverlay::printer_sounds_query", [this, full]() {
++                printer_sounds_ = full;
++                printer_sounds_loaded_ = true;
++                apply_printer_sounds();
++            });
++        },
++        [](const MoonrakerError& err) {
++            spdlog::debug("[Sound] {} query failed: {}", kPrinterSoundObject, err.message);
++        },
++        0, /*silent=*/true);
++}
++
++void SoundSettingsOverlay::merge_printer_sounds(const json& delta) {
++    // Deltas only patch a full object; the query in flight brings one
++    if (!printer_sounds_loaded_ || !printer_sounds_.is_object()) {
++        return;
++    }
++    for (auto it = delta.begin(); it != delta.end(); ++it) {
++        printer_sounds_[it.key()] = it.value();
++    }
++}
++
++void SoundSettingsOverlay::set_printer_volume_text(int value) {
++    helix::format::format_percent(value, printer_volume_text_buf_,
++                                  sizeof(printer_volume_text_buf_));
++    lv_subject_copy_string(&printer_volume_text_subject_, printer_volume_text_buf_);
++}
++
++void SoundSettingsOverlay::apply_printer_sounds() {
++    if (!subjects_initialized_) {
++        return;
++    }
++    const bool available = printer_sounds_loaded_ && printer_klippy_ready_ &&
++                           json_util::safe_bool(printer_sounds_, "speaker");
++    lv_subject_set_int(&printer_sounds_available_subject_, available ? 1 : 0);
++    // While Klipper has not answered a change, the controls keep what the user set
++    if (!available || printer_sounds_pending_ > 0) {
++        return;
++    }
++
++    lv_subject_set_int(&printer_sounds_enabled_subject_,
++                       json_util::safe_bool(printer_sounds_, "enabled") ? 1 : 0);
++
++    const int volume = std::clamp(json_util::safe_int(printer_sounds_, "volume", 70), 0, 100);
++    lv_obj_t* slider =
++        overlay_root_ ? find_required(overlay_root_, "ad5x_sound_volume_slider", get_name())
++                      : nullptr;
++    // Not under the user's finger
++    if (!slider || !lv_obj_has_state(slider, LV_STATE_PRESSED)) {
++        lv_subject_set_int(&printer_volume_subject_, volume);
++        set_printer_volume_text(volume);
++    }
++
++    printer_sound_files_.clear();
++    if (const json* files = json_util::find_member(printer_sounds_, "files");
++        files && files->is_array()) {
++        for (const auto& f : *files) {
++            std::string name = json_util::as_string(f);
++            if (safe_sound_file(name)) {
++                printer_sound_files_.push_back(std::move(name));
++            }
++        }
++    }
++    std::string options = lv_tr("Off");
++    for (const auto& f : printer_sound_files_) {
++        options += "\n";
++        options += ad5x_sound_file_label(f);
++    }
++
++    const json* events = json_util::find_member(printer_sounds_, "events");
++    for (size_t i = 0; i < kPrinterSoundEvents; ++i) {
++        const PrinterSoundEvent& ev = kPrinterSoundEventList[i];
++        const std::string file =
++            events && events->is_object() ? json_util::safe_string(*events, ev.event) : "";
++        const auto found = std::find(printer_sound_files_.begin(), printer_sound_files_.end(), file);
++        // A file that is gone plays nothing: shown as Off
++        const int selected = found == printer_sound_files_.end()
++                                 ? 0
++                                 : static_cast<int>(found - printer_sound_files_.begin()) + 1;
++        lv_subject_set_int(&printer_sound_on_subjects_[i], selected > 0 ? 1 : 0);
++
++        lv_obj_t* row = overlay_root_ ? find_required(overlay_root_, ev.row, get_name()) : nullptr;
++        lv_obj_t* dropdown = row ? find_required(row, "dropdown", get_name()) : nullptr;
++        // Not while its list is open
++        if (!dropdown || lv_dropdown_is_open(dropdown)) {
++            continue;
++        }
++        const char* current = lv_dropdown_get_options(dropdown);
++        if (!current || options != current) {
++            lv_dropdown_set_options(dropdown, options.c_str());
++        }
++        if (static_cast<int>(lv_dropdown_get_selected(dropdown)) != selected) {
++            lv_dropdown_set_selected(dropdown, static_cast<uint32_t>(selected));
++        }
++    }
++}
++
++void SoundSettingsOverlay::send_printer_sounds(const std::string& gcode, bool changes_settings) {
++    IMoonrakerAPI* api = get_moonraker_api();
++    if (!api) {
++        return;
++    }
++    spdlog::info("[{}] {}", get_name(), gcode);
++    if (changes_settings) {
++        ++printer_sounds_pending_;
++    }
++
++    // Klipper's answer releases the controls; a fresh query then shows what it kept
++    const auto token = lifetime_.token();
++    auto settle = [this, changes_settings]() {
++        if (!changes_settings) {
++            return;
++        }
++        if (printer_sounds_pending_ > 0) {
++            --printer_sounds_pending_;
++        }
++        if (printer_sounds_pending_ == 0) {
++            query_printer_sounds();
++        }
++    };
++    api->execute_gcode(
++        gcode,
++        [token, settle]() { token.defer("SoundSettingsOverlay::printer_sounds_done", settle); },
++        [token, settle](const MoonrakerError& err) {
++            const std::string message = err.message;
++            helix::ui::queue_update("SoundSettingsOverlay::printer_sounds_error",
++                                    [message]() { NOTIFY_WARNING("{}", message); });
++            token.defer("SoundSettingsOverlay::printer_sounds_error", settle);
++        },
++        0, /*silent=*/false, /*on_queued=*/nullptr, /*caller_surfaces_errors=*/true);
++}
++
++void SoundSettingsOverlay::handle_printer_sounds_changed(bool enabled) {
++    lv_subject_set_int(&printer_sounds_enabled_subject_, enabled ? 1 : 0);
++    send_printer_sounds(fmt::format("SOUND_SETUP ENABLE={}", enabled ? 1 : 0), true);
++}
++
++void SoundSettingsOverlay::handle_printer_volume_changed(int value) {
++    // Per drag tick: readout only. The release sends it.
++    set_printer_volume_text(value);
++}
++
++void SoundSettingsOverlay::handle_printer_volume_commit(int value) {
++    value = std::clamp(value, 0, 100);
++    set_printer_volume_text(value);
++    send_printer_sounds(fmt::format("SOUND_SETUP VOLUME={}", value), true);
++}
++
++void SoundSettingsOverlay::handle_printer_sound_selected(const std::string& event, int index) {
++    const int i = printer_sound_event_index(event);
++    if (i < 0 || index < 0 || index > static_cast<int>(printer_sound_files_.size())) {
++        spdlog::warn("[{}] Printer sound {} index {} out of range", get_name(), event, index);
++        apply_printer_sounds();
++        return;
++    }
++    const std::string file = index == 0 ? "0" : printer_sound_files_[index - 1];
++    lv_subject_set_int(&printer_sound_on_subjects_[i], index > 0 ? 1 : 0);
++    send_printer_sounds(fmt::format("SOUND_SETUP {}={}", upper(event), file), true);
++}
++
++void SoundSettingsOverlay::handle_printer_sound_play(const std::string& event) {
++    if (printer_sound_event_index(event) < 0) {
++        return;
++    }
++    send_printer_sounds(fmt::format("PLAY_SOUND EVENT={}", event), false);
++}
++
++} // namespace helix::settings
+diff --git a/ui_xml/components/ad5x_sound_event_row.xml b/ui_xml/components/ad5x_sound_event_row.xml
+new file mode 100644
+index 0000000..c34ac6a
+--- /dev/null
++++ b/ui_xml/components/ad5x_sound_event_row.xml
+@@ -0,0 +1,35 @@
++<?xml version="1.0"?>
++<!-- SPDX-License-Identifier: GPL-3.0-or-later -->
++<!-- One print event in Sound > Printer Sounds on the AD5X: its name, the sound it -->
++<!-- plays (Off or one of the printer's sound files) and a button that plays it. -->
++<!-- SoundSettingsOverlay fills the dropdown from the ad5x_sound object. -->
++<component>
++  <api>
++    <!-- Event name as Klipper's ad5x_sound object knows it (startup, complete, ...) -->
++    <prop name="event" type="string" default=""/>
++    <prop name="label" type="string" default=""/>
++    <!-- Subject that is 1 when the event plays a sound: enables the play button -->
++    <prop name="on_subject" type="string" default=""/>
++  </api>
++  <styles>
++    <style name="pad_standard"
++           pad_left="#space_lg" pad_right="#space_lg" pad_top="#space_md" pad_bottom="#space_md" pad_gap="#space_sm"/>
++    <style name="pad_micro"
++           pad_left="#space_md" pad_right="#space_md" pad_top="#space_sm" pad_bottom="#space_sm" pad_gap="#space_sm"/>
++  </styles>
++  <view name="ad5x_sound_event_row"
++        extends="lv_obj" width="100%" height="content" flex_flow="row" style_flex_cross_place="center"
++        style_bg_opa="0" style_border_width="0" scrollable="false">
++    <bind_style_if_eq name="pad_micro" subject="ui_breakpoint" ref_value="0"/>
++    <bind_style_if_ge name="pad_standard" subject="ui_breakpoint" ref_value="1"/>
++    <text_body name="label" width="0" flex_grow="1" text="$label" long_mode="wrap"/>
++    <lv_dropdown name="dropdown" width="40%" height="content" options="" style_radius="#border_radius">
++      <event_cb trigger="value_changed" callback="on_ad5x_sound_selected" user_data="$event"/>
++    </lv_dropdown>
++    <ui_button name="play_btn"
++               width="#button_height_sm" height="#button_height_sm" icon="play" variant="secondary">
++      <bind_state_if_eq subject="$on_subject" state="disabled" ref_value="0"/>
++      <event_cb trigger="clicked" callback="on_ad5x_sound_play" user_data="$event"/>
++    </ui_button>
++  </view>
++</component>
+diff --git a/ui_xml/settings_sound_overlay.xml b/ui_xml/settings_sound_overlay.xml
+index a78d838..9616741 100644
+--- a/ui_xml/settings_sound_overlay.xml
++++ b/ui_xml/settings_sound_overlay.xml
+@@ -2,6 +2,7 @@
+ <!-- Copyright (C) 2025-2026 356C LLC -->
+ <!-- SPDX-License-Identifier: GPL-3.0-or-later -->
+ <!-- Sound Settings Overlay: master toggle, volume, UI sounds, theme, output device -->
++<!-- AD5X: printer sounds (the ad5x_sound Klipper object), when the printer has a speaker -->
+ <!-- Uses setting_* components for consistency with main settings panel -->
+ <component>
+   <styles>
+@@ -10,6 +11,12 @@
+     <style name="content_micro" pad_top="0" pad_left="0" pad_right="0" pad_bottom="#space_sm"/>
+     <style name="spacer_standard" height="#space_lg"/>
+     <style name="spacer_micro" height="#space_md"/>
++    <style name="row_pad_standard"
++           pad_left="#space_lg" pad_right="#space_lg" pad_top="#space_lg" pad_bottom="#space_lg" pad_gap="#space_xs"/>
++    <style name="row_pad_micro"
++           pad_left="#space_md" pad_right="#space_md" pad_top="#space_lg" pad_bottom="#space_lg" pad_gap="#space_xs"/>
++    <style name="slider_standard" pad_top="#space_sm" pad_bottom="#space_sm" margin_top="#space_xs"/>
++    <style name="slider_micro" pad_top="#space_xs" pad_bottom="#space_xs" margin_top="0"/>
+   </styles>
+   <view name="settings_sound_overlay" extends="overlay_panel" title="Sound" bg_color="#screen_bg">
+     <!-- Content Area - no padding, rows handle their own -->
+@@ -71,6 +78,70 @@
+                               callback="on_test_tracker"/>
+         </lv_obj>
+       </setting_group>
++      <!-- AD5X printer sounds: what Klipper plays on the printer's speaker for print
++           events. Every change is a SOUND_SETUP command; SoundSettingsOverlay keeps
++           the controls in step with the ad5x_sound object. -->
++      <setting_group name="group_printer_sounds">
++        <bind_flag_if_eq subject="ad5x_sound_available" flag="hidden" ref_value="0"/>
++        <setting_group_header title="PRINTER SOUNDS"/>
++        <setting_toggle_row name="row_printer_sounds"
++                            label="Printer Sounds" icon="printer" description="Sounds the printer plays on print events"
++                            subject="ad5x_sound_enabled" callback="on_ad5x_sound_enabled_changed"/>
++        <!-- Volume and events (hidden when printer sounds are off) -->
++        <lv_obj name="container_printer_sounds"
++                width="100%" height="content" style_pad_all="0" flex_flow="column" style_bg_opa="0"
++                style_border_width="0" scrollable="false">
++          <bind_flag_if_eq subject="ad5x_sound_enabled" flag="hidden" ref_value="0"/>
++          <!-- Volume: the readout follows the drag, the release sends it -->
++          <lv_obj name="row_printer_volume"
++                  width="100%" height="content" flex_flow="column" style_bg_opa="0" style_border_width="0"
++                  scrollable="false">
++            <bind_style_if_eq name="row_pad_micro" subject="ui_breakpoint" ref_value="0"/>
++            <bind_style_if_ge name="row_pad_standard" subject="ui_breakpoint" ref_value="1"/>
++            <lv_obj width="100%"
++                    height="content" flex_flow="row" style_flex_main_place="space_between"
++                    style_flex_cross_place="center" style_pad_all="0" style_bg_opa="0" style_border_width="0"
++                    scrollable="false">
++              <lv_obj width="content"
++                      height="content" flex_flow="row" style_flex_cross_place="center" style_pad_gap="#space_sm"
++                      style_pad_all="0" style_bg_opa="0" style_border_width="0" scrollable="false">
++                <icon src="volume_high" size="sm" variant="secondary"/>
++                <text_body text="Printer Volume"/>
++              </lv_obj>
++              <text_muted name="ad5x_sound_volume_value" bind_text="ad5x_sound_volume_text"/>
++            </lv_obj>
++            <lv_obj width="100%"
++                    height="content" flex_flow="row" style_flex_cross_place="center" style_pad_left="0"
++                    style_pad_right="0" style_pad_gap="#space_sm" style_bg_opa="0" style_border_width="0"
++                    scrollable="false">
++              <bind_style_if_eq name="slider_micro" subject="ui_breakpoint" ref_value="0"/>
++              <bind_style_if_ge name="slider_standard" subject="ui_breakpoint" ref_value="1"/>
++              <icon src="volume_off" size="xs" variant="secondary"/>
++              <lv_slider name="ad5x_sound_volume_slider"
++                         flex_grow="1" min_value="0" max_value="100" bind_value="ad5x_sound_volume">
++                <event_cb trigger="value_changed" callback="on_ad5x_sound_volume_changed"/>
++                <event_cb trigger="released" callback="on_ad5x_sound_volume_commit"/>
++              </lv_slider>
++              <icon src="volume_high" size="xs" variant="secondary"/>
++            </lv_obj>
++          </lv_obj>
++          <!-- One row per print event: sound and play button -->
++          <ad5x_sound_event_row name="ad5x_sound_row_startup"
++                                event="startup" label="Power On" on_subject="ad5x_sound_on_startup"/>
++          <ad5x_sound_event_row name="ad5x_sound_row_start"
++                                event="start" label="Print Started" on_subject="ad5x_sound_on_start"/>
++          <ad5x_sound_event_row name="ad5x_sound_row_complete"
++                                event="complete" label="Print Finished" on_subject="ad5x_sound_on_complete"/>
++          <ad5x_sound_event_row name="ad5x_sound_row_error"
++                                event="error" label="Print Failed" on_subject="ad5x_sound_on_error"/>
++          <ad5x_sound_event_row name="ad5x_sound_row_cancelled"
++                                event="cancelled" label="Print Cancelled" on_subject="ad5x_sound_on_cancelled"/>
++          <ad5x_sound_event_row name="ad5x_sound_row_paused"
++                                event="paused" label="Print Paused" on_subject="ad5x_sound_on_paused"/>
++          <ad5x_sound_event_row name="ad5x_sound_row_refill"
++                                event="refill" label="Filament Auto-Refill" on_subject="ad5x_sound_on_refill"/>
++        </lv_obj>
++      </setting_group>
+       <!-- Bottom padding for scroll -->
+       <lv_obj width="100%" scrollable="false">
+         <bind_style_if_eq name="spacer_micro" subject="ui_breakpoint" ref_value="0"/>
+-- 
+2.56.0

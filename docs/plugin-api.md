@@ -6,7 +6,13 @@ update.
 
 ## Version
 
-Current: **1.3** (1.3, 2026-10-20: additions only: a plugin's
+Current: **1.4** (1.4, 2026-10-20: additions only: the plugin catalog
+and `INSTALL_PLUGIN`, `UPDATE_PLUGIN`, `REMOVE_PLUGIN`;
+`printer.ad5x_plugins` `catalog`, `job`; Moonraker restarts by itself when
+a switch changes its plugin parts; the bed heat soak: `BED_SOAK_CALIBRATE`,
+`PRINT_START SOAK=`, `printer.ad5x_soak`; the speaker: `M300`,
+`PLAY_MIDI`, `PLAY_SOUND`, `SOUND_STOP`, `SOUND_SETUP`, `printer.ad5x_sound`.
+1.3, 2026-10-20: additions only: a plugin's
 `python/` libraries (Klipper and Moonraker) and `moonraker/components/`
 (Moonraker components), and `git` on the printer for installing plugins.
 1.2, 2026-10-20: additions only: the Klipper event
@@ -23,7 +29,7 @@ files instead of the image.)
 
 - In Klipper: `printer.ad5x_plugins.api_version` (also printed by
   `LIST_PLUGINS`).
-- On the system: `AD5X_PLUGIN_API="1.3"` in `/usr/lib/os-release`
+- On the system: `AD5X_PLUGIN_API="1.4"` in `/usr/lib/os-release`
   (`/etc/os-release`), for scripts.
 - In the code: `PLUGIN_API_VERSION` in `klipper/extras/ad5x_plugins.py`
   (the build copies it to os-release).
@@ -135,8 +141,8 @@ plugin is enabled and compatible:
   components when a `[<name>]` section names it (the plugin's
   `moonraker.conf` can hold that section). A name Moonraker already has
   is Moonraker's.
-- Moonraker sees changes at its next start (reboot, or
-  `/etc/init.d/S62moonraker restart`).
+- Moonraker is restarted when a switch changes these (1.4; before: at its
+  next start).
 
 Rules for plugins:
 
@@ -210,6 +216,12 @@ printer` before calling one.
 | `WEIGHT_TARE`, `LOAD_CELL_TARE` | | Zero the bed strain gauges |
 | `LOAD_FILAMENT`, `UNLOAD_FILAMENT`, `CLEAR_NOZZLE`, `AUTO_FULL_BED_LEVEL` | as in macros/ `quick_actions.cfg` | Screen quick actions |
 | `_PRINT_STATUS` | `MSG=` (none: clear) | Status line on the screen (`M117`) and the console |
+| `M300` | `[S=Hz]` `[P=ms]` (1.4): a beep on the speaker |
+| `PLAY_MIDI` | `FILE=` (1.4): a MIDI file from the config folder's `midi/` or the image's sounds |
+| `PLAY_SOUND`, `SOUND_STOP` | `EVENT=` startup\|start\|complete\|error\|cancelled\|paused\|refill (1.4) |
+| `SOUND_SETUP` | `[ENABLE=0\|1]` `[VOLUME=0-100]` `[<EVENT>=<file>\|0]` (1.4) |
+| `BED_SOAK_CALIBRATE` | `BED=` `[POINTS=5\|1]` `[NOZZLE=140]` `[INTERVAL=]` `[STABLE=0.005]` `[WINDOW=120]` `[MAX=1500]` `[FORCE=1]` (1.4): measure the bed's settling after heating (`docs/print-start.md`) |
+| `BED_SOAK_START`, `BED_SOAK_WAIT` | `PRINT_START`'s soak (1.4; `BED=` `FROM=` `[SECONDS=]` `[MODE=time\|probe]` `[POINTS=]`) |
 | `CONFIG_BACKUPS` | `ACK=1` (clear the notice) | List `macros/` files an update replaced and the backups of edited ones |
 | `G10`, `G11`, `SET_RETRACTION` | Klipper's `[firmware_retraction]` | |
 | `G2`, `G3`, `G17`-`G19` | Klipper's `[gcode_arcs]` | |
@@ -262,17 +274,21 @@ save variable: 0 or 2 = prime only, other = purge; else purge.
 | `SETUP_WIZARD` | Run the wizard again on the screen (macros/ `quick_actions.cfg`; `SETUP_WIZARD_STEP ACTION=wizard` does the same) |
 | `ENABLE_PLUGIN`, `DISABLE_PLUGIN` | `NAME=` `[RESTART=0]` |
 | `LIST_PLUGINS` | |
+| `INSTALL_PLUGIN` | `NAME=` (a catalog plugin) `[ENABLE=1]` (1.4) |
+| `UPDATE_PLUGIN`, `REMOVE_PLUGIN` | `NAME=` (a plugin in `/data/ad5x/plugins`) (1.4) |
 
 ## Printer objects and status fields
 
 | Object | Fields |
 |---|---|
 | `printer.ifs` | `connected`, `version`, `busy`, `channel` (loaded, 0 none), `state`, `selected`, `inserted[4]`, `colors[4]`, `channel_count`, `active_channel`, `loaded_channels`, `pending_insert_channels`, `activity`, `activity_channel`, `error`, `tool_map` (`"0"`-`"3"` -> slot), `tune`, `auto_refill`, `refill` (1.2: last auto-refill message) |
+| `printer.ad5x_sound` | `speaker`, `enabled`, `volume`, `events` (event -> file, "" off), `files`, `playing` (1.4) |
+| `printer.ad5x_soak` | `calibration` (1.4: per bed temperature `settle`, `drift`, `warp`, `points`, `from`, `stable`, `date`), `running`, `soak`, `last` |
 | `printer.ad5x_resume` | `available`, `file`, `z`, `time` (1.2: an interrupted print) |
 | `printer.ifs_materials` | `available`, `channel_count`, `slots` (`"1"`-`"4"`: `type`, `color`, `temp`), `loaded`, `temperatures` |
 | `printer.ad5x_setup` | `step`, `state`, `message`, `progress`, `results`, `checks`, `pending_save`, `zoffset` |
 | `printer.ad5x_config` | `notices` (lines of `config-updates.txt`), `backups` (`macros/*.bak-*`) |
-| `printer.ad5x_plugins` | `api_version`, `enabled`, `available` (per plugin: `source`, `description`, `version`, `author`, `url`, `requires_os`, `compatible`), `warnings` |
+| `printer.ad5x_plugins` | `api_version`, `enabled`, `available` (per plugin: `source`, `description`, `version`, `author`, `url`, `requires_os`, `compatible`), `catalog` (1.4, per plugin: `title`, `description`, `url`, `requires_os`, `compatible`, `installed`), `job` (1.4: `name`, `action`, `state` idle/running/done/failed, `message`), `warnings` |
 | `printer.ad5x_weight` | `connected`, `weight` |
 | `printer['gcode_macro _AD5X_UNIT']` | `z_offset`, `cut_x_offset`, `cut_y_offset`, `x_offset`, `y_offset` (purge box at X 52.5 + `x_offset`, Y 229 + `y_offset`; cut at X `cut_x_offset` - 2.5, Y `cut_y_offset` - 7.5) |
 | `printer['filament_switch_sensor toolhead']` | Klipper's runout fields (`enabled`, `filament_detected`); also `adc_filament_sensor toolhead`; `SET_FILAMENT_SENSOR SENSOR=toolhead` |

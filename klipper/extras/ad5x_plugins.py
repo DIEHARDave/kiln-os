@@ -33,7 +33,15 @@
 # moonraker/components/ (Moonraker components) directories (plugin API
 # 1.3): Klipper gets python/ on sys.path before the extras load;
 # "ad5x_plugins.py env" prints both lists for S62moonraker, which passes
-# them to Moonraker (our patch to its components package). See
+# them to Moonraker (our patch to its components package).
+#
+# Catalog (plugin API 1.4): the plugins in their own repositories this
+# release offers (/usr/share/ad5x/plugin-catalog.json, tested by the
+# builder). INSTALL_PLUGIN NAME= [ENABLE=1] clones one into user_dir,
+# UPDATE_PLUGIN pulls it, REMOVE_PLUGIN disables and deletes it; git runs
+# in the background (printer.ad5x_plugins.job). When a switch changes what
+# Moonraker loads, the root update agent (S68ad5x-update-agent) restarts
+# Moonraker. HelixScreen's Settings > Plugins uses these. See
 # docs/plugins.md and docs/plugin-api.md.
 #
 # Copyright (C) 2026  ad5x-open contributors
@@ -44,16 +52,22 @@ import json
 import logging
 import os
 import re
+import shutil
+import subprocess
 import sys
 
 # The plugin API this system offers (docs/plugin-api.md): major.minor.
 # Minor: additions only. Major: something plugins may use changed or went.
 # post-build.sh copies it to /usr/lib/os-release as AD5X_PLUGIN_API.
-PLUGIN_API_VERSION = "1.3"
+PLUGIN_API_VERSION = "1.4"
 
 CONFIG_DIR = "/home/klipper/printer_data/config"
 SHIPPED_DIR = "/usr/share/ad5x/plugins"
 USER_DIR = "/data/ad5x/plugins"
+CATALOG_FILE = "/usr/share/ad5x/plugin-catalog.json"
+# Picked up by S68ad5x-update-agent (root), which restarts Moonraker
+MOONRAKER_RESTART_FILE = "/data/ad5x/kiln-update/restart-moonraker"
+GIT_TIMEOUT = 600.
 
 NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,47}$")
 MODULE_RE = re.compile(r"^[a-z][a-z0-9_]*$")
@@ -210,6 +224,36 @@ def env_text(names, found):
     return "AD5X_PLUGIN_PYTHON='%s'\nAD5X_MOONRAKER_COMPONENTS='%s'\n" % (
         ":".join(python), ":".join(components))
 
+def read_catalog(path):
+    """name -> {title, description, url, requires_os} of the catalog's
+    valid entries (https git URLs; file:// for tests); a missing file is
+    empty."""
+    try:
+        with open(path) as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        return {}
+    out = {}
+    entries = data.get('plugins') if isinstance(data, dict) else None
+    for p in entries if isinstance(entries, list) else []:
+        if not isinstance(p, dict):
+            continue
+        name, url = p.get('name'), p.get('url')
+        if not isinstance(name, str) or not NAME_RE.match(name) or \
+                not isinstance(url, str) or \
+                not url.startswith(('https://', 'file://')):
+            continue
+        out[name] = {'title': str(p.get('title') or name),
+                     'description': str(p.get('description') or ''),
+                     'url': url,
+                     'requires_os': str(p.get('requires_os') or '')}
+    return out
+
+def touches_moonraker(info):
+    """A plugin whose switch changes what Moonraker loads."""
+    return bool(info) and (info['moonraker'] or info['python']
+                           or info['components'])
+
 def write_if_changed(path, text):
     """Write text atomically unless the file already holds it. True if
     written."""
@@ -236,6 +280,13 @@ class AD5XPlugins:
                                            'moonraker-plugins.conf'))
         self.shipped_dir = config.get('shipped_dir', SHIPPED_DIR)
         self.user_dir = config.get('user_dir', USER_DIR)
+        self.catalog_file = config.get('catalog_file', CATALOG_FILE)
+        self.restart_file = config.get('moonraker_restart_file',
+                                       MOONRAKER_RESTART_FILE)
+        self.catalog = read_catalog(self.catalog_file)
+        self.job = {'name': '', 'action': '', 'state': 'idle',
+                    'message': ''}
+        self.proc = None
         self.found = scan(self.shipped_dir, self.user_dir)
         # Enabled at this start (plugins.cfg as Klipper read it)
         self.loaded = read_enabled(self.plugins_file)[0]
@@ -250,6 +301,9 @@ class AD5XPlugins:
         for cmd in ("ENABLE_PLUGIN", "DISABLE_PLUGIN", "LIST_PLUGINS"):
             self.gcode.register_command(cmd, getattr(self, "cmd_" + cmd),
                                         when_not_ready=True,
+                                        desc=getattr(self, "cmd_%s_help" % cmd))
+        for cmd in ("INSTALL_PLUGIN", "UPDATE_PLUGIN", "REMOVE_PLUGIN"):
+            self.gcode.register_command(cmd, getattr(self, "cmd_" + cmd),
                                         desc=getattr(self, "cmd_%s_help" % cmd))
     # Startup
     def _warn(self, msg):
@@ -379,14 +433,184 @@ class AD5XPlugins:
             names = self._write_enabled(enable, disable)
         except OSError as e:
             raise gcmd.error("Can't write %s: %s" % (self.plugins_file, e))
-        if self._write_moonraker(names):
-            gcmd.respond_info("The Moonraker part changes when Moonraker "
-                              "restarts (reboot)")
+        changed = self._write_moonraker(names)
+        if changed or any(touches_moonraker(self.found.get(n))
+                          for n in list(enable) + list(disable)):
+            self._restart_moonraker(gcmd)
         if gcmd.get_int('RESTART', 1):
             gcmd.respond_info("Restarting Klipper")
             self.gcode.run_script_from_command("RESTART")
         else:
             gcmd.respond_info("Takes effect at the next RESTART")
+    def _restart_moonraker(self, gcmd=None):
+        """Ask the root update agent to restart Moonraker (it reads the
+        plugins' Moonraker parts at its start)."""
+        try:
+            with open(self.restart_file, "w") as f:
+                f.write("plugins\n")
+            msg = "Moonraker restarts for the plugin's Moonraker part"
+        except OSError as e:
+            logging.info("ad5x_plugins: %s: %s", self.restart_file, e)
+            msg = "The Moonraker part changes when Moonraker restarts (reboot)"
+        if gcmd is not None:
+            gcmd.respond_info(msg)
+        else:
+            self.gcode.respond_info(msg)
+    # Catalog plugins: git in the background
+    def _catalog_entry(self, gcmd):
+        name = gcmd.get('NAME').strip().lower()
+        self.catalog = read_catalog(self.catalog_file)
+        if name not in self.catalog:
+            raise gcmd.error("'%s' is not in the plugin catalog. Offered: %s"
+                             % (name, ", ".join(sorted(self.catalog))
+                                or "none"))
+        return name, self.catalog[name]
+    def _start_job(self, gcmd, name, action, argv, done):
+        if self.job['state'] == 'running':
+            raise gcmd.error("Busy: %s %s" % (self.job['action'],
+                                              self.job['name']))
+        env = dict(os.environ, GIT_TERMINAL_PROMPT='0')
+        env.setdefault('HOME', '/home/klipper')
+        try:
+            self.proc = subprocess.Popen(
+                argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT, env=env)
+        except OSError as e:
+            raise gcmd.error("Can't run git: %s" % (e,))
+        self.job = {'name': name, 'action': action, 'state': 'running',
+                    'message': "%s %s..." % (action, name)}
+        self.job_done = done
+        reactor = self.printer.get_reactor()
+        self.job_end = reactor.monotonic() + GIT_TIMEOUT
+        reactor.register_timer(self._poll_job, reactor.monotonic() + .5)
+        gcmd.respond_info(self.job['message'])
+    def _poll_job(self, eventtime):
+        rc = self.proc.poll()
+        if rc is None:
+            if eventtime < self.job_end:
+                return eventtime + .5
+            self.proc.kill()
+            rc = self.proc.wait()
+            out = "timed out"
+        else:
+            out = self.proc.stdout.read().decode('utf-8', 'replace')
+        self.proc.stdout.close()
+        self.proc = None
+        try:
+            msg = self.job_done(rc, out.strip())
+            state = 'done'
+        except Exception as e:
+            msg, state = str(e), 'failed'
+        self.job.update({'state': state, 'message': msg})
+        self.gcode.respond_info("%s %s: %s" % (self.job['action'],
+                                               self.job['name'], msg))
+        return self.printer.get_reactor().NEVER
+    def _restart_after(self, info, msg):
+        """Restart what a changed enabled plugin needs; returns msg."""
+        if touches_moonraker(info):
+            self._restart_moonraker()
+        self.gcode.run_script("RESTART")
+        return msg + "; restarting Klipper"
+    cmd_INSTALL_PLUGIN_help = ("Install a plugin from the catalog: NAME= "
+                               "[ENABLE=1]")
+    def cmd_INSTALL_PLUGIN(self, gcmd):
+        name, entry = self._catalog_entry(gcmd)
+        enable = gcmd.get_int('ENABLE', 0)
+        dest = os.path.join(self.user_dir, name)
+        if os.path.exists(dest):
+            raise gcmd.error("Plugin %s is installed already "
+                             "(UPDATE_PLUGIN / REMOVE_PLUGIN)" % (name,))
+        if not api_compatible(entry['requires_os']):
+            raise gcmd.error("Plugin %s needs plugin API %s; this system "
+                             "has %s" % (name, entry['requires_os'],
+                                         PLUGIN_API_VERSION))
+        if enable:
+            self._check_idle(gcmd)
+        tmp = os.path.join(self.user_dir, ".install-" + name)
+        shutil.rmtree(tmp, ignore_errors=True)
+        def done(rc, out):
+            if rc != 0:
+                shutil.rmtree(tmp, ignore_errors=True)
+                raise Exception("git clone failed: %s" % (out[-300:],))
+            meta = read_metadata(tmp, name)
+            if meta['error']:
+                shutil.rmtree(tmp, ignore_errors=True)
+                raise Exception("not a valid plugin: %s" % (meta['error'],))
+            os.rename(tmp, dest)
+            self.found = scan(self.shipped_dir, self.user_dir)
+            if enable:
+                self.gcode.run_script("ENABLE_PLUGIN NAME=%s" % (name,))
+                return "installed and enabled"
+            return "installed (ENABLE_PLUGIN NAME=%s)" % (name,)
+        try:
+            os.makedirs(self.user_dir, exist_ok=True)
+        except OSError as e:
+            raise gcmd.error("Can't create %s: %s" % (self.user_dir, e))
+        self._start_job(gcmd, name, "install",
+                        ["git", "clone", "-q", entry['url'], tmp], done)
+    cmd_UPDATE_PLUGIN_help = "Update an installed plugin (git pull): NAME="
+    def cmd_UPDATE_PLUGIN(self, gcmd):
+        name = gcmd.get('NAME').strip().lower()
+        d = os.path.join(self.user_dir, name)
+        if not os.path.isdir(os.path.join(d, '.git')):
+            raise gcmd.error("Plugin %s isn't a git install in %s"
+                             % (name, self.user_dir))
+        on = name in read_enabled(self.plugins_file)[0]
+        if on:
+            self._check_idle(gcmd)
+        def head():
+            try:
+                return subprocess.check_output(
+                    ["git", "-C", d, "rev-parse", "--short", "HEAD"],
+                    stderr=subprocess.DEVNULL).decode().strip()
+            except (OSError, subprocess.CalledProcessError):
+                return "?"
+        before = head()
+        def done(rc, out):
+            if rc != 0:
+                raise Exception("git pull failed: %s" % (out[-300:],))
+            after = head()
+            self.found = scan(self.shipped_dir, self.user_dir)
+            if after == before:
+                return "up to date (%s)" % (after,)
+            msg = "updated %s -> %s" % (before, after)
+            if on:
+                return self._restart_after(self.found.get(name), msg)
+            return msg
+        self._start_job(gcmd, name, "update",
+                        ["git", "-C", d, "pull", "-q", "--ff-only"], done)
+    cmd_REMOVE_PLUGIN_help = "Disable and delete an installed plugin: NAME="
+    def cmd_REMOVE_PLUGIN(self, gcmd):
+        self.found = scan(self.shipped_dir, self.user_dir)
+        name = gcmd.get('NAME').strip().lower()
+        info = self.found.get(name)
+        d = os.path.join(self.user_dir, name)
+        if info is None or info['source'] != 'user' or not os.path.isdir(d):
+            raise gcmd.error("Plugin %s isn't installed in %s (shipped "
+                             "plugins can only be disabled)"
+                             % (name, self.user_dir))
+        if self.job['state'] == 'running' and self.job['name'] == name:
+            raise gcmd.error("Busy: %s %s" % (self.job['action'], name))
+        enabled = read_enabled(self.plugins_file)[0]
+        on = name in enabled
+        users = [n for n in enabled if n != name
+                 and name in self.found.get(n, {}).get('requires', ())]
+        if users:
+            raise gcmd.error("Plugin %s is needed by %s: disable that first"
+                             % (name, ", ".join(users)))
+        if on:
+            self._check_idle(gcmd)
+            names = self._write_enabled(disable=[name])
+        shutil.rmtree(d)
+        self.found = scan(self.shipped_dir, self.user_dir)
+        self.job = {'name': name, 'action': 'remove', 'state': 'done',
+                    'message': 'removed'}
+        gcmd.respond_info("Plugin %s removed" % (name,))
+        if on:
+            if self._write_moonraker(names) or touches_moonraker(info):
+                self._restart_moonraker(gcmd)
+            gcmd.respond_info("Restarting Klipper")
+            self.gcode.run_script_from_command("RESTART")
     cmd_ENABLE_PLUGIN_help = ("Enable a plugin and restart Klipper: NAME= "
                               "[RESTART=0]")
     def cmd_ENABLE_PLUGIN(self, gcmd):
@@ -476,6 +700,12 @@ class AD5XPlugins:
                                       'author', 'url', 'requires_os',
                                       'compatible')}
                 for n, i in self.found.items()},
+            'catalog': {
+                n: dict(e, compatible=api_compatible(e['requires_os']),
+                        installed=n in self.found
+                        and self.found[n]['source'] == 'user')
+                for n, e in self.catalog.items()},
+            'job': dict(self.job),
             'warnings': list(self.warnings)}
 
 def load_config(config):

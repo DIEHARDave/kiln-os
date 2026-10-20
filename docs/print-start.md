@@ -24,6 +24,7 @@ PRINT_START BED=[bed_temperature_initial_layer_single] EXTRUDER=[nozzle_temperat
 | `EXTRUDER` | 220 | Nozzle temperature |
 | `TOOL` | -1 | First slicer tool; loads IFS channel `tool_map[TOOL]` (`TOOL+1` unless `IFS_MAP_TOOL` changed it). -1 or no IFS: skipped |
 | `LEVEL` | `mesh_every_print` (1; factory: 0) | 1 = new bed mesh instead of the centre Z check, 0 = the stock check |
+| `SOAK` | the calibrated settle time for the nearest calibrated bed temperature (within 15 °C, scaled by how far the bed rose), else `soak_per_degree` 3 s per °C it rose; at most `soak_max` 300 s; 0 when the bed was within 5 °C of `BED` already | Bed heat soak in seconds before the Z check / mesh, counted from when the bed reached `BED` (the purge and brushing count). Set it when the slicer heats the bed (`M190`) before `PRINT_START` |
 | `ADAPTIVE` | `adaptive_mesh` (1; factory: 0) | 1 = the mesh covers only the print area (slicer object labels; whole bed without them). Not saved as a profile: the full `default` mesh stays |
 
 ## Steps (stock order)
@@ -35,6 +36,11 @@ PRINT_START BED=[bed_temperature_initial_layer_single] EXTRUDER=[nozzle_temperat
 3. Purge 90 mm at F300 with the fan off, fan S125 for 3 s, retract 3 mm,
    wipe (Y220/Y229 twice, end at Y220).
 4. Nozzle to 180, brush twice across the box (X65 to X78 at Y229).
+   Then the rest of the bed heat soak, if any ("Bed heat soak m:ss"): the
+   plate's surface keeps warming and growing after the sensor reads the
+   target, which would shift the Z check (e.g. a cold start to 80 °C:
+   180 s from reaching it, about 2 minutes of which the purge and
+   brushing already took).
 5. `_CHECK_Z` (see `docs/bed-weighing-board.md`): tare and probe the front
    edge, scrub the nozzle there while it cools to 140 (screen: "Cleaning
    nozzle on the bed edge"; it runs just above the edge, it isn't
@@ -71,6 +77,26 @@ colour or Prime line; cleared at the end.
 
 The print file follows. Slicer end G-code: `PRINT_END` (retract 2 mm, lift 10 mm, park at X107.5 Y215, heaters, fans and X/Y/E motors off). `CANCEL_PRINT` does the same after stopping the file. Stock's swap at the first `T<n>` and the end of the
 print are not part of this macro.
+
+## Bed heat soak (`klipper/extras/ad5x_soak.py`)
+
+The bed sensor reaches its target minutes before the plate's surface
+stops warming and growing; a Z check made at once is off by what is still
+to come. `BED_SOAK_CALIBRATE BED=80` measures it on this printer: from a
+cold bed (below 40 °C), nozzle held at 140 °C, it probes the centre and
+four points 30 mm in from the corners every 60 s until every point stayed
+within 0.005 mm for 2 minutes (at most 25 minutes), prints each round, and
+saves per temperature the settle time (slowest point), the centre's total
+change and the shape change (corners against the centre) in the save
+variable `ad5x_bed_soak` (`printer.ad5x_soak.calibration`). Run it once per
+bed temperature you use (60, 80, 100). `PRINT_START` then soaks that long
+after the bed is hot, minus the purge and brushing time.
+
+`soak_mode: "probe"` in `macros/print_start.cfg` instead probes until two
+readings 60 s apart agree within 0.005 mm (`soak_points` 1 or 5), at most
+the soak time. Two readings can't see what is still to come (on a bed
+settling like a measured one it stops with about 0.01 mm left) and the
+load cells' scatter limits it, so the calibrated time is the default.
 
 ## Not in the macro
 

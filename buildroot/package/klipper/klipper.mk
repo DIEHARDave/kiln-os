@@ -58,6 +58,13 @@ define KLIPPER_INSTALL_TARGET_CMDS
 	mkdir -p $(TARGET_DIR)/usr/share/ad5x/plugins
 	cp -r $(KLIPPER_AD5X)/plugins/. $(TARGET_DIR)/usr/share/ad5x/plugins/
 	chmod -R u=rwX,go=rX $(TARGET_DIR)/usr/share/ad5x/plugins
+	# The speaker's event sounds (ad5x_sound; tools/make_sounds.py)
+	rm -rf $(TARGET_DIR)/usr/share/ad5x/sounds
+	mkdir -p $(TARGET_DIR)/usr/share/ad5x/sounds
+	cp $(KLIPPER_AD5X)/sounds/*.mid $(TARGET_DIR)/usr/share/ad5x/sounds/
+	# Plugins in their own repositories this release offers (INSTALL_PLUGIN)
+	$(INSTALL) -D -m 0644 $(KLIPPER_AD5X)/plugin-catalog.json \
+		$(TARGET_DIR)/usr/share/ad5x/plugin-catalog.json
 	# First-boot templates, copied to printer_data/config once
 	$(INSTALL) -D -m 0644 $(KLIPPER_AD5X)/printer.cfg \
 		$(TARGET_DIR)/usr/share/ad5x/defaults/printer.cfg

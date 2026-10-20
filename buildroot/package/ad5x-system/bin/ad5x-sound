@@ -1,0 +1,252 @@
+#!/usr/bin/env python3
+"""Play tones and MIDI files on the AD5X speaker (a PWM channel).
+
+usage: ad5x-sound tone FREQ MS [--volume N]
+       ad5x-sound play FILE.mid [--volume N] [--track N]
+       ad5x-sound notes FILE.mid [--track N]    (print the notes, no sound)
+       ad5x-sound stop
+
+The speaker is driven by one PWM channel (a square wave), so it plays one
+note at a time: of the notes sounding together, the highest (usually the
+melody); --track N plays only that MIDI track. Volume 0-100 sets the duty
+cycle (100 = 50 %, the loudest a square wave gets). The channel comes from
+/run/ad5x-sound.conf (PWM=pwmchipN/pwmM), set up by S35ad5x-sound, which
+also lets user klipper use it. One player at a time: a new one stops the
+running one (pid file /run/ad5x-sound/player.pid).
+"""
+import os
+import signal
+import struct
+import sys
+import time
+
+CONF = "/run/ad5x-sound.conf"
+PIDFILE = "/run/ad5x-sound/player.pid"
+MAX_SECONDS = 600
+
+
+# MIDI ---------------------------------------------------------------------
+
+def read_varlen(data, pos):
+    value = 0
+    while True:
+        b = data[pos]
+        pos += 1
+        value = (value << 7) | (b & 0x7f)
+        if not b & 0x80:
+            return value, pos
+
+
+def parse_midi(data):
+    """(ticks per quarter, [track events]); an event is (tick, kind, a, b)
+    with kind 'on', 'off' (a = note) or 'tempo' (a = us per quarter)."""
+    if data[:4] != b'MThd':
+        raise ValueError("not a MIDI file")
+    hlen, fmt, ntracks, division = struct.unpack(">IHHH", data[4:14])
+    if division & 0x8000:
+        raise ValueError("SMPTE time division is not supported")
+    pos = 8 + hlen
+    tracks = []
+    for _ in range(ntracks):
+        if data[pos:pos + 4] != b'MTrk':
+            raise ValueError("bad track header")
+        tlen = struct.unpack(">I", data[pos + 4:pos + 8])[0]
+        pos += 8
+        end = pos + tlen
+        tick, status, events = 0, 0, []
+        while pos < end:
+            delta, pos = read_varlen(data, pos)
+            tick += delta
+            b = data[pos]
+            if b & 0x80:
+                status = b
+                pos += 1
+            kind = status & 0xf0
+            if status == 0xff:
+                mtype = data[pos]
+                mlen, pos = read_varlen(data, pos + 1)
+                if mtype == 0x51 and mlen == 3:
+                    events.append((tick, 'tempo',
+                                   int.from_bytes(data[pos:pos + 3], 'big'), 0))
+                pos += mlen
+                if mtype == 0x2f:
+                    break
+            elif status in (0xf0, 0xf7):
+                slen, pos = read_varlen(data, pos)
+                pos += slen
+            elif kind in (0x80, 0x90):
+                note, vel = data[pos], data[pos + 1]
+                pos += 2
+                if (status & 0x0f) == 9:
+                    continue   # drums: no pitch
+                on = kind == 0x90 and vel > 0
+                events.append((tick, 'on' if on else 'off', note, 0))
+            elif kind in (0xc0, 0xd0):
+                pos += 1
+            else:
+                pos += 2
+        pos = end
+        tracks.append(events)
+    return division, tracks
+
+
+def melody(division, tracks, track=None):
+    """[(start s, length s, freq Hz)]: one note at a time, the highest of
+    those sounding."""
+    tempos = sorted(e for t in tracks for e in t if e[1] == 'tempo')
+    notes = sorted(e for i, t in enumerate(tracks) if track is None or
+                   i == track for e in t if e[1] in ('on', 'off'))
+
+    def seconds(tick):
+        s, last, us = 0., 0, 500000
+        for t, _, tempo, _ in tempos:
+            if t >= tick:
+                break
+            s += (t - last) * us / 1e6 / division
+            last, us = t, tempo
+        return s + (tick - last) * us / 1e6 / division
+
+    out, sounding, cur, start = [], {}, None, 0.
+    for tick, kind, note, _ in notes + [(1 << 62, 'end', 0, 0)]:
+        now = seconds(tick) if kind != 'end' else None
+        if kind == 'on':
+            sounding[note] = sounding.get(note, 0) + 1
+        elif kind == 'off' and sounding.get(note):
+            sounding[note] -= 1
+            if not sounding[note]:
+                del sounding[note]
+        top = max(sounding) if sounding and kind != 'end' else None
+        if top != cur:
+            if cur is not None and now is not None and now > start:
+                out.append((start, now - start, freq(cur)))
+            cur, start = top, now
+    return out
+
+
+def freq(note):
+    return 440. * 2 ** ((note - 69) / 12.)
+
+
+# PWM ----------------------------------------------------------------------
+
+class Pwm:
+    def __init__(self, path, volume):
+        self.path, self.duty = path, max(0, min(100, volume)) / 200.
+
+    def _w(self, name, value):
+        with open(os.path.join(self.path, name), "w") as f:
+            f.write(str(value))
+
+    def tone(self, hz):
+        period = int(1e9 / hz)
+        self._w("enable", 0)
+        try:
+            self._w("duty_cycle", 0)
+        except OSError:
+            pass
+        self._w("period", period)
+        self._w("duty_cycle", int(period * self.duty))
+        self._w("enable", 1)
+
+    def off(self):
+        try:
+            self._w("enable", 0)
+        except OSError:
+            pass
+
+
+def pwm_path():
+    path = os.environ.get("AD5X_SOUND_PWM")
+    if not path:
+        try:
+            with open(CONF) as f:
+                for line in f:
+                    if line.startswith("PWM="):
+                        path = line.split("=", 1)[1].strip()
+        except OSError:
+            pass
+    if not path:
+        sys.exit("ad5x-sound: no speaker (no PWM= in %s)" % (CONF,))
+    if not path.startswith("/"):
+        path = os.path.join("/sys/class/pwm", path)
+    return path
+
+
+def stop_other():
+    try:
+        with open(PIDFILE) as f:
+            pid = int(f.read().strip())
+        if pid != os.getpid():
+            os.kill(pid, signal.SIGTERM)
+            time.sleep(.05)
+    except (OSError, ValueError):
+        pass
+
+
+def play(events, volume):
+    stop_other()
+    pwm = Pwm(pwm_path(), volume)
+    try:
+        with open(PIDFILE, "w") as f:
+            f.write(str(os.getpid()))
+    except OSError:
+        pass
+    signal.signal(signal.SIGTERM, lambda *a: (pwm.off(), sys.exit(0)))
+    t0 = time.monotonic()
+    try:
+        for start, length, hz in events:
+            if start > MAX_SECONDS:
+                break
+            wait = t0 + start - time.monotonic()
+            if wait > 0:
+                pwm.off()
+                time.sleep(wait)
+            if volume > 0 and 20 <= hz <= 20000:
+                pwm.tone(hz)
+            wait = t0 + start + length - time.monotonic()
+            if wait > 0:
+                time.sleep(wait)
+    finally:
+        pwm.off()
+        try:
+            os.unlink(PIDFILE)
+        except OSError:
+            pass
+
+
+def option(args, name, default):
+    if name in args:
+        i = args.index(name)
+        val = args[i + 1]
+        del args[i:i + 2]
+        return int(val)
+    return default
+
+
+def main(argv):
+    args = argv[1:]
+    volume = option(args, "--volume", 100)
+    track = option(args, "--track", None)
+    if not args:
+        sys.exit(__doc__)
+    cmd = args[0]
+    if cmd == "stop" and len(args) == 1:
+        stop_other()
+        Pwm(pwm_path(), 0).off()
+    elif cmd == "tone" and len(args) == 3:
+        hz, ms = float(args[1]), float(args[2])
+        play([(0., min(ms, 10000.) / 1000., hz)], volume)
+    elif cmd in ("play", "notes") and len(args) == 2:
+        with open(args[1], "rb") as f:
+            events = melody(*parse_midi(f.read()), track=track)
+        if cmd == "notes":
+            for start, length, hz in events:
+                print("%8.3f %6.3f %8.1f" % (start, length, hz))
+        else:
+            play(events, volume)
+    else:
+        sys.exit(__doc__)
+
+
+if __name__ == "__main__":
+    main(sys.argv)
