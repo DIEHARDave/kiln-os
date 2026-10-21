@@ -562,10 +562,15 @@ class AD5XSetup:
             self._set("Heaters off; nozzle %.1f C, bed %.1f C" % (
                 self._temp(ext), self._temp(bed)))
             self._pause(.5)
-        add("Nozzle heater", max_ext - t_ext >= self.nozzle_rise,
-            "+%.1f C in %.0f s" % (max_ext - t_ext, self.check_time))
-        add("Bed heater", max_bed - t_bed >= self.bed_rise,
-            "+%.1f C in %.0f s" % (max_bed - t_bed, self.check_time))
+        if self._batch():
+            # Klipper's test mode has no temperatures (tools/test_wizard.sh)
+            add("Nozzle heater", True, "not tested (Klipper test mode)")
+            add("Bed heater", True, "not tested (Klipper test mode)")
+        else:
+            add("Nozzle heater", max_ext - t_ext >= self.nozzle_rise,
+                "+%.1f C in %.0f s" % (max_ext - t_ext, self.check_time))
+            add("Bed heater", max_bed - t_bed >= self.bed_rise,
+                "+%.1f C in %.0f s" % (max_bed - t_bed, self.check_time))
         failed = [c['name'] for c in self.checks
                   if not c['ok'] and c['required']]
         ok = len([c for c in self.checks if c['ok']])
@@ -589,6 +594,11 @@ class AD5XSetup:
         self._home()
         cx, cy = self.patch_center
         self._gcode("G90\nG1 X%.1f Y%.1f Z10 F6000" % (cx, cy))
+        if self._batch():
+            # Klipper's test mode: no temperatures, PID_CALIBRATE can't run
+            self._result("pid", "not tuned (Klipper test mode)")
+            self._set("PID: not tuned in Klipper test mode", 1.)
+            return
         results = []
         n = len(heaters)
         for i, (name, label, target) in enumerate(heaters):
@@ -622,6 +632,13 @@ class AD5XSetup:
         try:
             self._heat_and_wait({'heater_bed': self.mesh_bed,
                                  'extruder': self.mesh_nozzle}, (0., .3))
+            # As a print's Z check: tare, probe the front edge, scrub the
+            # nozzle along it, then the mesh. Plastic left on the tip
+            # squashes a little more at every touch, and the probe's
+            # samples then exceed samples_tolerance.
+            self._set("Cleaning the nozzle on the bed edge", .32)
+            self._gcode("G1 Z5 F800\nG1 X60 Y-3 F30000\nWEIGHT_TARE\nPROBE")
+            self._scrub()
             self._set("Probing the bed", .35)
             self._gcode("BED_MESH_CALIBRATE PROFILE=default")
         except Exception:
@@ -643,6 +660,20 @@ class AD5XSetup:
             self._result("mesh", "done")
         self.pending_save = True
         self._set("Bed mesh ready to save", 1.)
+    def _scrub(self):
+        """_CHECK_Z_SCRUB's moves: along the bed's front edge just above
+        where the probe (at X60 Y-3) fired, part fan on."""
+        probe = self.printer.lookup_object('probe', None)
+        if probe is None:
+            return
+        lp = probe.get_status(self.reactor.monotonic()).get(
+            'last_probe_position')
+        if lp is None:
+            return
+        z = lp.z + float(self._settings('probe').get('z_offset', 0.))
+        self._gcode("M106 S255\nG1 Z%.3f F1000\nG1 X130 F1200\n"
+                    "G1 X150 F1200\nG1 Z%.3f F1000\nM106 S0\nG1 Z5 F6000"
+                    % (z + .3, z + .1))
     def _step_shaper(self, params):
         try:
             import numpy  # noqa: F401  (SHAPER_CALIBRATE needs it)

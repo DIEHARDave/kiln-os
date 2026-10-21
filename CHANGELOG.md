@@ -7,6 +7,34 @@ the release has no section of its own yet (rename it after the release).
 ## Unreleased
 
 ### Fixed
+- **"WiFi system not ready" on the touch screen**: Wi-Fi now waits longer
+  for a slow USB Wi-Fi adapter (10 s instead of 3), and a saved Wi-Fi
+  file it can't read (for example one brought over from stock) is put
+  aside so Wi-Fi still starts and a network can be joined again. Either
+  used to leave the screen's Wi-Fi without its service.
+- **A fresh install's first Z offset could overwrite the wizard's.** At
+  start-up the offset carried over from stock is copied once; if a
+  command was already running then (the setup wizard's Z offset step),
+  the copy waited and wrote the old value over the new one afterwards.
+  Found by the new emulated wizard test.
+- **Setup wizard bed mesh: "Probe samples exceed samples_tolerance"**.
+  The mesh step now cleans the nozzle first, as a print does (one touch
+  at the bed's front edge, then a scrub along it). Plastic left on the tip
+  squashed a little more at every touch, so the probe's three samples
+  disagreed.
+### Added
+- **`logs/wifi.log`** (in Fluidd's log files): what Wi-Fi did at start:
+  kernel, adapter driver, number of saved networks (no names or
+  passwords), and the exact error if it didn't start. Send it along with
+  `helixscreen.log` when Wi-Fi misbehaves.
+- **Emulated setup wizard test on a fresh install** in every build: the
+  image's own Klipper runs the wizard's steps on a newly installed data
+  partition (with a Z offset carried over from stock), and the saved
+  results are checked.
+
+## v0.0.14 (2026-10-21)
+
+### Fixed
 - **`SAVE_CONFIG` after `PROBE_CALIBRATE`, `Z_OFFSET_APPLY_PROBE` or
   `PID_CALIBRATE`** no longer fails with "conflicts with included value".
   A probe Z offset becomes the printer's saved Z offset (the same first

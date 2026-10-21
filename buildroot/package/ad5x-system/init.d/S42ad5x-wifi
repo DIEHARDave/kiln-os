@@ -14,10 +14,22 @@
 # when no Ethernet is up, so an off switch can't strand the printer.
 # /data/ad5x/wifi.disable: no Wi-Fi at all (no wpa_supplicant, nothing
 # for the screen to switch on).
+#
+# What happened at start is in printer_data/logs/wifi.log (Fluidd shows
+# it): kernel, Wi-Fi driver, the number of saved networks (no names or
+# passwords), wpa_supplicant's own words if it didn't start. A config it
+# can't read is put aside (wpa_supplicant.conf.bad-*) and it starts with
+# a new one, so the screen can still join a network.
 CONF=/data/ad5x/wpa_supplicant.conf
+LOG=/data/ad5x/printer_data/logs/wifi.log
 OFF=/data/ad5x/wifi.disable
 HELIX=/data/ad5x/helixscreen/config/settings.json
 CTRL=/var/run/wpa_supplicant
+
+log() {
+	echo "ad5x-wifi: $*"
+	echo "$(date '+%F %T') $*" >> $LOG 2>/dev/null
+}
 
 stock_conf() {
 	for u in /sys/class/block/*/uevent; do
@@ -44,9 +56,9 @@ make_conf() {
 		[ -n "$nets" ] && printf '\n%s\n' "$nets"
 	} > $CONF.tmp && mv $CONF.tmp $CONF
 	if [ -n "$nets" ]; then
-		echo "ad5x-wifi: networks from stock's settings in $CONF"
+		log "new $CONF with stock's saved networks"
 	else
-		echo "ad5x-wifi: new $CONF (no networks yet)"
+		log "new $CONF (no networks yet)"
 	fi
 }
 
@@ -66,6 +78,28 @@ probe_hidden() {
 	fi
 }
 
+nets() {
+	grep -c '^[[:space:]]*network[[:space:]]*=' $CONF 2>/dev/null
+}
+
+# start_wpa: wpa_supplicant on $CONF, up when its control socket is
+start_wpa() {
+	wpa_supplicant -B -i wlan0 -c $CONF -P /var/run/wpa_supplicant.pid \
+		> /tmp/ad5x-wifi-start.txt 2>&1
+	rc=$?
+	i=0
+	while [ ! -S $CTRL/wlan0 ] && [ $i -lt 30 ]; do
+		usleep 100000; i=$((i + 1))
+	done
+	[ $rc = 0 ] && [ -S $CTRL/wlan0 ] && return 0
+	log "wpa_supplicant didn't start (exit $rc):"
+	sed 's/^/    /' /tmp/ad5x-wifi-start.txt >> $LOG 2>/dev/null
+	cat /tmp/ad5x-wifi-start.txt
+	[ -f /var/run/wpa_supplicant.pid ] &&
+		kill "$(cat /var/run/wpa_supplicant.pid)" 2>/dev/null
+	return 1
+}
+
 radio() {
 	for r in /sys/class/net/wlan0/phy80211/rfkill*/soft; do
 		[ -f "$r" ] && echo "$1" > "$r"
@@ -74,31 +108,52 @@ radio() {
 
 case "$1" in
 start)
+	if [ -f /var/run/wpa_supplicant.pid ] &&
+	   kill -0 "$(cat /var/run/wpa_supplicant.pid)" 2>/dev/null; then
+		echo "ad5x-wifi: already running"
+		exit 0
+	fi
+	mkdir -p ${LOG%/*}
+	: > $LOG 2>/dev/null
+	log "start: kernel $(uname -r), $(head -1 /etc/ad5x-release 2>/dev/null)"
 	if [ -f $OFF ]; then
-		echo "ad5x-wifi: off (remove $OFF to use Wi-Fi)"
+		log "off (remove $OFF to use Wi-Fi)"
 		ip link set wlan0 down 2>/dev/null
 		exit 0
 	fi
-	# the USB adapter usually shows up long before this; a few seconds
+	# the USB adapter usually shows up long before this; some seconds
 	# more only when it hasn't
 	i=0
-	while [ ! -d /sys/class/net/wlan0 ] && [ $i -lt 3 ]; do
+	while [ ! -d /sys/class/net/wlan0 ] && [ $i -lt 10 ]; do
 		sleep 1; i=$((i + 1))
 	done
-	[ -d /sys/class/net/wlan0 ] || { echo "ad5x-wifi: no wlan0"; exit 0; }
+	if [ ! -d /sys/class/net/wlan0 ]; then
+		log "no wlan0 after ${i} s; interfaces: $(ls /sys/class/net | tr '\n' ' ')"
+		log "USB: $(cat /sys/bus/usb/devices/*/product 2>/dev/null | tr '\n' ',')"
+		exit 0
+	fi
+	drv=$(readlink /sys/class/net/wlan0/device/driver 2>/dev/null)
+	log "wlan0 after ${i} s, driver ${drv##*/}"
 	[ -f $CONF ] || make_conf
 	probe_hidden
 	if grep -Eq '"wifi_enabled"[[:space:]]*:[[:space:]]*(false|0)' $HELIX 2>/dev/null; then
 		radio 1
-		echo "ad5x-wifi: switched off on the screen"
+		log "switched off on the screen (radio blocked)"
 	else
 		radio 0
 	fi
-	wpa_supplicant -B -i wlan0 -c $CONF -P /var/run/wpa_supplicant.pid
-	i=0
-	while [ ! -S $CTRL/wlan0 ] && [ $i -lt 20 ]; do
-		usleep 100000; i=$((i + 1))
-	done
+	if ! start_wpa; then
+		bad=$CONF.bad-$(date +%Y%m%d-%H%M%S)
+		mv $CONF $bad
+		log "$(grep -c '^[[:space:]]*network[[:space:]]*=' $bad) saved network(s) put aside in $bad; starting with none"
+		{
+			echo "# Wi-Fi networks (HelixScreen saves here; see S42ad5x-wifi)"
+			echo "ctrl_interface=$CTRL"
+			echo "update_config=1"
+		} > $CONF.tmp && chmod 600 $CONF.tmp && mv $CONF.tmp $CONF
+		start_wpa || { log "wpa_supplicant fails with a new config too"; exit 0; }
+	fi
+	log "wpa_supplicant running, $(nets) saved network(s)"
 	wpa_cli -B -p $CTRL -i wlan0 -a /etc/init.d/S42ad5x-wifi \
 		-P /var/run/wpa_cli.wlan0.pid
 	udhcpc -b -i wlan0 -p /var/run/udhcpc.wlan0.pid >/dev/null 2>&1 &

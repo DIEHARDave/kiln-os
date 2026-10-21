@@ -140,7 +140,10 @@ The steps:
   `PID_CALIBRATE HEATER=heater_bed TARGET=60`. Results are read from
   Klipper's pending SAVE_CONFIG values.
 - **mesh** `[KEEP_BED=1]`: home, then heat the bed to 60 and the nozzle
-  to 140 (stock's levelling temperatures; the wait can be aborted). Run
+  to 140 (stock's levelling temperatures; the wait can be aborted). Clean
+  the nozzle as a print's Z check does: tare, probe at X60 Y-3, scrub
+  along the front edge 0.3 then 0.1 mm above that (plastic on the tip
+  makes the probe's samples exceed `samples_tolerance`). Run
   `BED_MESH_CALIBRATE PROFILE=default`, our wrapper: tare, mesh, then a
   centre probe that saves `ad5x_center_z`. The nozzle goes off. The bed
   goes off too unless `KEEP_BED=1`; send that when the Z offset step
