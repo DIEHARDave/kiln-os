@@ -1,0 +1,1401 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: ad5xrecon <ad5xrecon@localhost>
+Date: Tue, 20 Oct 2026 23:00:00 -0400
+Subject: [PATCH] settings: AD5X filament auto-refill; no-backup pop-up
+
+Settings > Printer gets a "Filament Auto-Refill" row after Bed Heat Soak,
+shown only where Klipper has the ifs object, with "On · Similar colour ·
+backups for slot 1, 3" or "Off" as its second line. Its overlay has the
+on/off switch (IFS_AUTO_REFILL ENABLE=), the colour match (Exact,
+Similar, Any colour: IFS_AUTO_REFILL MATCH=), a live list of the slots
+with filament, each with its colour swatch, material and the slots that
+would take over (refill_backups with ifs_materials), a hint when no slot
+has a backup, and "Filament slots", which opens the AMS panel where the
+slots' materials and colours are set.
+
+When a print loads a slot without a backup, Klipper sets refill_notice;
+a "No backup spool" dialog then comes up on any screen during the print
+(OK, Turn off auto-refill, Filament slots), once per distinct notice: a
+reconnect does not bring the same one back, a new print (which clears
+it) can. The print never waits for it. The model follows ifs and
+ifs_materials from a new tail discovery step on; both objects join the
+status subscription whenever Klipper has them.
+
+Upstream: not applicable (AD5X OS specific)
+---
+ include/ui_panel_settings.h                |   2 +
+ include/ui_settings_ad5x_refill.h          | 251 ++++++++
+ src/api/moonraker_discovery_sequence.cpp   |  14 +
+ src/application/discovery_steps.cpp        |   9 +
+ src/ui/ui_panel_settings.cpp               |  10 +
+ src/ui/ui_settings_ad5x_refill.cpp         | 706 +++++++++++++++++++++
+ tests/unit/test_discovery_steps.cpp        |   1 +
+ tests/unit/test_settings_ad5x_refill.cpp   | 102 +++
+ ui_xml/ad5x_refill_notice_modal.xml        |  24 +
+ ui_xml/components/ad5x_refill_slot_row.xml |  24 +
+ ui_xml/settings_ad5x_refill_overlay.xml    |  67 ++
+ ui_xml/settings_panel.xml                  |   6 +
+ 12 files changed, 1216 insertions(+)
+ create mode 100644 include/ui_settings_ad5x_refill.h
+ create mode 100644 src/ui/ui_settings_ad5x_refill.cpp
+ create mode 100644 tests/unit/test_settings_ad5x_refill.cpp
+ create mode 100644 ui_xml/ad5x_refill_notice_modal.xml
+ create mode 100644 ui_xml/components/ad5x_refill_slot_row.xml
+ create mode 100644 ui_xml/settings_ad5x_refill_overlay.xml
+
+diff --git a/include/ui_panel_settings.h b/include/ui_panel_settings.h
+index 4df6629b..5431a18d 100644
+--- a/include/ui_panel_settings.h
++++ b/include/ui_panel_settings.h
+@@ -143,6 +143,8 @@ class SettingsPanel : public PanelBase {
+     lv_subject_t show_ad5x_nozzle_subject_{};
+     // 1 when the printer has the AD5X bed soak object: unhides "Bed Heat Soak"
+     lv_subject_t show_ad5x_soak_subject_{};
++    // 1 when the printer has the IFS (`ifs` object): unhides "Filament Auto-Refill"
++    lv_subject_t show_ad5x_refill_subject_{};
+ 
+     // Live status line shown under each stateful root row (settings_panel.xml),
+     // refreshed by refresh_status_lines().
+diff --git a/include/ui_settings_ad5x_refill.h b/include/ui_settings_ad5x_refill.h
+new file mode 100644
+index 00000000..494f43f5
+--- /dev/null
++++ b/include/ui_settings_ad5x_refill.h
+@@ -0,0 +1,251 @@
++// SPDX-License-Identifier: GPL-3.0-or-later
++
++/**
++ * @file ui_settings_ad5x_refill.h
++ * @brief Filament auto-refill on the AD5X: Settings > Filament Auto-Refill and
++ *        the "No backup spool" pop-up
++ *
++ * Klipper's `ifs` object: `auto_refill` (IFS_AUTO_REFILL ENABLE=0|1, saved),
++ * `refill_match` ("exact", "similar", "any"; IFS_AUTO_REFILL MATCH=, saved),
++ * `refill_backups` ({"1": [3], "2": [], ...}: per slot, the slots that would
++ * take over if it ran out, nearest colour first), `refill_notice` (a sentence
++ * when a print loaded a slot with no backup; cleared when the next print
++ * starts; the print carries on) and `loaded_channels` (the slots with
++ * filament). The slots' materials and colours are `ifs_materials.slots`.
++ *
++ * Ad5xRefillModel follows both objects from the first discovery on (a tail
++ * discovery step attaches it), so the pop-up comes up on any screen during a
++ * print, once per distinct notice. Ad5xRefillOverlay is the Settings screen.
++ *
++ * @pattern Overlay (lazy init) over a process-wide model
++ * @threading Main thread only; Moonraker callbacks hop over via lifetime tokens
++ */
++
++#pragma once
++
++#include "ui_modal.h"
++#include "ui_observer_guard.h"
++#include "ui_subscription_guard.h"
++
++#include "async_lifetime_guard.h"
++#include "json_fwd.h"
++#include "lvgl/lvgl.h"
++#include "overlay_base.h"
++#include "static_panel_registry.h"
++#include "subject_managed_panel.h"
++
++#include <cstdint>
++#include <functional>
++#include <optional>
++#include <string>
++#include <vector>
++
++namespace helix {
++class IMoonrakerAPI;
++}
++
++namespace helix::ad5x_refill {
++
++/// The colour match choices, in the dropdown's order.
++enum class Match {
++    Exact = 0,   ///< The same colour code
++    Similar = 1, ///< Close shades (Klipper's refill_color_tolerance); the default
++    Any = 2,     ///< Any colour of the same material
++};
++
++/// "exact" / "similar" / "any" for @p index (out of range: "similar").
++const char* match_name(int index);
++
++/// Index of Klipper's `refill_match` value; Similar for anything unknown.
++int match_index(const std::string& name);
++
++/// "IFS_AUTO_REFILL ENABLE=1"
++std::string enable_gcode(bool on);
++
++/// "IFS_AUTO_REFILL MATCH=similar"
++std::string match_gcode(int index);
++
++/// One slot with filament and the slots that would take over from it.
++struct SlotBackup {
++    int slot = 0;                ///< 1-4
++    std::string material;        ///< "PLA"; empty when not set
++    std::optional<uint32_t> rgb; ///< The slot's colour, when set
++    std::vector<int> backups;    ///< Nearest colour first; empty: no backup
++};
++
++/// The slots with filament (`ifs.loaded_channels`; without it, the slots
++/// with a backup list entry) with their backups and materials, by slot.
++std::vector<SlotBackup> parse_backups(const json& ifs, const json& materials);
++
++/// "Slot 1 · PLA black → Slot 3", "Slot 2 · PLA → no backup".
++std::string backup_line(const SlotBackup& slot);
++
++/// Whether any slot has a backup.
++bool any_backup(const std::vector<SlotBackup>& slots);
++
++/// The Settings row's line: "Off", "On · Similar colour · slots 1, 3 backed up",
++/// "On · Similar colour · no backup spools".
++std::string summary_text(bool enabled, int match, const std::vector<SlotBackup>& slots);
++
++/// The pop-up's text: Klipper's notice and how to add a backup.
++std::string notice_body(const std::string& notice);
++
++/// Whether the printer publishes the `ifs` object (an AD5X with the IFS).
++bool available();
++
++/// Open HelixScreen's filament slot panel (the AMS panel), where the slots'
++/// materials and colours are edited. A toast when there is none yet.
++void open_filament_slots();
++
++/// Both objects, the shared subjects, the commands and the pop-up.
++///
++/// Subjects: `ad5x_refill_summary` (the Settings row's line),
++/// `ad5x_refill_enabled`, `ad5x_refill_match` (Match), `ad5x_refill_busy` (1
++/// while a change is pending, the object has not answered or Klipper is not
++/// ready: the controls bind it) and `ad5x_refill_has_backups`.
++class Ad5xRefillModel {
++  public:
++    Ad5xRefillModel() = default;
++    ~Ad5xRefillModel();
++    Ad5xRefillModel(const Ad5xRefillModel&) = delete;
++    Ad5xRefillModel& operator=(const Ad5xRefillModel&) = delete;
++
++    void init_subjects();
++
++    /// From each discovery: follow @p api's status updates (again when the
++    /// API changed) and take `ifs` / `ifs_materials` from the discovery's
++    /// initial @p status. Nothing on a printer without the IFS.
++    void attach(IMoonrakerAPI* api, const json& status);
++
++    /// attach() to the current API if that has not happened, and query.
++    void start();
++
++    /// Ask Klipper for the fields this uses.
++    void query();
++
++    bool loaded() const {
++        return loaded_;
++    }
++    const std::vector<SlotBackup>& slots() const {
++        return slots_;
++    }
++
++    /// IFS_AUTO_REFILL ENABLE=0|1
++    void set_enabled(bool on);
++
++    /// IFS_AUTO_REFILL MATCH=exact|similar|any
++    void set_match(int index);
++
++    /// Called (main thread) when the backup list changed; the overlay sets it
++    /// while it is built. Empty to stop.
++    void set_on_slots_changed(std::function<void()> cb) {
++        on_slots_changed_ = std::move(cb);
++    }
++
++  private:
++    void detach();
++    void merge(const json& ifs_delta, const json& materials_delta);
++    void send(const std::string& gcode);
++    void refresh();
++    /// Pops the notice up when it is new, a print runs and no wizard is open.
++    void check_notice();
++
++    SubjectManager subjects_;
++    lv_subject_t summary_{};
++    lv_subject_t enabled_{};
++    lv_subject_t match_{};
++    lv_subject_t busy_{};
++    lv_subject_t has_backups_{};
++    char summary_buf_[160] = "";
++    bool subjects_initialized_ = false;
++
++    IMoonrakerAPI* api_ = nullptr;
++    json ifs_ = json::object();       ///< The `ifs` fields this uses
++    json materials_ = json::object(); ///< `ifs_materials`' slots
++    bool loaded_ = false;
++    bool klippy_ready_ = true;
++    int pending_ = 0;
++    std::vector<SlotBackup> slots_;
++    std::string slots_key_;
++    /// The notice last shown; another print's same sentence shows again
++    /// (an empty notice in between forgets it).
++    std::string shown_notice_;
++    std::function<void()> on_slots_changed_;
++
++    SubscriptionGuard subscription_;
++    ObserverGuard klippy_observer_;
++    ObserverGuard print_observer_;
++    AsyncLifetimeGuard lifetime_;
++};
++
++Ad5xRefillModel& model();
++
++} // namespace helix::ad5x_refill
++
++namespace helix::ui {
++
++/// "No backup spool": Klipper's notice with OK, Turn off auto-refill and
++/// Filament slots. The print never waits for it.
++class Ad5xRefillNoticeModal : public Modal {
++  public:
++    explicit Ad5xRefillNoticeModal(std::string text) : text_(std::move(text)) {}
++
++    const char* get_name() const override {
++        return "AD5X Auto-Refill Notice";
++    }
++    const char* component_name() const override {
++        return "ad5x_refill_notice_modal";
++    }
++
++    /// One-shot owned show over the active screen.
++    static bool show_owned(const std::string& text);
++
++  protected:
++    void on_show() override;
++    void on_ok() override;       ///< OK
++    void on_cancel() override;   ///< Filament slots
++    void on_tertiary() override; ///< Turn off auto-refill
++    void on_escape() override;   ///< Closes, like OK
++
++  private:
++    std::string text_;
++};
++
++} // namespace helix::ui
++
++namespace helix::settings {
++
++/// Settings > Filament Auto-Refill: the switch, the colour match, the live
++/// backup list and the way to the filament slots.
++class Ad5xRefillOverlay : public OverlayBase {
++  public:
++    const char* get_name() const override {
++        return "AD5X Filament Auto-Refill";
++    }
++    const char* xml_component() const override {
++        return "settings_ad5x_refill_overlay";
++    }
++    /// Freed on close; the next open rebuilds it.
++    bool destroy_on_close() const override {
++        return true;
++    }
++
++    void init_subjects() override;
++    void register_callbacks() override;
++    void on_activate() override;
++    void on_ui_destroyed() override;
++
++    void handle_enabled_changed(bool on);
++    void handle_match_changed(int index);
++    void handle_filament_slots();
++
++  private:
++    /// One row per slot with filament: its colour, material and backups.
++    void render_slots();
++};
++
++inline Ad5xRefillOverlay& get_ad5x_refill_overlay() {
++    return lazy_global<Ad5xRefillOverlay>("Ad5xRefillOverlay");
++}
++
++} // namespace helix::settings
+diff --git a/src/api/moonraker_discovery_sequence.cpp b/src/api/moonraker_discovery_sequence.cpp
+index 922685d7..2d98fc51 100644
+--- a/src/api/moonraker_discovery_sequence.cpp
++++ b/src/api/moonraker_discovery_sequence.cpp
+@@ -1530,6 +1530,20 @@ json MoonrakerDiscoverySequence::build_subscription_objects(
+         }
+     }
+ 
++    // AD5X filament auto-refill (ui_settings_ad5x_refill.cpp): `ifs` carries
++    // auto_refill, refill_match, refill_backups and refill_notice, which the
++    // Settings screen and the "No backup spool" pop-up read; `ifs_materials`
++    // the slots' materials and colours. The IFS backend subscribes both whole
++    // too, but only while it is the active filament system.
++    {
++        const auto& objects = hw.printer_objects();
++        for (const char* name : {"ifs", "ifs_materials"}) {
++            if (std::find(objects.begin(), objects.end(), name) != objects.end()) {
++                subscription_objects[name] = nullptr;
++            }
++        }
++    }
++
+     // Print start macros — only the boolean flags PrintStartCollector reads.
+     // Other variables on these macros (slicer args, profile names, etc.) are
+     // irrelevant to the start-detection logic.
+diff --git a/src/application/discovery_steps.cpp b/src/application/discovery_steps.cpp
+index 7c98d03e..2c39a616 100644
+--- a/src/application/discovery_steps.cpp
++++ b/src/application/discovery_steps.cpp
+@@ -10,6 +10,7 @@
+ 
+ #include "ui_panel_calibration_zoffset.h"
+ #include "ui_settings_about.h"
++#include "ui_settings_ad5x_refill.h"
+ #include "ui_update_queue.h"
+ #include "ui_wizard.h"
+ 
+@@ -151,6 +152,13 @@ void manual_probe_autoopen_step(DiscoveryContext& ctx) {
+     });
+ }
+ 
++// AD5X filament auto-refill: follow the IFS's refill state from now on, so its
++// "No backup spool" notice reaches whatever screen is up. The initial status replayed
++// by status_dispatch is taken from the context; nothing on a printer without the IFS.
++void ad5x_refill_watch_step(DiscoveryContext& ctx) {
++    ad5x_refill::model().attach(&ctx.api, ctx.status);
++}
++
+ constexpr DiscoveryStep kTailSteps[] = {
+     {"update_checker_connected", false, update_checker_connected_step, nullptr},
+     {"about_print_hours", false, about_print_hours_step, nullptr},
+@@ -165,6 +173,7 @@ constexpr DiscoveryStep kTailSteps[] = {
+     {"auto_update_check", false, auto_update_check_step, nullptr},
+     {"moonraker_update_channel", false, moonraker_update_channel_step, nullptr},
+     {"manual_probe_autoopen", false, manual_probe_autoopen_step, nullptr},
++    {"ad5x_refill_watch", false, ad5x_refill_watch_step, nullptr},
+ };
+ 
+ } // namespace
+diff --git a/src/ui/ui_panel_settings.cpp b/src/ui/ui_panel_settings.cpp
+index 1c8bc694..add00eec 100644
+--- a/src/ui/ui_panel_settings.cpp
++++ b/src/ui/ui_panel_settings.cpp
+@@ -15,6 +15,7 @@
+ #include "ui_panel_memory_stats.h"
+ #include "ui_printer_manager_overlay.h"
+ #include "ui_settings_ad5x_plugins.h"
++#include "ui_settings_ad5x_refill.h"
+ #include "ui_settings_ad5x_soak.h"
+ #include "ui_settings_appearance.h"
+ #include "ui_settings_connection.h"
+@@ -147,6 +148,9 @@ void SettingsPanel::init_subjects() {
+     UI_MANAGED_SUBJECT_INT(show_ad5x_soak_subject_, 0, "settings_show_ad5x_soak", subjects_);
+     // The Bed Heat Soak row's line (ad5x_soak_summary) follows the printer's object
+     helix::ad5x_soak::model().init_subjects();
++    UI_MANAGED_SUBJECT_INT(show_ad5x_refill_subject_, 0, "settings_show_ad5x_refill", subjects_);
++    // The Filament Auto-Refill row's line (ad5x_refill_summary) follows the `ifs` object
++    helix::ad5x_refill::model().init_subjects();
+ 
+     // Live status line under each stateful root row; refresh_status_lines()
+     // fills these in, first from setup() and then on every return to the root.
+@@ -242,6 +246,11 @@ void SettingsPanel::refresh_status_lines() {
+     if (has_soak) {
+         helix::ad5x_soak::model().start();
+     }
++    const bool has_refill = helix::ad5x_refill::available();
++    lv_subject_set_int(&show_ad5x_refill_subject_, has_refill ? 1 : 0);
++    if (has_refill) {
++        helix::ad5x_refill::model().start();
++    }
+ 
+     // Formatted here rather than once at init, so it is in the language of the
+     // latest return to the settings root.
+@@ -416,6 +425,7 @@ void register_settings_panel_callbacks() {
+         {"on_updates_clicked", nav_row<get_updates_settings_overlay>()},
+         {"on_ad5x_plugins_clicked", nav_row<get_ad5x_plugins_overlay>()},
+         {"on_ad5x_soak_clicked", nav_row<get_ad5x_soak_overlay>()},
++        {"on_ad5x_refill_clicked", nav_row<get_ad5x_refill_overlay>()},
+ #if HELIX_HAS_PLUGINS
+         {"on_plugins_clicked", nav_row<helix::plugin::get_plugins_overlay>()},
+ #else
+diff --git a/src/ui/ui_settings_ad5x_refill.cpp b/src/ui/ui_settings_ad5x_refill.cpp
+new file mode 100644
+index 00000000..4710785d
+--- /dev/null
++++ b/src/ui/ui_settings_ad5x_refill.cpp
+@@ -0,0 +1,706 @@
++// SPDX-License-Identifier: GPL-3.0-or-later
++
++#include "ui_settings_ad5x_refill.h"
++
++#include "ui_callback_helpers.h"
++#include "ui_error_reporting.h"
++#include "ui_panel_ams_overview.h"
++#include "ui_swatch.h"
++#include "ui_update_queue.h"
++#include "ui_utils.h"
++
++#include "ams_state.h"
++#include "app_globals.h"
++#include "color_utils.h"
++#include "i_moonraker_api.h"
++#include "i_moonraker_client.h"
++#include "json_utils.h"
++#include "lvgl/src/others/translation/lv_translation.h"
++#include "observer_factory.h"
++#include "printer_discovery.h"
++#include "printer_state.h"
++#include "theme_manager.h"
++#include "ui/ui_widget_helpers.h"
++
++#include <spdlog/fmt/fmt.h>
++#include <spdlog/spdlog.h>
++
++#include <algorithm>
++#include <cctype>
++#include <cstdlib>
++#include <cstring>
++
++namespace helix::ad5x_refill {
++
++namespace {
++
++constexpr const char* kObject = "ifs";
++constexpr const char* kMaterialsObject = "ifs_materials";
++/// The `ifs` fields this uses; the object has many more, updated often.
++constexpr const char* kFields[] = {"auto_refill", "refill_match", "refill_backups", "refill_notice",
++                                   "loaded_channels"};
++constexpr const char* kMatchNames[] = {"exact", "similar", "any"};
++constexpr int kSlotCount = 4;
++
++void copy_if_changed(lv_subject_t* subject, const std::string& text) {
++    const char* cur = lv_subject_get_string(subject);
++    if (!cur || text != cur) {
++        lv_subject_copy_string(subject, text.c_str());
++    }
++}
++
++void set_if_changed(lv_subject_t* subject, int value) {
++    if (lv_subject_get_int(subject) != value) {
++        lv_subject_set_int(subject, value);
++    }
++}
++
++/// The fields of `ifs` this uses, out of a delta or a whole object.
++json pick_ifs_fields(const json& obj) {
++    json out = json::object();
++    for (const char* key : kFields) {
++        if (const json* v = json_util::find_member(obj, key)) {
++            out[key] = *v;
++        }
++    }
++    return out;
++}
++
++/// Slot number of a JSON key or value ("3" or 3); 0 when it is none.
++int slot_of(const json& v) {
++    int n = 0;
++    if (v.is_number_integer()) {
++        n = v.get<int>();
++    } else if (v.is_string()) {
++        const std::string& s = v.get_ref<const std::string&>();
++        char* end = nullptr;
++        const long l = std::strtol(s.c_str(), &end, 10);
++        n = (end != s.c_str() && *end == '\0') ? static_cast<int>(l) : 0;
++    }
++    return (n >= 1 && n <= kSlotCount) ? n : 0;
++}
++
++std::string lowercase(std::string s) {
++    std::transform(s.begin(), s.end(), s.begin(),
++                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
++    return s;
++}
++
++bool print_active() {
++    return lv_subject_get_int(get_printer_state().print_state().get_print_active_subject()) != 0;
++}
++
++} // namespace
++
++// ============================================================================
++// STATUS OBJECT
++// ============================================================================
++
++const char* match_name(int index) {
++    if (index < 0 || index >= static_cast<int>(std::size(kMatchNames))) {
++        return kMatchNames[static_cast<int>(Match::Similar)];
++    }
++    return kMatchNames[index];
++}
++
++int match_index(const std::string& name) {
++    const std::string n = lowercase(name);
++    for (int i = 0; i < static_cast<int>(std::size(kMatchNames)); ++i) {
++        if (n == kMatchNames[i]) {
++            return i;
++        }
++    }
++    return static_cast<int>(Match::Similar);
++}
++
++std::string enable_gcode(bool on) {
++    return fmt::format("IFS_AUTO_REFILL ENABLE={}", on ? 1 : 0);
++}
++
++std::string match_gcode(int index) {
++    return fmt::format("IFS_AUTO_REFILL MATCH={}", match_name(index));
++}
++
++std::vector<SlotBackup> parse_backups(const json& ifs, const json& materials) {
++    const json* backups = json_util::find_member(ifs, "refill_backups");
++    const json* loaded = json_util::find_member(ifs, "loaded_channels");
++    const json* mat_slots = json_util::find_member(materials, "slots");
++
++    std::vector<bool> present(kSlotCount + 1, false);
++    if (loaded && loaded->is_array()) {
++        for (const auto& v : *loaded) {
++            present[static_cast<std::size_t>(slot_of(v))] = true;
++        }
++    } else if (backups && backups->is_object()) {
++        // Without the presence list, the slots something would take over from
++        for (auto it = backups->begin(); it != backups->end(); ++it) {
++            if (it.value().is_array() && !it.value().empty()) {
++                present[static_cast<std::size_t>(slot_of(json(it.key())))] = true;
++            }
++        }
++    }
++
++    std::vector<SlotBackup> out;
++    for (int slot = 1; slot <= kSlotCount; ++slot) {
++        if (!present[static_cast<std::size_t>(slot)]) {
++            continue;
++        }
++        SlotBackup s;
++        s.slot = slot;
++        const std::string key = std::to_string(slot);
++        if (backups && backups->is_object()) {
++            const json* list = json_util::find_member(*backups, key.c_str());
++            if (list && list->is_array()) {
++                for (const auto& v : *list) {
++                    const int b = slot_of(v);
++                    if (b != 0 && b != slot) {
++                        s.backups.push_back(b);
++                    }
++                }
++            }
++        }
++        if (mat_slots && mat_slots->is_object()) {
++            const json* entry = json_util::find_member(*mat_slots, key.c_str());
++            if (entry && entry->is_object()) {
++                s.material = json_util::safe_string(*entry, "type");
++                if (s.material == "?") {
++                    s.material.clear();
++                }
++                const std::string color = json_util::safe_string(*entry, "color");
++                uint32_t rgb = 0;
++                if (!color.empty() && parse_hex_color(color.c_str(), rgb)) {
++                    s.rgb = rgb;
++                }
++            }
++        }
++        out.push_back(std::move(s));
++    }
++    return out;
++}
++
++std::string backup_line(const SlotBackup& slot) {
++    std::string what;
++    if (slot.material.empty()) {
++        what = lv_tr("material not set");
++    } else {
++        what = slot.material;
++        if (slot.rgb) {
++            what += " " + lowercase(describe_color(*slot.rgb));
++        }
++    }
++    std::string target;
++    if (slot.backups.empty()) {
++        target = lv_tr("no backup");
++    } else if (slot.backups.size() == 1) {
++        target = fmt::format(fmt::runtime(lv_tr("Slot {}")), slot.backups.front());
++    } else {
++        std::string list;
++        for (int b : slot.backups) {
++            if (!list.empty()) {
++                list += ", ";
++            }
++            list += std::to_string(b);
++        }
++        target = fmt::format(fmt::runtime(lv_tr("Slots {}")), list);
++    }
++    return fmt::format(fmt::runtime(lv_tr("Slot {} · {} → {}")), slot.slot, what, target);
++}
++
++bool any_backup(const std::vector<SlotBackup>& slots) {
++    return std::any_of(slots.begin(), slots.end(),
++                       [](const SlotBackup& s) { return !s.backups.empty(); });
++}
++
++std::string summary_text(bool enabled, int match, const std::vector<SlotBackup>& slots) {
++    if (!enabled) {
++        return lv_tr("Off");
++    }
++    const char* match_label = match == static_cast<int>(Match::Exact) ? lv_tr("Exact colour")
++                              : match == static_cast<int>(Match::Any) ? lv_tr("Any colour")
++                                                                      : lv_tr("Similar colour");
++    std::string covered;
++    for (const auto& s : slots) {
++        if (s.backups.empty()) {
++            continue;
++        }
++        if (!covered.empty()) {
++            covered += ", ";
++        }
++        covered += std::to_string(s.slot);
++    }
++    if (covered.empty()) {
++        return fmt::format("{} · {} · {}", lv_tr("On"), match_label, lv_tr("no backup spools"));
++    }
++    return fmt::format("{} · {} · {}", lv_tr("On"), match_label,
++                       fmt::format(fmt::runtime(lv_tr("backups for slot {}")), covered));
++}
++
++std::string notice_body(const std::string& notice) {
++    return fmt::format("{}\n\n{}", notice,
++                       lv_tr("To add one, put the same filament in a free slot and set its "
++                             "material and colour; it is fed in when it's needed."));
++}
++
++bool available() {
++    IMoonrakerAPI* api = get_moonraker_api();
++    if (!api) {
++        return false;
++    }
++    const auto& objects = api->hardware().printer_objects();
++    return std::find(objects.begin(), objects.end(), kObject) != objects.end();
++}
++
++void open_filament_slots() {
++    if (!AmsState::instance().get_backend()) {
++        NOTIFY_WARNING("{}", lv_tr("The filament slots aren't available yet"));
++        return;
++    }
++    navigate_to_ams_panel();
++}
++
++// ============================================================================
++// MODEL
++// ============================================================================
++
++Ad5xRefillModel::~Ad5xRefillModel() {
++    lifetime_.invalidate();
++    subscription_.reset();
++    klippy_observer_.reset();
++    print_observer_.reset();
++    subjects_.deinit_all();
++}
++
++void Ad5xRefillModel::init_subjects() {
++    if (subjects_initialized_) {
++        return;
++    }
++    // "On · Similar colour · backups for slot 1, 3" for the Settings row, empty until loaded
++    UI_MANAGED_SUBJECT_STRING(summary_, summary_buf_, "", "ad5x_refill_summary", subjects_);
++    UI_MANAGED_SUBJECT_INT(enabled_, 0, "ad5x_refill_enabled", subjects_);
++    // Match: 0 exact, 1 similar, 2 any
++    UI_MANAGED_SUBJECT_INT(match_, 1, "ad5x_refill_match", subjects_);
++    // 1 while a change is pending, the object has not answered or Klipper is not ready
++    UI_MANAGED_SUBJECT_INT(busy_, 1, "ad5x_refill_busy", subjects_);
++    // 1 when some slot has a backup: hides the "No backups" hint
++    UI_MANAGED_SUBJECT_INT(has_backups_, 0, "ad5x_refill_has_backups", subjects_);
++    subjects_initialized_ = true;
++}
++
++void Ad5xRefillModel::attach(IMoonrakerAPI* api, const json& status) {
++    init_subjects();
++    if (!api) {
++        return;
++    }
++    const auto& objects = api->hardware().printer_objects();
++    if (std::find(objects.begin(), objects.end(), kObject) == objects.end()) {
++        // Another printer, or Klipper without the IFS
++        detach();
++        return;
++    }
++
++    if (api != api_) {
++        detach();
++        api_ = api;
++        const auto token = lifetime_.token();
++        // Runs on the WebSocket thread: copy the fields out, apply them on the main thread.
++        // Most `ifs` updates are the IFS's sensors and motors; only ours are deferred.
++        const SubscriptionId id = api->subscribe_notifications([this, token](const json& note) {
++            const json* params = json_util::find_member(note, "params");
++            if (!params || !params->is_array() || params->empty()) {
++                return;
++            }
++            const json& status_obj = (*params)[0];
++            json ifs_delta = json::object();
++            json materials_delta = json::object();
++            if (const json* obj = json_util::find_member(status_obj, kObject);
++                obj && obj->is_object()) {
++                ifs_delta = pick_ifs_fields(*obj);
++            }
++            if (const json* obj = json_util::find_member(status_obj, kMaterialsObject);
++                obj && obj->is_object()) {
++                if (const json* slots = json_util::find_member(*obj, "slots")) {
++                    materials_delta["slots"] = *slots;
++                }
++            }
++            if (ifs_delta.empty() && materials_delta.empty()) {
++                return;
++            }
++            token.defer("Ad5xRefillModel::status_update", [this, ifs_delta, materials_delta]() {
++                merge(ifs_delta, materials_delta);
++            });
++        });
++        subscription_ = SubscriptionGuard(api, id);
++    }
++
++    if (!klippy_observer_) {
++        klippy_observer_ = ui::observe<int>(
++            get_printer_state().network_state().get_klippy_state_subject(), this,
++            [](Ad5xRefillModel* self, int state) {
++                const bool ready = static_cast<KlippyState>(state) == KlippyState::READY;
++                if (ready == self->klippy_ready_) {
++                    return;
++                }
++                self->klippy_ready_ = ready;
++                if (ready) {
++                    self->query();
++                }
++                self->refresh();
++            },
++            get_printer_state().get_subjects_lifetime());
++    }
++    if (!print_observer_) {
++        // A notice that came before the print state did shows once it runs
++        print_observer_ = ui::observe<int>(
++            get_printer_state().print_state().get_print_active_subject(), this,
++            [](Ad5xRefillModel* self, int active) {
++                if (active != 0) {
++                    self->check_notice();
++                }
++            },
++            get_printer_state().get_subjects_lifetime());
++    }
++
++    // The discovery's initial status carries both objects whole
++    json ifs_delta = json::object();
++    json materials_delta = json::object();
++    if (const json* obj = json_util::find_member(status, kObject); obj && obj->is_object()) {
++        ifs_delta = pick_ifs_fields(*obj);
++    }
++    if (const json* obj = json_util::find_member(status, kMaterialsObject);
++        obj && obj->is_object()) {
++        if (const json* slots = json_util::find_member(*obj, "slots")) {
++            materials_delta["slots"] = *slots;
++        }
++    }
++    if (!ifs_delta.empty() || !materials_delta.empty()) {
++        merge(ifs_delta, materials_delta);
++    } else {
++        query();
++    }
++}
++
++void Ad5xRefillModel::detach() {
++    subscription_.reset();
++    api_ = nullptr;
++    ifs_ = json::object();
++    materials_ = json::object();
++    loaded_ = false;
++    pending_ = 0;
++    refresh();
++}
++
++void Ad5xRefillModel::start() {
++    IMoonrakerAPI* api = get_moonraker_api();
++    if (api && api != api_) {
++        attach(api, json::object());
++        return;
++    }
++    query();
++}
++
++void Ad5xRefillModel::query() {
++    IMoonrakerClient* client = get_moonraker_client();
++    if (!client || client->get_connection_state() != ConnectionState::CONNECTED || !api_) {
++        return;
++    }
++    const auto token = lifetime_.token();
++    json fields = json::array();
++    for (const char* key : kFields) {
++        fields.push_back(key);
++    }
++    json params = {{"objects", {{kObject, fields}, {kMaterialsObject, json::array({"slots"})}}}};
++    client->send_jsonrpc(
++        "printer.objects.query", params,
++        [this, token](const json& response) {
++            const json* result = json_util::find_member(response, "result");
++            const json* status = result ? json_util::find_member(*result, "status") : nullptr;
++            if (!status || !status->is_object()) {
++                return;
++            }
++            json ifs_delta = json::object();
++            json materials_delta = json::object();
++            if (const json* obj = json_util::find_member(*status, kObject);
++                obj && obj->is_object()) {
++                ifs_delta = pick_ifs_fields(*obj);
++            }
++            if (const json* obj = json_util::find_member(*status, kMaterialsObject);
++                obj && obj->is_object()) {
++                if (const json* slots = json_util::find_member(*obj, "slots")) {
++                    materials_delta["slots"] = *slots;
++                }
++            }
++            token.defer("Ad5xRefillModel::status_query", [this, ifs_delta, materials_delta]() {
++                merge(ifs_delta, materials_delta);
++            });
++        },
++        [](const MoonrakerError& err) {
++            spdlog::debug("[AD5X refill] {} query failed: {}", kObject, err.message);
++        },
++        0, /*silent=*/true);
++}
++
++void Ad5xRefillModel::merge(const json& ifs_delta, const json& materials_delta) {
++    if (!api_) {
++        return;
++    }
++    for (auto it = ifs_delta.begin(); it != ifs_delta.end(); ++it) {
++        ifs_[it.key()] = it.value();
++    }
++    for (auto it = materials_delta.begin(); it != materials_delta.end(); ++it) {
++        materials_[it.key()] = it.value();
++    }
++    // Klipper without auto-refill has no such field: nothing to show then
++    loaded_ = ifs_.contains("auto_refill");
++    refresh();
++    check_notice();
++}
++
++void Ad5xRefillModel::send(const std::string& gcode) {
++    IMoonrakerAPI* api = get_moonraker_api();
++    if (!api) {
++        NOTIFY_WARNING("{}", lv_tr("Not connected to the printer"));
++        refresh();
++        return;
++    }
++    spdlog::info("[AD5X refill] {}", gcode);
++    ++pending_;
++    refresh();
++
++    // Klipper's answer releases the controls; a fresh query then shows what it kept
++    const auto token = lifetime_.token();
++    api->execute_gcode(
++        gcode,
++        [this, token]() {
++            token.defer("Ad5xRefillModel::send_done", [this]() {
++                pending_ = std::max(0, pending_ - 1);
++                query();
++                refresh();
++            });
++        },
++        [this, token](const MoonrakerError& err) {
++            const std::string message = err.message;
++            token.defer("Ad5xRefillModel::send_error", [this, message]() {
++                pending_ = std::max(0, pending_ - 1);
++                NOTIFY_WARNING("{}", message.empty() ? std::string(lv_tr("Failed")) : message);
++                query();
++                refresh();
++            });
++        },
++        0, /*silent=*/false, /*on_queued=*/nullptr, /*caller_surfaces_errors=*/true);
++}
++
++void Ad5xRefillModel::set_enabled(bool on) {
++    if (subjects_initialized_) {
++        lv_subject_set_int(&enabled_, on ? 1 : 0);
++    }
++    send(enable_gcode(on));
++}
++
++void Ad5xRefillModel::set_match(int index) {
++    const int count = static_cast<int>(std::size(kMatchNames));
++    index = std::clamp(index, 0, count - 1);
++    if (subjects_initialized_) {
++        lv_subject_set_int(&match_, index);
++    }
++    send(match_gcode(index));
++}
++
++void Ad5xRefillModel::refresh() {
++    std::vector<SlotBackup> slots = parse_backups(ifs_, materials_);
++    // The list is rebuilt only when what it shows changed
++    std::string key;
++    for (const auto& s : slots) {
++        key += backup_line(s);
++        key += s.rgb ? fmt::format("#{:06X}\n", *s.rgb) : std::string("-\n");
++    }
++    key += loaded_ ? "1" : "0";
++    const bool slots_changed = key != slots_key_;
++    slots_key_ = key;
++    slots_ = std::move(slots);
++
++    if (subjects_initialized_) {
++        const bool enabled = json_util::safe_bool(ifs_, "auto_refill");
++        const int match = match_index(json_util::safe_string(ifs_, "refill_match", "similar"));
++        copy_if_changed(&summary_, loaded_ ? summary_text(enabled, match, slots_) : std::string());
++        // While Klipper has not answered a change, the controls keep what the user set
++        if (loaded_ && pending_ == 0) {
++            set_if_changed(&enabled_, enabled ? 1 : 0);
++            set_if_changed(&match_, match);
++        }
++        set_if_changed(&busy_, (pending_ > 0 || !loaded_ || !klippy_ready_) ? 1 : 0);
++        set_if_changed(&has_backups_, any_backup(slots_) ? 1 : 0);
++    }
++    if (slots_changed && on_slots_changed_) {
++        on_slots_changed_();
++    }
++}
++
++void Ad5xRefillModel::check_notice() {
++    const std::string notice = json_util::safe_string(ifs_, "refill_notice");
++    if (notice.empty()) {
++        // Cleared by a new print: the same sentence in that print is news again
++        if (ifs_.contains("refill_notice")) {
++            shown_notice_.clear();
++        }
++        return;
++    }
++    if (notice == shown_notice_ || !print_active() || is_wizard_active()) {
++        return;
++    }
++    shown_notice_ = notice;
++    spdlog::info("[AD5X refill] Notice: {}", notice);
++    // A newer notice replaces one still open
++    if (lv_obj_t* open = ModalStack::instance().dialog_for_component("ad5x_refill_notice_modal")) {
++        Modal::hide(open);
++    }
++    helix::ui::Ad5xRefillNoticeModal::show_owned(notice_body(notice));
++}
++
++Ad5xRefillModel& model() {
++    return helix::lazy_global<Ad5xRefillModel>("Ad5xRefillModel");
++}
++
++} // namespace helix::ad5x_refill
++
++// ============================================================================
++// NOTICE POP-UP
++// ============================================================================
++
++namespace helix::ui {
++
++bool Ad5xRefillNoticeModal::show_owned(const std::string& text) {
++    return Modal::show_owned(std::make_unique<Ad5xRefillNoticeModal>(text), lv_screen_active());
++}
++
++void Ad5xRefillNoticeModal::on_show() {
++    wire_ok_button("btn_primary");
++    wire_cancel_button("btn_secondary");
++    wire_tertiary_button("btn_tertiary");
++    if (lv_obj_t* label = find_widget("ad5x_refill_notice_text")) {
++        lv_label_set_text(label, text_.c_str());
++    }
++}
++
++void Ad5xRefillNoticeModal::on_ok() {
++    hide(ModalCloseReason::ButtonPress);
++}
++
++void Ad5xRefillNoticeModal::on_escape() {
++    hide(ModalCloseReason::EscKey);
++}
++
++void Ad5xRefillNoticeModal::on_cancel() {
++    hide(ModalCloseReason::ButtonPress);
++    // After the dialog has gone: the panel opens over whatever screen is up
++    helix::ui::queue_update("Ad5xRefillNotice::filament_slots",
++                            []() { helix::ad5x_refill::open_filament_slots(); });
++}
++
++void Ad5xRefillNoticeModal::on_tertiary() {
++    hide(ModalCloseReason::ButtonPress);
++    helix::ad5x_refill::model().set_enabled(false);
++}
++
++} // namespace helix::ui
++
++// ============================================================================
++// OVERLAY
++// ============================================================================
++
++namespace helix::settings {
++
++namespace ad5x_refill = helix::ad5x_refill;
++
++void Ad5xRefillOverlay::init_subjects() {
++    ad5x_refill::model().init_subjects();
++}
++
++void Ad5xRefillOverlay::register_callbacks() {
++    register_xml_callbacks({
++        {"on_ad5x_refill_enabled_changed",
++         [](lv_event_t* e) {
++             get_ad5x_refill_overlay().handle_enabled_changed(helix::ui::event_checked(e));
++         }},
++        {"on_ad5x_refill_match_changed",
++         [](lv_event_t* e) {
++             get_ad5x_refill_overlay().handle_match_changed(helix::ui::event_selected(e));
++         }},
++        {"on_ad5x_refill_slots",
++         [](lv_event_t*) { get_ad5x_refill_overlay().handle_filament_slots(); }},
++    });
++}
++
++void Ad5xRefillOverlay::on_activate() {
++    OverlayBase::on_activate();
++    auto& refill = ad5x_refill::model();
++    refill.set_on_slots_changed([this]() { render_slots(); });
++    refill.start();
++    render_slots();
++}
++
++void Ad5xRefillOverlay::on_ui_destroyed() {
++    ad5x_refill::model().set_on_slots_changed(nullptr);
++}
++
++void Ad5xRefillOverlay::render_slots() {
++    if (!overlay_root_) {
++        return;
++    }
++    lv_obj_t* list = helix::ui::find_required(overlay_root_, "ad5x_refill_slots", get_name());
++    if (!list) {
++        return;
++    }
++    helix::ui::safe_clean_children(list);
++
++    const auto& refill = ad5x_refill::model();
++    if (!refill.loaded()) {
++        return;
++    }
++    const auto& slots = refill.slots();
++    if (slots.empty()) {
++        const char* attrs[] = {"text", lv_tr("No filament in the IFS"), nullptr};
++        if (lv_obj_t* row =
++                static_cast<lv_obj_t*>(lv_xml_create(list, "ad5x_refill_slot_row", attrs))) {
++            if (lv_obj_t* swatch = helix::ui::find_required(row, "swatch", get_name())) {
++                lv_obj_add_flag(swatch, LV_OBJ_FLAG_HIDDEN);
++            }
++        }
++        return;
++    }
++    for (const auto& slot : slots) {
++        const std::string text = ad5x_refill::backup_line(slot);
++        const char* attrs[] = {"text", text.c_str(), nullptr};
++        auto* row = static_cast<lv_obj_t*>(lv_xml_create(list, "ad5x_refill_slot_row", attrs));
++        if (!row) {
++            spdlog::warn("[AD5X refill] cannot create a row for slot {}", slot.slot);
++            continue;
++        }
++        lv_obj_t* swatch = helix::ui::find_required(row, "swatch", get_name());
++        if (!swatch) {
++            continue;
++        }
++        if (slot.rgb) {
++            helix::ui::apply_swatch_color(swatch, *slot.rgb, std::string());
++        } else {
++            // No colour set: an outline, like an empty slot
++            helix::ui::clear_swatch_color(swatch);
++            lv_obj_set_style_border_width(swatch, 2, 0);
++            lv_obj_set_style_border_color(swatch, theme_manager_get_color("text_muted"), 0);
++            lv_obj_set_style_border_opa(swatch, LV_OPA_COVER, 0);
++        }
++    }
++}
++
++void Ad5xRefillOverlay::handle_enabled_changed(bool on) {
++    ad5x_refill::model().set_enabled(on);
++}
++
++void Ad5xRefillOverlay::handle_match_changed(int index) {
++    ad5x_refill::model().set_match(index);
++}
++
++void Ad5xRefillOverlay::handle_filament_slots() {
++    ad5x_refill::open_filament_slots();
++}
++
++} // namespace helix::settings
+diff --git a/tests/unit/test_discovery_steps.cpp b/tests/unit/test_discovery_steps.cpp
+index 117bcf7d..9f34e479 100644
+--- a/tests/unit/test_discovery_steps.cpp
++++ b/tests/unit/test_discovery_steps.cpp
+@@ -146,6 +146,7 @@ TEST_CASE("the tail discovery steps run in this order", "[discovery_steps]") {
+         "auto_update_check",
+         "moonraker_update_channel",
+         "manual_probe_autoopen",
++        "ad5x_refill_watch",
+     };
+     CHECK(tail == expected);
+ }
+diff --git a/tests/unit/test_settings_ad5x_refill.cpp b/tests/unit/test_settings_ad5x_refill.cpp
+new file mode 100644
+index 00000000..6d65baa4
+--- /dev/null
++++ b/tests/unit/test_settings_ad5x_refill.cpp
+@@ -0,0 +1,102 @@
++// SPDX-License-Identifier: GPL-3.0-or-later
++
++#include "ui_settings_ad5x_refill.h"
++
++#include "../catch_amalgamated.hpp"
++#include "hv/json.hpp"
++
++using namespace helix::ad5x_refill;
++
++namespace {
++
++/// The `ifs` fields as Klipper publishes them: slots 1-3 have filament.
++json sample_ifs() {
++    return json::parse(R"({
++        "auto_refill": true,
++        "refill_match": "similar",
++        "refill_backups": {"1": [3], "2": [], "3": [1], "4": []},
++        "refill_notice": "",
++        "loaded_channels": [1, 2, 3]
++    })");
++}
++
++json sample_materials() {
++    return json::parse(R"({
++        "slots": {
++            "1": {"type": "PLA", "color": "#000000", "temp": 220},
++            "2": {"type": "PLA", "color": null, "temp": null},
++            "3": {"type": "PLA", "color": "#050505", "temp": 220},
++            "4": {"type": "?", "color": "#FFFFFF", "temp": null}
++        }
++    })");
++}
++
++} // namespace
++
++TEST_CASE("auto-refill commands", "[ad5x_refill]") {
++    CHECK(enable_gcode(true) == "IFS_AUTO_REFILL ENABLE=1");
++    CHECK(enable_gcode(false) == "IFS_AUTO_REFILL ENABLE=0");
++    CHECK(match_gcode(0) == "IFS_AUTO_REFILL MATCH=exact");
++    CHECK(match_gcode(1) == "IFS_AUTO_REFILL MATCH=similar");
++    CHECK(match_gcode(2) == "IFS_AUTO_REFILL MATCH=any");
++    CHECK(match_gcode(7) == "IFS_AUTO_REFILL MATCH=similar");
++
++    CHECK(match_index("exact") == 0);
++    CHECK(match_index("ANY") == 2);
++    CHECK(match_index("similar") == 1);
++    CHECK(match_index("") == 1);
++}
++
++TEST_CASE("backups are listed for the slots with filament", "[ad5x_refill]") {
++    const auto slots = parse_backups(sample_ifs(), sample_materials());
++    REQUIRE(slots.size() == 3);
++    CHECK(slots[0].slot == 1);
++    CHECK(slots[0].material == "PLA");
++    REQUIRE(slots[0].rgb.has_value());
++    CHECK(*slots[0].rgb == 0x000000u);
++    CHECK(slots[0].backups == std::vector<int>{3});
++    CHECK(slots[1].slot == 2);
++    CHECK_FALSE(slots[1].rgb.has_value());
++    CHECK(slots[1].backups.empty());
++    CHECK(slots[2].backups == std::vector<int>{1});
++    CHECK(any_backup(slots));
++
++    CHECK(backup_line(slots[1]) == "Slot 2 · PLA → no backup");
++    const std::string first = backup_line(slots[0]);
++    CHECK(first.rfind("Slot 1 · PLA ", 0) == 0);
++    CHECK(first.find("black") != std::string::npos);
++    CHECK(first.find("→ Slot 3") != std::string::npos);
++
++    SlotBackup several;
++    several.slot = 4;
++    several.backups = {2, 1};
++    CHECK(backup_line(several) == "Slot 4 · material not set → Slots 2, 1");
++}
++
++TEST_CASE("without loaded_channels the slots with a backup are listed", "[ad5x_refill]") {
++    json ifs = sample_ifs();
++    ifs.erase("loaded_channels");
++    const auto slots = parse_backups(ifs, sample_materials());
++    REQUIRE(slots.size() == 2);
++    CHECK(slots[0].slot == 1);
++    CHECK(slots[1].slot == 3);
++
++    CHECK(parse_backups(json::object(), json::object()).empty());
++    // Malformed entries are skipped
++    const auto odd = parse_backups(
++        json::parse(R"({"loaded_channels": [0, 9, "2"], "refill_backups": {"2": [2, "x", 4]}})"),
++        json::object());
++    REQUIRE(odd.size() == 1);
++    CHECK(odd[0].slot == 2);
++    CHECK(odd[0].backups == std::vector<int>{4});
++}
++
++TEST_CASE("auto-refill row line and notice", "[ad5x_refill]") {
++    const auto slots = parse_backups(sample_ifs(), sample_materials());
++    CHECK(summary_text(false, 1, slots) == "Off");
++    CHECK(summary_text(true, 1, slots) == "On · Similar colour · backups for slot 1, 3");
++    CHECK(summary_text(true, 0, {}) == "On · Exact colour · no backup spools");
++
++    const std::string body = notice_body("Auto-refill: slot 2 (PLA) has no backup spool.");
++    CHECK(body.rfind("Auto-refill: slot 2 (PLA) has no backup spool.\n\nTo add one, ", 0) == 0);
++}
+diff --git a/ui_xml/ad5x_refill_notice_modal.xml b/ui_xml/ad5x_refill_notice_modal.xml
+new file mode 100644
+index 00000000..189888ef
+--- /dev/null
++++ b/ui_xml/ad5x_refill_notice_modal.xml
+@@ -0,0 +1,24 @@
++<?xml version="1.0"?>
++<!-- SPDX-License-Identifier: GPL-3.0-or-later -->
++<component>
++  <!-- AD5X auto-refill: a print loaded a slot that has no backup spool (the ifs object's
++       refill_notice). The text is Klipper's notice and how to add a backup, set by
++       Ad5xRefillNoticeModal (ui_settings_ad5x_refill.cpp). The print carries on meanwhile.
++       Left to right: Turn off auto-refill (btn_tertiary), Filament slots (btn_secondary),
++       OK (btn_primary); ESC and the backdrop close it like OK.
++       Backdrop created by the Modal system. -->
++  <view name="ad5x_refill_notice_modal"
++        extends="ui_dialog" width="80%" height="content" style_max_width="640" style_max_height="90%"
++        align="center" flex_flow="column" style_flex_main_place="start" style_pad_gap="0">
++    <modal_header icon_src="filament_alert" icon_variant="warning" title="No backup spool"/>
++    <lv_obj width="100%"
++            height="content" style_max_height="#dialog_content_max" style_pad_left="#space_lg"
++            style_pad_right="#space_lg" style_pad_top="#space_sm" style_pad_bottom="#space_lg" flex_flow="column"
++            style_pad_gap="#space_sm" scrollable="true" scroll_snap_y="none">
++      <text_body name="ad5x_refill_notice_text" width="100%" long_mode="wrap" text=""/>
++    </lv_obj>
++    <modal_button_row hide_tertiary="false"
++                      tertiary_name="btn_tertiary" tertiary_variant="secondary" tertiary_text="Turn off auto-refill"
++                      secondary_text="Filament slots" primary_text="OK"/>
++  </view>
++</component>
+diff --git a/ui_xml/components/ad5x_refill_slot_row.xml b/ui_xml/components/ad5x_refill_slot_row.xml
+new file mode 100644
+index 00000000..a6944a63
+--- /dev/null
++++ b/ui_xml/components/ad5x_refill_slot_row.xml
+@@ -0,0 +1,24 @@
++<?xml version="1.0"?>
++<!-- SPDX-License-Identifier: GPL-3.0-or-later -->
++<!-- One slot with filament in Settings > Filament Auto-Refill: its colour and -->
++<!-- "Slot 1 · PLA black → Slot 3". Created by Ad5xRefillOverlay::render_slots(), which -->
++<!-- paints the swatch (an outline when the slot has no colour set). -->
++<component>
++  <api>
++    <prop name="text" type="string" default=""/>
++  </api>
++  <styles>
++    <style name="pad_standard"
++           pad_left="#space_lg" pad_right="#space_lg" pad_top="#space_sm" pad_bottom="#space_sm" pad_gap="#space_md"/>
++    <style name="pad_micro"
++           pad_left="#space_md" pad_right="#space_md" pad_top="#space_xs" pad_bottom="#space_xs" pad_gap="#space_sm"/>
++  </styles>
++  <view name="ad5x_refill_slot_row"
++        extends="lv_obj" width="100%" height="content" flex_flow="row" style_flex_cross_place="center"
++        style_bg_opa="0" style_border_width="0" scrollable="false">
++    <bind_style_if_eq name="pad_micro" subject="ui_breakpoint" ref_value="0"/>
++    <bind_style_if_ge name="pad_standard" subject="ui_breakpoint" ref_value="1"/>
++    <color_dot name="swatch" size="#space_xl"/>
++    <text_body name="label" width="0" flex_grow="1" text="$text" long_mode="wrap"/>
++  </view>
++</component>
+diff --git a/ui_xml/settings_ad5x_refill_overlay.xml b/ui_xml/settings_ad5x_refill_overlay.xml
+new file mode 100644
+index 00000000..cfa10244
+--- /dev/null
++++ b/ui_xml/settings_ad5x_refill_overlay.xml
+@@ -0,0 +1,67 @@
++<?xml version="1.0"?>
++<!-- SPDX-License-Identifier: GPL-3.0-or-later -->
++<!-- Settings > Filament Auto-Refill on the AD5X: the ifs Klipper object's auto_refill, -->
++<!-- refill_match and refill_backups. Ad5xRefillModel (ui_settings_ad5x_refill.cpp) owns every -->
++<!-- subject here; the backup rows (ad5x_refill_slot_row) are built by Ad5xRefillOverlay. -->
++<component>
++  <styles>
++    <style name="pad_standard" pad_left="#space_lg" pad_right="#space_lg" pad_top="#space_md" pad_bottom="#space_md"/>
++    <style name="pad_micro" pad_left="#space_md" pad_right="#space_md" pad_top="#space_sm" pad_bottom="#space_sm"/>
++  </styles>
++  <view name="settings_ad5x_refill_overlay"
++        extends="overlay_panel" title="Filament Auto-Refill" bg_color="#screen_bg">
++    <!-- Content Area - no padding, rows handle their own -->
++    <lv_obj name="overlay_content"
++            width="100%" flex_grow="1" style_pad_top="0" style_pad_left="0" style_pad_right="0"
++            style_pad_bottom="#space_lg" scrollable="true" flex_flow="column">
++      <!-- On/off and the colour match (IFS_AUTO_REFILL, both saved by Klipper) -->
++      <setting_group name="ad5x_refill_enable_group">
++        <setting_toggle_row name="row_ad5x_refill_enabled"
++                            label="Auto-refill" icon="sync" subject="ad5x_refill_enabled"
++                            callback="on_ad5x_refill_enabled_changed" disabled="ad5x_refill_busy"/>
++        <lv_obj name="ad5x_refill_explanation_row"
++                width="100%" height="content" style_bg_opa="0" style_border_width="0" scrollable="false">
++          <bind_style_if_eq name="pad_micro" subject="ui_breakpoint" ref_value="0"/>
++          <bind_style_if_ge name="pad_standard" subject="ui_breakpoint" ref_value="1"/>
++          <text_small width="100%"
++                      long_mode="wrap" style_text_color="#text_muted"
++                      text="When a spool runs out mid-print, the printer switches to a slot with the same material and colour and carries on."/>
++        </lv_obj>
++        <setting_dropdown_row name="row_ad5x_refill_match"
++                              label="Colour match" icon="palette" options="Exact&#10;Similar&#10;Any colour"
++                              description="Exact: the same colour code. Similar: close shades. Any colour: the same material is enough."
++                              bind_selected="ad5x_refill_match" callback="on_ad5x_refill_match_changed"
++                              disabled="ad5x_refill_busy" dropdown_width="40%"/>
++      </setting_group>
++      <!-- Per slot with filament: its colour, material and the slots that would take over -->
++      <setting_group name="ad5x_refill_backups_group">
++        <setting_group_header title="BACKUPS"/>
++        <lv_obj name="ad5x_refill_slots"
++                width="100%" height="content" style_pad_all="0" flex_flow="column" style_bg_opa="0"
++                style_border_width="0" scrollable="false"/>
++        <lv_obj name="ad5x_refill_no_backups_row"
++                width="100%" height="content" flex_flow="row" style_flex_cross_place="start" style_pad_gap="#space_sm"
++                style_bg_opa="0" style_border_width="0" scrollable="false">
++          <bind_style_if_eq name="pad_micro" subject="ui_breakpoint" ref_value="0"/>
++          <bind_style_if_ge name="pad_standard" subject="ui_breakpoint" ref_value="1"/>
++          <bind_flag_if_eq subject="ad5x_refill_has_backups" flag="hidden" ref_value="1"/>
++          <icon src="info_outline" size="xs" variant="secondary"/>
++          <text_small width="0"
++                      flex_grow="1" long_mode="wrap" style_text_color="#text_muted"
++                      text="No backups: put the same filament in another slot and set its material and colour on the Filament screen."/>
++        </lv_obj>
++        <lv_obj name="ad5x_refill_slots_button_row"
++                width="100%" height="content" flex_flow="row" style_flex_main_place="end" style_bg_opa="0"
++                style_border_width="0" scrollable="false">
++          <bind_style_if_eq name="pad_micro" subject="ui_breakpoint" ref_value="0"/>
++          <bind_style_if_ge name="pad_standard" subject="ui_breakpoint" ref_value="1"/>
++          <ui_button name="btn_ad5x_refill_slots"
++                     width="content" height="#button_height_sm" style_min_width="120" text="Filament slots"
++                     icon="filament" variant="secondary">
++            <event_cb trigger="clicked" callback="on_ad5x_refill_slots"/>
++          </ui_button>
++        </lv_obj>
++      </setting_group>
++    </lv_obj>
++  </view>
++</component>
+diff --git a/ui_xml/settings_panel.xml b/ui_xml/settings_panel.xml
+index 6286f575..80240b1a 100644
+--- a/ui_xml/settings_panel.xml
++++ b/ui_xml/settings_panel.xml
+@@ -63,6 +63,12 @@
+                           bind_description="ad5x_soak_summary" description_min_bp="0">
+         <bind_flag_if_eq subject="settings_show_ad5x_soak" flag="hidden" ref_value="0"/>
+       </setting_action_row>
++      <!-- AD5X: another slot of the same filament takes over when a spool runs out (ifs object) -->
++      <setting_action_row name="row_ad5x_refill"
++                          label="Filament Auto-Refill" icon="sync" callback="on_ad5x_refill_clicked"
++                          bind_description="ad5x_refill_summary" description_min_bp="0">
++        <bind_flag_if_eq subject="settings_show_ad5x_refill" flag="hidden" ref_value="0"/>
++      </setting_action_row>
+       <!-- AD5X: the printer's own plugins (Klipper add-ons), not HelixScreen's -->
+       <setting_action_row name="row_ad5x_plugins"
+                           label="Plugins" icon="puzzle_outline" callback="on_ad5x_plugins_clicked"
+-- 
+2.56.0
+

@@ -284,8 +284,20 @@ class AD5XPlugins:
         self.restart_file = config.get('moonraker_restart_file',
                                        MOONRAKER_RESTART_FILE)
         self.catalog = read_catalog(self.catalog_file)
+        # The last install/update/remove result survives the Klipper restart
+        # that enabling a plugin makes (the screen shows it after)
+        self.job_file = os.path.join(self.user_dir, '.last-job.json')
         self.job = {'name': '', 'action': '', 'state': 'idle',
                     'message': ''}
+        try:
+            with open(self.job_file) as f:
+                saved = json.load(f)
+            if isinstance(saved, dict) and saved.get('state') in (
+                    'done', 'failed'):
+                self.job.update({k: str(saved.get(k, '')) for k in
+                                 ('name', 'action', 'state', 'message')})
+        except (OSError, ValueError):
+            pass
         self.proc = None
         self.found = scan(self.shipped_dir, self.user_dir)
         # Enabled at this start (plugins.cfg as Klipper read it)
@@ -502,15 +514,24 @@ class AD5XPlugins:
         except Exception as e:
             msg, state = str(e), 'failed'
         self.job.update({'state': state, 'message': msg})
+        self._save_job()
         self.gcode.respond_info("%s %s: %s" % (self.job['action'],
                                                self.job['name'], msg))
         return self.printer.get_reactor().NEVER
+    def _save_job(self):
+        try:
+            write_if_changed(self.job_file, json.dumps(self.job))
+        except OSError as e:
+            logging.info("ad5x_plugins: %s: %s", self.job_file, e)
     def _restart_after(self, info, msg):
         """Restart what a changed enabled plugin needs; returns msg."""
+        msg += "; restarting Klipper"
+        self.job.update({'state': 'done', 'message': msg})
+        self._save_job()
         if touches_moonraker(info):
             self._restart_moonraker()
         self.gcode.run_script("RESTART")
-        return msg + "; restarting Klipper"
+        return msg
     cmd_INSTALL_PLUGIN_help = ("Install a plugin from the catalog: NAME= "
                                "[ENABLE=1]")
     def cmd_INSTALL_PLUGIN(self, gcmd):
@@ -539,6 +560,10 @@ class AD5XPlugins:
             os.rename(tmp, dest)
             self.found = scan(self.shipped_dir, self.user_dir)
             if enable:
+                # Saved first: enabling restarts Klipper
+                self.job.update({'state': 'done',
+                                 'message': "installed and enabled"})
+                self._save_job()
                 self.gcode.run_script("ENABLE_PLUGIN NAME=%s" % (name,))
                 return "installed and enabled"
             return "installed (ENABLE_PLUGIN NAME=%s)" % (name,)
@@ -605,6 +630,7 @@ class AD5XPlugins:
         self.found = scan(self.shipped_dir, self.user_dir)
         self.job = {'name': name, 'action': 'remove', 'state': 'done',
                     'message': 'removed'}
+        self._save_job()
         gcmd.respond_info("Plugin %s removed" % (name,))
         if on:
             if self._write_moonraker(names) or touches_moonraker(info):

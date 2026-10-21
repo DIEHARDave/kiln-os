@@ -7,6 +7,11 @@ the release has no section of its own yet (rename it after the release).
 ## Unreleased
 
 ### Added
+- **Auto-refill settings**: `IFS_AUTO_REFILL MATCH=exact|similar|any` picks
+  how close a backup spool's colour must be (default similar). The printer
+  shows which slots back each other up, and a print that loads a slot with
+  no backup gets a notice instead of a surprise pause later. A spool put
+  in during a print is fed in when a refill needs it.
 - **Nozzle size** in the setup wizard (after the time zone) and in
   Settings on the touch screen, or `SET_NOZZLE_SIZE SIZE=0.6`: kept in the
   printer's `nozzle.cfg`. The defaults stay for the 0.4 mm nozzle; line

@@ -12,7 +12,9 @@ and `INSTALL_PLUGIN`, `UPDATE_PLUGIN`, `REMOVE_PLUGIN`;
 a switch changes its plugin parts; the bed heat soak: `BED_SOAK_CALIBRATE`,
 `PRINT_START SOAK=`, `printer.ad5x_soak`; the speaker: `M300`,
 `PLAY_MIDI`, `PLAY_SOUND`, `SOUND_STOP`, `SOUND_SETUP`, `printer.ad5x_sound`;
-the nozzle size: `SET_NOZZLE_SIZE`, `printer.ad5x_nozzle`.
+the nozzle size: `SET_NOZZLE_SIZE`, `printer.ad5x_nozzle`; auto-refill
+colour matching: `IFS_AUTO_REFILL MATCH=`, `printer.ifs` `refill_match`,
+`refill_backups`, `refill_notice`.
 1.3, 2026-10-20: additions only: a plugin's
 `python/` libraries (Klipper and Moonraker) and `moonraker/components/`
 (Moonraker components), and `git` on the printer for installing plugins.
@@ -244,7 +246,7 @@ printer` before calling one.
 | `IFS_SET_COLOR` | `CHANNEL=` `COLOR=` |
 | `IFS_SET_CHANNEL` | `CHANNEL=` (0 = none loaded) |
 | `IFS_STATUS`, `IFS_MATERIALS`, `IFS_STOP`, `IFS_RESET_DRIVER` | |
-| `IFS_AUTO_REFILL` | `[ENABLE=0|1]` (1.2) |
+| `IFS_AUTO_REFILL` | `[ENABLE=0|1]` (1.2) `[MATCH=exact|similar|any]` (1.4) |
 | `IFS_PURGE_TEST`, `IFS_PURGE_RESULT`, `IFS_SET_FLUSH` | Purge tuning |
 | `IFS_TUNE`, `IFS_TUNE_RESET` | Swap tuning |
 
@@ -285,7 +287,7 @@ save variable: 0 or 2 = prime only, other = purge; else purge.
 
 | Object | Fields |
 |---|---|
-| `printer.ifs` | `connected`, `version`, `busy`, `channel` (loaded, 0 none), `state`, `selected`, `inserted[4]`, `colors[4]`, `channel_count`, `active_channel`, `loaded_channels`, `pending_insert_channels`, `activity`, `activity_channel`, `error`, `tool_map` (`"0"`-`"3"` -> slot), `tune`, `auto_refill`, `refill` (1.2: last auto-refill message) |
+| `printer.ifs` | `connected`, `version`, `busy`, `channel` (loaded, 0 none), `state`, `selected`, `inserted[4]`, `colors[4]`, `channel_count`, `active_channel`, `loaded_channels`, `pending_insert_channels`, `activity`, `activity_channel`, `error`, `tool_map` (`"0"`-`"3"` -> slot), `tune`, `auto_refill`, `refill` (1.2: last auto-refill message), `refill_match`, `refill_backups` (`"1"`-`"4"` -> the slots that would take over, nearest colour first; `[]` none), `refill_notice` (a print loaded a slot with no backup; "" otherwise) (1.4) |
 | `printer.ad5x_nozzle` | `size` (running), `saved` (nozzle.cfg, null), `local` (local.cfg sets it), `sizes` (1.4) |
 | `printer.ad5x_sound` | `speaker`, `enabled`, `volume`, `events` (event -> file, "" off), `files`, `playing` (1.4) |
 | `printer.ad5x_soak` | `enabled`, `calibration` (1.4: per bed temperature `settle`, `drift`, `warp`, `points`, `from`, `stable`, `date`), `running`, `soak`, `last` |

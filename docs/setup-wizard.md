@@ -444,6 +444,7 @@ dir's `import` commit with `git format-patch`.
 | `0008-ad5x-nozzle-size` | **Nozzle Size**, the second AD5X step, and Settings > Printer > **Nozzle Size** (`SET_NOZZLE_SIZE`, `docs/print-start.md`) |
 | `0009-ad5x-bed-soak-and-nozzle-checks` | Settings > Printer > **Bed Heat Soak** (on/off, calibrated times, Calibrate with progress and Stop; `docs/print-start.md`); after a Nozzle Size change in Settings, the offer to run the hotend PID, Z offset and Save only |
 | `0007-sound-pwm-backend-and-printer-sounds` | HelixScreen's sounds on the speaker, Settings > Sound > **Printer Sounds** (`docs/sound.md`) |
+| `0010-ad5x-auto-refill` | Settings > Printer > **Filament Auto-Refill** (on/off, colour match, the backups per slot, Filament slots); the **No backup spool** pop-up during a print when Klipper's `refill_notice` is set |
 
 ### Steps
 

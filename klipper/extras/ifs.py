@@ -57,6 +57,9 @@ MATERIAL_TEMPS = {"PLA": 220., "PLA-CF": 220., "SILK": 230., "TPU": 230.,
 # Tool map keys: slicer tools T0..T3.
 TOOLS = (0, 1, 2, 3)
 
+# Auto-refill colour matching (IFS_AUTO_REFILL MATCH=)
+REFILL_MATCHES = ("exact", "similar", "any")
+
 # print_stats states that end a print (and the tool map with it). Not
 # "paused": the print resumes with the same map.
 PRINT_END_STATES = ("complete", "cancelled", "error", "standby")
@@ -295,14 +298,21 @@ class IFS:
         # resumes. Slot types must be set (IFS_SET_MATERIAL or the screen).
         # The status poll runs every refill_poll s while printing, so the
         # tail is caught while the IFS still grips it. IFS_AUTO_REFILL
-        # ENABLE=0|1 switches it (saved: ifs_auto_refill).
+        # ENABLE=0|1 switches it (saved: ifs_auto_refill); MATCH= picks how
+        # close the colour must be: exact (the same colour code), similar
+        # (within refill_color_tolerance) or any (the material decides).
         self.auto_refill = config.getboolean('auto_refill', False)
         self.refill_color_tolerance = config.getfloat(
             'refill_color_tolerance', 40., minval=0.)
+        self.refill_match = config.getchoice(
+            'refill_match', {m: m for m in REFILL_MATCHES}, 'similar')
         self.refill_poll = config.getfloat('refill_poll', 1., above=0.)
         self.refill_busy = False
         self.refill_note = ""
         self.refill_warned = 0        # slot already reported as unmatched
+        # Slots this print loaded without a backup, told once each
+        self.refill_noticed = set()
+        self.refill_notice = ""
         self.prime_length = config.getfloat('prime_length', 12., minval=0.)
         self.select_timeout = config.getfloat('select_timeout', 30., above=0.)
         self.load_timeout = config.getfloat('load_timeout', 60., above=0.)
@@ -438,6 +448,9 @@ class IFS:
         ar = v.get('ifs_auto_refill')
         if isinstance(ar, (bool, int)):
             self.auto_refill = bool(ar)
+        rm = v.get('ifs_refill_match')
+        if rm in REFILL_MATCHES:
+            self.refill_match = rm
         self.tuned = {
             'speed': num('ifs_speed'),
             'unload_dist': num('ifs_unload_dist'),
@@ -575,6 +588,8 @@ class IFS:
                                                             "paused"):
             # A new print (not a resume): its first tool load purges
             self.first_swap_pending = True
+            self.refill_noticed = set()
+            self.refill_notice = ""
         self.print_state = state
         if ended and self.tool_map != list(CHANNELS):
             self.tool_map = list(CHANNELS)
@@ -671,6 +686,9 @@ class IFS:
             'error': self.error,
             'auto_refill': self.auto_refill,
             'refill': self.refill_note,
+            'refill_match': self.refill_match,
+            'refill_backups': self._refill_backups(),
+            'refill_notice': self.refill_notice,
             'tool_map': {str(t): self.tool_map[t] for t in TOOLS},
             # Swap tuning (not part of FX's contract): tuned values, None
             # where the [ifs] defaults apply; progress while IFS_TUNE runs
@@ -984,6 +1002,7 @@ class IFS:
         self._save_variable('ifs_loaded', chan)
         # For plugins (docs/plugin-api.md): the slot now in the nozzle
         self.printer.send_event("ifs:loaded", chan)
+        self._refill_check_backup(chan)
     def _flush_volume(self, old, new):
         """Flush volume for a change from channel old to new, or None if
         either colour is unknown."""
@@ -1218,14 +1237,14 @@ class IFS:
                 " (loaded)" if c == self.channel else ""))
         gcmd.respond_info("\n".join(lines))
     # Auto-refill
-    def _refill_target(self, chan, present):
-        """Another slot with filament of the loaded slot's material and
-        colour, the nearest colour first; None if there is none."""
+    def _refill_candidates(self, chan, present):
+        """The other slots with filament of chan's material and a matching
+        colour (refill_match), the nearest colour first."""
         m = self.materials[chan - 1]
         if not m['type']:
-            return None
+            return []
         rgb = parse_color(m['color'])
-        best = None
+        found = []
         for c in CHANNELS:
             if c == chan or c not in present:
                 continue
@@ -1233,15 +1252,48 @@ class IFS:
             if o['type'] != m['type']:
                 continue
             orgb = parse_color(o['color'])
-            if (rgb is None) != (orgb is None):
+            if self.refill_match == "any":
+                d = 0.
+            elif (rgb is None) != (orgb is None):
                 continue
-            d = 0. if rgb is None else math.sqrt(
-                sum((a - b) ** 2 for a, b in zip(rgb, orgb)))
-            if d > self.refill_color_tolerance:
-                continue
-            if best is None or d < best[0]:
-                best = (d, c)
-        return best[1] if best else None
+            else:
+                d = 0. if rgb is None else math.sqrt(
+                    sum((a - b) ** 2 for a, b in zip(rgb, orgb)))
+                limit = (0. if self.refill_match == "exact"
+                         else self.refill_color_tolerance)
+                if d > limit:
+                    continue
+            found.append((d, c))
+        return [c for d, c in sorted(found)]
+    def _refill_target(self, chan, present):
+        """Another slot with filament of the loaded slot's material and
+        colour, the nearest colour first; None if there is none."""
+        found = self._refill_candidates(chan, present)
+        return found[0] if found else None
+    def _refill_backups(self):
+        """Per slot with filament: the slots that would take over if it
+        ran out (printer.ifs.refill_backups, for the screen)."""
+        present = mask_channels(self.last_status.get('silk_state'))
+        return {str(c): self._refill_candidates(c, present) if c in present
+                else [] for c in CHANNELS}
+    def _refill_check_backup(self, chan):
+        """A print loaded chan with auto-refill on and no backup for it:
+        say so once per slot and print (printer.ifs.refill_notice). The
+        print carries on; it pauses only if the slot really runs out."""
+        if (not self.auto_refill or chan not in CHANNELS
+                or chan in self.refill_noticed or not self._in_print()):
+            return
+        present = mask_channels(self.last_status.get('silk_state'))
+        if self._refill_candidates(chan, present):
+            return
+        self.refill_noticed.add(chan)
+        m = self.materials[chan - 1]
+        what = " ".join(x for x in (m['type'], m['color']) if x)
+        self.refill_notice = (
+            "Auto-refill: slot %d%s has no backup spool. If it runs out, "
+            "the print pauses for a reload." % (
+                chan, " (%s)" % (what,) if what else ""))
+        self.gcode.respond_info("IFS: " + self.refill_notice)
     def _check_refill(self, eventtime):
         """From the status poll: the loaded slot ran empty in a print."""
         chan = self.channel
@@ -1279,7 +1331,13 @@ class IFS:
             pause_resume = self.printer.lookup_object('pause_resume', None)
             if pause_resume is not None:
                 pause_resume.send_pause_command()
-            script = ["PAUSE", "IFS_SWAP CHANNEL=%d" % (new,)]
+            script = ["PAUSE"]
+            # A spool put in during the print wasn't pre-fed (never while
+            # printing): pre-feed it now, paused, before loading it
+            if self.last_status.get('ffs_channels_insert', 0) \
+                    >> (new - 1) & 1:
+                script.append("IFS_PREFEED CHANNEL=%d" % (new,))
+            script.append("IFS_SWAP CHANNEL=%d" % (new,))
             for t in TOOLS:
                 if self.tool_map[t] == old:
                     script.append("IFS_MAP_TOOL TOOL=%d SLOT=%d" % (t, new))
@@ -1298,14 +1356,30 @@ class IFS:
             self.refill_busy = False
     cmd_IFS_AUTO_REFILL_help = ("Auto-refill: a slot that runs out in a print "
                                 "continues from a slot with the same filament:"
-                                " [ENABLE=0|1]")
+                                " [ENABLE=0|1] [MATCH=exact|similar|any]")
     def cmd_IFS_AUTO_REFILL(self, gcmd):
         enable = gcmd.get_int('ENABLE', None, minval=0, maxval=1)
+        match = gcmd.get('MATCH', None)
+        if match is not None:
+            match = match.strip().lower()
+            if match not in REFILL_MATCHES:
+                raise gcmd.error("IFS_AUTO_REFILL: MATCH is one of %s"
+                                 % (", ".join(REFILL_MATCHES),))
+            self.refill_match = match
+            self._save_variable('ifs_refill_match', match)
         if enable is not None:
             self.auto_refill = bool(enable)
             self._save_variable('ifs_auto_refill', self.auto_refill)
-        gcmd.respond_info("IFS: auto-refill %s (colour tolerance %.0f)" % (
-            "on" if self.auto_refill else "off", self.refill_color_tolerance))
+        backups = self._refill_backups()
+        pairs = ["%s->%s" % (c, ",".join(str(b) for b in backups[c]))
+                 for c in sorted(backups) if backups[c]]
+        gcmd.respond_info("IFS: auto-refill %s, colour match %s%s; backups: "
+                          "%s" % (
+                              "on" if self.auto_refill else "off",
+                              self.refill_match,
+                              " (tolerance %.0f)" % self.refill_color_tolerance
+                              if self.refill_match == "similar" else "",
+                              " ".join(pairs) or "none"))
     # Tool map (per print, as FX)
     cmd_IFS_MAP_TOOL_help = ("Aim a slicer tool at a slot for this print: "
                              "TOOL= SLOT=, or RESET=1")
