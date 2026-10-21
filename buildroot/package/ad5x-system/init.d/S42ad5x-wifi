@@ -50,6 +50,22 @@ make_conf() {
 	fi
 }
 
+# scan_ssid=1 in every saved network: stock saves only ssid and psk, so a
+# hidden network joined on stock's screen would never be found here (it
+# answers only probes that name it). Costs a probe per saved network.
+probe_hidden() {
+	awk '
+	/^[[:space:]]*network[[:space:]]*=[[:space:]]*\{/ { inb = 1; seen = 0 }
+	inb && /^[[:space:]]*scan_ssid[[:space:]]*=/ { seen = 1 }
+	inb && /^[[:space:]]*\}/ { if (!seen) print "\tscan_ssid=1"; inb = 0 }
+	{ print }' $CONF > $CONF.tmp
+	if cmp -s $CONF $CONF.tmp; then
+		rm -f $CONF.tmp
+	else
+		chmod 600 $CONF.tmp && mv $CONF.tmp $CONF
+	fi
+}
+
 radio() {
 	for r in /sys/class/net/wlan0/phy80211/rfkill*/soft; do
 		[ -f "$r" ] && echo "$1" > "$r"
@@ -71,6 +87,7 @@ start)
 	done
 	[ -d /sys/class/net/wlan0 ] || { echo "ad5x-wifi: no wlan0"; exit 0; }
 	[ -f $CONF ] || make_conf
+	probe_hidden
 	if grep -Eq '"wifi_enabled"[[:space:]]*:[[:space:]]*(false|0)' $HELIX 2>/dev/null; then
 		radio 1
 		echo "ad5x-wifi: switched off on the screen"

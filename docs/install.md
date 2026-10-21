@@ -56,9 +56,9 @@ every release).
   the first start.
 - Network: the main OS uses the same Ethernet MAC as stock and DHCP. Wi-Fi
   starts with the networks saved on stock's screen (switched off ones stay
-  off); join or change one on the touch screen (setup wizard, Settings >
-  Network), where the Wi-Fi switch also turns it off for good if you only
-  use Ethernet. Saved in `/data/ad5x/wpa_supplicant.conf`;
+  off); join or change one on the touch screen (setup wizard, or any time
+  in Settings > Connection > Network Settings), where the Wi-Fi switch
+  also turns it off for good if you only use Ethernet. Saved in `/data/ad5x/wpa_supplicant.conf`;
   `/data/ad5x/wifi.disable` turns Wi-Fi off completely.
 
 ## Method 1: USB stick (recommended)

@@ -86,6 +86,11 @@ class AD5XSetup:
                                                 count=2)
         self.patch_size = config.getfloat('patch_size', 30., above=5.)
         self.patch_speed = config.getfloat('patch_speed', 1800., above=0.)
+        # Every run starts fresh at this offset, a little high, and is
+        # lowered from there: the saved offset may be one never printed
+        # with here (stock's or zMod's, carried over at install), and too
+        # low scrapes the bed
+        self.patch_start_z = config.getfloat('patch_start_z', .1)
         self.max_adjust = config.getfloat('max_adjust', .5, above=0.)
         self.max_total_adjust = config.getfloat('max_total_adjust', 1.,
                                                 above=0.)
@@ -116,6 +121,11 @@ class AD5XSetup:
         self.gcode.register_command('SETUP_WIZARD_STEP',
                                     self.cmd_SETUP_WIZARD_STEP,
                                     desc=self.cmd_SETUP_WIZARD_STEP_help)
+        # SAVE_CONFIG keeps what it can't write itself: Klipper's own goes
+        # on with whatever is left
+        self.save_config = self.gcode.register_command('SAVE_CONFIG', None)
+        self.gcode.register_command('SAVE_CONFIG', self.cmd_SAVE_CONFIG,
+                                    desc=self.cmd_SAVE_CONFIG_help)
         webhooks = self.printer.lookup_object('webhooks')
         webhooks.register_endpoint("ad5x_setup/control", self._handle_control)
         self.printer.register_event_handler("klippy:ready", self._handle_ready)
@@ -692,6 +702,10 @@ class AD5XSetup:
             # The IFS step leaves the head empty: load the slot it cut out
             self._set("Loading slot %d" % (chan,), .02)
             self._gcode("IFS_LOAD CHANNEL=%d" % (chan,))
+        # PRINT_START applies the saved offset (and its prime line prints
+        # with it): save the fresh start for it; abort puts z_saved back
+        self._gcode('SAVE_VARIABLE VARIABLE=zoffset VALUE="%r"'
+                    % ({'z': round(self.patch_start_z, 4)},))
         self._set("Preparing like a print: home, heat to %.0f/%.0f C, "
                   "clean the nozzle, check Z" % (nozzle, bed), .05)
         self._gcode("PRINT_START BED=%g EXTRUDER=%g" % (bed, nozzle))
@@ -699,8 +713,8 @@ class AD5XSetup:
         index = 0
         while True:
             self.state = "waiting_user"
-            self._set("Printing test patch %d: use +/- while it prints"
-                      % (index + 1,), .5)
+            self._set("Printing test patch %d (starts high): lower it with "
+                      "- until the lines touch and flatten" % (index + 1,), .5)
             for line in self._patch_gcode(index):
                 self._apply_z_deltas()
                 self._gcode(line)
@@ -809,6 +823,48 @@ class AD5XSetup:
         # Both restart Klipper; the screen reconnects (state comes back
         # from variables.cfg: step finish, done)
         self._gcode("SAVE_CONFIG" if to_save else "RESTART")
+    cmd_SAVE_CONFIG_help = ("Save calibration results; ad5x.cfg's values go "
+                            "to the tuning file, a probe z_offset to the "
+                            "saved Z offset")
+    def cmd_SAVE_CONFIG(self, gcmd):
+        """Klipper's SAVE_CONFIG refuses options an included file sets
+        ("conflicts with included value"): ad5x.cfg's PID, input shaper
+        and [probe] z_offset. PID_CALIBRATE / SHAPER_CALIBRATE results go
+        to tuning_file (as the wizard's finish step does). A probe
+        z_offset from PROBE_CALIBRATE or Z_OFFSET_APPLY_PROBE becomes the
+        print Z offset (variables.cfg zoffset), which this system uses
+        instead (probe z_offset stays ad5x.cfg's): the same first layer,
+        offset = old z_offset - new z_offset."""
+        cf = self.printer.lookup_object('configfile')
+        probe = self._autosave('probe')
+        if 'z_offset' in probe:
+            old = float(self._settings('probe').get('z_offset', 0.))
+            z = round(old - float(probe.pop('z_offset')), 4)
+            cf.remove_section('probe')
+            for opt, val in probe.items():
+                cf.set('probe', opt, val)
+            self.gcode.run_script_from_command(
+                'SAVE_VARIABLE VARIABLE=zoffset VALUE="%r"\n'
+                '_SET_GCODE_OFFSET Z=%.4f' % ({'z': z}, z))
+            gcmd.respond_info("Z offset %.3f mm saved (the print Z offset; "
+                              "[probe] z_offset stays %.3f)" % (z, old))
+        moved = {s: self._autosave(s) for s in TUNING_SECTIONS}
+        moved = {s: v for s, v in moved.items() if v}
+        if moved:
+            self._write_tuning(moved)
+            for section in moved:
+                cf.remove_section(section)
+            msg = "%s saved to %s" % (", ".join(sorted(moved)),
+                                      os.path.basename(self.tuning_file))
+            warn = self._overridden(moved)
+            if warn:
+                msg += "; not in effect, overridden by: " + "; ".join(warn)
+            gcmd.respond_info(msg)
+        fc = cf.autosave.fileconfig
+        if fc is not None and fc.sections():
+            self.save_config(gcmd)
+        elif moved:
+            self.gcode.run_script_from_command("RESTART")
     def _write_tuning(self, moved):
         """Merge moved {section: {option: value}} into tuning_file."""
         sections = {}

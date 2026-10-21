@@ -7,16 +7,37 @@ the release has no section of its own yet (rename it after the release).
 ## Unreleased
 
 ### Fixed
+- **`SAVE_CONFIG` after `PROBE_CALIBRATE`, `Z_OFFSET_APPLY_PROBE` or
+  `PID_CALIBRATE`** no longer fails with "conflicts with included value".
+  A probe Z offset becomes the printer's saved Z offset (the same first
+  layer; the one the touch screen shows and every print uses), and PID or
+  input shaper results go to `ad5x-tuning.cfg`, like the setup wizard's.
+- **Setup wizard Z offset no longer scrapes the bed**: the test patch now
+  starts fresh every time at 0.1 mm, a little high, instead of at the
+  offset already saved (which after an install from stock or zMod was
+  never tested on Kiln OS). Lower it with - until the lines touch and
+  flatten, then Accept.
+- **Hidden Wi-Fi networks** saved on the Flashforge screen are found
+  now: every saved network is searched for by name (stock saves only the
+  name and password). New hidden networks: Settings > Connection > Network
+  Settings > Add Hidden Network (the setup wizard lists visible networks
+  only).
+
+## v0.0.13 (2026-10-21)
+
+### Fixed
 - **Wi-Fi works without Ethernet**: Wi-Fi now always starts, so the
-  touch screen (setup wizard, Settings > Network) can find and join
-  networks and remembers them. Before, a printer installed without
-  Ethernet had no way to get online. The networks saved on the
-  Flashforge screen come over on the first start.
+  touch screen can find and join networks and remembers them: in the
+  setup wizard, or any time in Settings > Connection > Network Settings.
+  Before, a printer installed without Ethernet had no way to get online.
+  The networks saved on the Flashforge screen come over on the first
+  start.
 
 ### Added
 - **Wi-Fi switch**: if you only use Ethernet, turn Wi-Fi off in Settings >
-  Network; it stays off after a restart (it comes back on by itself only
-  when no Ethernet is connected, so the printer can't be cut off).
+  Connection > Network Settings; it stays off after a restart (it comes
+  back on by itself only when no Ethernet is connected, so the printer
+  can't be cut off).
 
 ## v0.0.12 (2026-10-21)
 

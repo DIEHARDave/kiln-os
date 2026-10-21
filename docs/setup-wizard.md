@@ -159,8 +159,13 @@ The steps:
   - Runs `PRINT_START BED= EXTRUDER=`: home, heat, purge, brush, then
     what a print does: with the printer's `macros/print_start.cfg` a new
     mesh (no object labels: the whole bed) and the prime line, with the
-    factory one the centre Z check; saved Z offset applied. The patch then
-    has the same first-layer reference as a real print.
+    factory one the centre Z check. The patch then has the same
+    first-layer reference as a real print.
+  - Starts fresh every run at `patch_start_z` (0.1 mm, a little high),
+    not at the saved offset: that may be stock's or zMod's, carried over
+    at install and never printed with here, and too low scrapes the bed.
+    It is saved for `PRINT_START` (so the prime line uses it too); lower
+    it with - until the lines touch and flatten.
   - Prints a 30 x 30 mm single-layer patch at the bed centre, sent line
     by line, with a prime line in front. Layer height is nozzle/2 within
     0.2–0.3 mm, line width 1.125 x nozzle, speed 30 mm/s. Afterwards the
@@ -171,6 +176,10 @@ The steps:
     applied drift.
   - After `user_timeout` (15 min) with no answer, the offset is kept the
     same way.
+  - Klipper's own `PROBE_CALIBRATE` / `Z_OFFSET_APPLY_PROBE` work too:
+    `SAVE_CONFIG` (wrapped by `[ad5x_setup]`) turns their `[probe]
+    z_offset` into this saved offset (ad5x.cfg's -0.25 minus the new
+    value), and moves PID / shaper results into `ad5x-tuning.cfg`.
   - The wrapper already saves every adjust as it happens, as it does for
     baby-steps from anywhere. Abort writes the starting value back.
 - **finish**:
