@@ -1,16 +1,112 @@
 #!/bin/sh
-# Wi-Fi client from /data/ad5x/wpa_supplicant.conf, when it exists.
+# Wi-Fi client on wlan0. wpa_supplicant always runs (unless Wi-Fi is off,
+# below) with /data/ad5x/wpa_supplicant.conf, so HelixScreen's Wi-Fi
+# screens (setup wizard, Settings > Network) can scan, join and save
+# networks there (update_config=1; updates never touch /data). The first
+# start without that file brings over the networks stock saved (usershare
+# /wifi/wpa_supplicant.conf, joined on the Flashforge screen), or starts
+# with none. DHCP: udhcpc on wlan0, renewed by wpa_cli (this script with
+# "wlan0 CONNECTED") the moment a network is joined.
+#
+# Off: HelixScreen's Wi-Fi switch saves wifi_enabled false in its
+# settings.json and blocks the radio (rfkill); this script blocks it at
+# boot too, so it never comes on. HelixScreen turns it back on by itself
+# when no Ethernet is up, so an off switch can't strand the printer.
+# /data/ad5x/wifi.disable: no Wi-Fi at all (no wpa_supplicant, nothing
+# for the screen to switch on).
 CONF=/data/ad5x/wpa_supplicant.conf
+OFF=/data/ad5x/wifi.disable
+HELIX=/data/ad5x/helixscreen/config/settings.json
+CTRL=/var/run/wpa_supplicant
+
+stock_conf() {
+	for u in /sys/class/block/*/uevent; do
+		grep -qx "PARTNAME=usershare" "$u" 2>/dev/null || continue
+		dev=/dev/$(sed -n 's/^DEVNAME=//p' "$u")
+		mkdir -p /tmp/usershare-wifi
+		if mount -t ext4 -o ro "$dev" /tmp/usershare-wifi 2>/dev/null; then
+			# its networks only: our own ctrl_interface and update_config
+			sed -n '/^[[:space:]]*network[[:space:]]*=/,$p' \
+				/tmp/usershare-wifi/wifi/wpa_supplicant.conf 2>/dev/null
+			umount /tmp/usershare-wifi
+		fi
+		rmdir /tmp/usershare-wifi 2>/dev/null
+	done
+}
+
+make_conf() {
+	nets=$(stock_conf)
+	umask 077
+	{
+		echo "# Wi-Fi networks (HelixScreen saves here; see S42ad5x-wifi)"
+		echo "ctrl_interface=$CTRL"
+		echo "update_config=1"
+		[ -n "$nets" ] && printf '\n%s\n' "$nets"
+	} > $CONF.tmp && mv $CONF.tmp $CONF
+	if [ -n "$nets" ]; then
+		echo "ad5x-wifi: networks from stock's settings in $CONF"
+	else
+		echo "ad5x-wifi: new $CONF (no networks yet)"
+	fi
+}
+
+radio() {
+	for r in /sys/class/net/wlan0/phy80211/rfkill*/soft; do
+		[ -f "$r" ] && echo "$1" > "$r"
+	done
+}
+
 case "$1" in
 start)
-	[ -f $CONF ] || { echo "ad5x-wifi: no $CONF"; exit 0; }
+	if [ -f $OFF ]; then
+		echo "ad5x-wifi: off (remove $OFF to use Wi-Fi)"
+		ip link set wlan0 down 2>/dev/null
+		exit 0
+	fi
+	# the USB adapter usually shows up long before this; a few seconds
+	# more only when it hasn't
+	i=0
+	while [ ! -d /sys/class/net/wlan0 ] && [ $i -lt 3 ]; do
+		sleep 1; i=$((i + 1))
+	done
+	[ -d /sys/class/net/wlan0 ] || { echo "ad5x-wifi: no wlan0"; exit 0; }
+	[ -f $CONF ] || make_conf
+	if grep -Eq '"wifi_enabled"[[:space:]]*:[[:space:]]*(false|0)' $HELIX 2>/dev/null; then
+		radio 1
+		echo "ad5x-wifi: switched off on the screen"
+	else
+		radio 0
+	fi
 	wpa_supplicant -B -i wlan0 -c $CONF -P /var/run/wpa_supplicant.pid
-	udhcpc -b -i wlan0 -p /var/run/udhcpc.wlan0.pid >/dev/null
+	i=0
+	while [ ! -S $CTRL/wlan0 ] && [ $i -lt 20 ]; do
+		usleep 100000; i=$((i + 1))
+	done
+	wpa_cli -B -p $CTRL -i wlan0 -a /etc/init.d/S42ad5x-wifi \
+		-P /var/run/wpa_cli.wlan0.pid
+	udhcpc -b -i wlan0 -p /var/run/udhcpc.wlan0.pid >/dev/null 2>&1 &
 	;;
 stop)
-	for p in udhcpc.wlan0 wpa_supplicant; do
-		[ -f /var/run/$p.pid ] && kill "$(cat /var/run/$p.pid)"
+	for p in wpa_cli.wlan0 udhcpc.wlan0 wpa_supplicant; do
+		[ -f /var/run/$p.pid ] && kill "$(cat /var/run/$p.pid)" 2>/dev/null
+		rm -f /var/run/$p.pid
 	done
+	;;
+wlan0)
+	# wpa_cli -a: "wlan0 CONNECTED" / "wlan0 DISCONNECTED"
+	p=/var/run/udhcpc.wlan0.pid
+	case "$2" in
+	CONNECTED)
+		if [ -f $p ] && kill -0 "$(cat $p)" 2>/dev/null; then
+			kill -USR1 "$(cat $p)"
+		else
+			udhcpc -b -i wlan0 -p $p >/dev/null 2>&1 &
+		fi
+		;;
+	DISCONNECTED)
+		[ -f $p ] && kill -USR2 "$(cat $p)" 2>/dev/null
+		;;
+	esac
 	;;
 esac
 exit 0

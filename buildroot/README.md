@@ -102,8 +102,10 @@ From the stock kernel image and root filesystem (3.1.0 updater):
   system or a stock slot when missing) and loads the stock drivers from
   there, `S07ad5x-board` runs the PC11 heartbeat and the boot logo with
   stock's board tools (`/usr/bin/cmd_*` are wrappers that run them from
-  `/data/ad5x/vendor` with their own libraries), `S42ad5x-wifi` joins
-  Wi-Fi from `/data/ad5x/wpa_supplicant.conf`, `S60ad5x-eboard` starts the
+  `/data/ad5x/vendor` with their own libraries), `S42ad5x-wifi` runs
+  wpa_supplicant on `/data/ad5x/wpa_supplicant.conf` (stock's saved
+  networks on the first start; HelixScreen joins and saves networks, its
+  switch turns the radio off; `/data/ad5x/wifi.disable`: no Wi-Fi), `S60ad5x-eboard` starts the
   toolhead board (`tools/boot_eboard.py`), `S61klipper` runs klippy as user
   `klipper` at nice -10. Both start only when `/data/ad5x/klipper.enable`
   exists: the boards still run stock firmware until they are reflashed.

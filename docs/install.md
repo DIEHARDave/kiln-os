@@ -16,17 +16,18 @@ every release).
 > **⚠ Your settings and configs do not come with you.** Kiln OS starts
 > with its own Klipper configuration. It does **not** use the `printer.cfg`,
 > macros or other `.cfg` files you edited on stock or zMod, your saved bed
-> mesh, PID or input shaper results, Fluidd/Mainsail settings, print history
-> or Wi-Fi settings. **Back up anything you want to keep before installing**
+> mesh, PID or input shaper results, Fluidd/Mainsail settings or print
+> history. **Back up anything you want to keep before installing**
 > (for example: download the `config` folder in Fluidd or Mainsail).
 >
 > Carried over: the Z offset, cutter and purge-box positions from stock's
-> settings (`unit.cfg`), and which zMod plugins were on
+> settings (`unit.cfg`), the Wi-Fi networks saved on stock's screen, and
+> which zMod plugins were on
 > (`docs/zmod-compat.md`). Nothing is deleted: the old files stay on the data
 > partition and the stock system is saved for going back, but Kiln OS
 > doesn't read them. After the install, run the setup wizard on the touch
-> screen (PID, bed mesh, input shaper, Z offset), and set up Wi-Fi again if
-> you don't use Ethernet (below).
+> screen (PID, bed mesh, input shaper, Z offset; its Wi-Fi step joins a
+> network if you don't use Ethernet).
 
 > **The two boards get new firmware.** At its first start Kiln OS writes
 > mainline Klipper firmware to the mainboard and the toolhead board (about a
@@ -54,7 +55,11 @@ every release).
   stock system (~22 MB), the vendor files (~1 MB) and the images waiting for
   the first start.
 - Network: the main OS uses the same Ethernet MAC as stock and DHCP. Wi-Fi
-  needs `/data/ad5x/wpa_supplicant.conf` (`buildroot/README.md`).
+  starts with the networks saved on stock's screen (switched off ones stay
+  off); join or change one on the touch screen (setup wizard, Settings >
+  Network), where the Wi-Fi switch also turns it off for good if you only
+  use Ethernet. Saved in `/data/ad5x/wpa_supplicant.conf`;
+  `/data/ad5x/wifi.disable` turns Wi-Fi off completely.
 
 ## Method 1: USB stick (recommended)
 

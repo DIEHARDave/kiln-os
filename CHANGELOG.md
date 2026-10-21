@@ -6,6 +6,20 @@ the release has no section of its own yet (rename it after the release).
 
 ## Unreleased
 
+### Fixed
+- **Wi-Fi works without Ethernet**: Wi-Fi now always starts, so the
+  touch screen (setup wizard, Settings > Network) can find and join
+  networks and remembers them. Before, a printer installed without
+  Ethernet had no way to get online. The networks saved on the
+  Flashforge screen come over on the first start.
+
+### Added
+- **Wi-Fi switch**: if you only use Ethernet, turn Wi-Fi off in Settings >
+  Network; it stays off after a restart (it comes back on by itself only
+  when no Ethernet is connected, so the printer can't be cut off).
+
+## v0.0.12 (2026-10-21)
+
 ### Changed
 - **New home screen on the touch screen**: nozzle and bed temperature,
   fans and notifications along the top, a big print status card (progress,
