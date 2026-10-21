@@ -5,7 +5,7 @@ macro names and parameters, mapped onto this system's own macros:
 
 | zMod | Here |
 |---|---|
-| `START_PRINT EXTRUDER_TEMP= BED_TEMP=` (`FORCE_LEVELING`, `FORCE_KAMP`, `TOOL=`) | `PRINT_START`, then `LINE_PURGE` |
+| `START_PRINT EXTRUDER_TEMP= BED_TEMP=` (`FORCE_LEVELING`, `FORCE_KAMP`, `TOOL=`) | `PRINT_START`, then `LINE_PURGE`; a missing temperature: the one the file already set, else 245 / 80 |
 | `END_PRINT` | `PRINT_END` (optional IFS unload first) |
 | `_GOTO_TRASH`, `_SBROS_TRASH` | into the purge box / wipe on its edge |
 | `_DISABLE_SENSOR`, `_ENABLE_SENSOR` | toolhead runout sensor off / back on |

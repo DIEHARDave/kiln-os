@@ -7,6 +7,22 @@ the release has no section of its own yet (rename it after the release).
 ## Unreleased
 
 ### Fixed
+- **Nozzle 10 °C hotter than the file** (245 instead of 235): a file whose
+  start line is zMod's `START_PRINT` without `EXTRUDER_TEMP=` (Orca
+  profiles that send their own `M104` first) got zMod's default of 245
+  for the whole print. `START_PRINT` and `PRINT_START` now keep the
+  temperatures the file already set and use the defaults only when it set
+  none. Files that give `EXTRUDER_TEMP=` work as before.
+
+### Added
+- **Recommended OrcaSlicer machine G-code** (`docs/orcaslicer.md`): start,
+  end, layer change and colour change G-code to paste into OrcaSlicer's
+  printer settings, where the printer does the heating, mesh, first load
+  and the purge at the box.
+
+## v0.0.15 (2026-10-21)
+
+### Fixed
 - **"WiFi system not ready" on the touch screen**: Wi-Fi now waits longer
   for a slow USB Wi-Fi adapter (10 s instead of 3), and a saved Wi-Fi
   file it can't read (for example one brought over from stock) is put
@@ -22,6 +38,7 @@ the release has no section of its own yet (rename it after the release).
   at the bed's front edge, then a scrub along it). Plastic left on the tip
   squashed a little more at every touch, so the probe's three samples
   disagreed.
+
 ### Added
 - **`logs/wifi.log`** (in Fluidd's log files): what Wi-Fi did at start:
   kernel, adapter driver, number of saved networks (no names or
