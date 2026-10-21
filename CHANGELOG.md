@@ -6,6 +6,19 @@ the release has no section of its own yet (rename it after the release).
 
 ## Unreleased
 
+### Changed
+- **New home screen on the touch screen**: nozzle and bed temperature,
+  fans and notifications along the top, a big print status card (progress,
+  file, layer, time left; the last print when idle), and on the right the
+  IFS slots, Preheat/Cool Down, the light switch, the live Z offset (tap
+  it for baby steps), Motion and Unload (Preheat/Cool Down and Unload are
+  greyed out while a print is running or paused). The printer
+  picture, temperature graph (tap a temperature to open it) and tips are
+  gone. A home screen you never rearranged switches to it with the update;
+  one you edited stays as it is.
+
+## v0.0.11 (2026-10-20)
+
 ### Added
 - **Auto-refill settings**: `IFS_AUTO_REFILL MATCH=exact|similar|any` picks
   how close a backup spool's colour must be (default similar). The printer

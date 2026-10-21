@@ -1,0 +1,1415 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: ad5xrecon <ad5xrecon@localhost>
+Date: Wed, 21 Oct 2026 12:00:00 -0400
+Subject: [PATCH] home: AD5X default home layout
+
+The ad5x preset gets a home seed (assets/config/panel_widgets/ad5x/home.json,
+read by PanelWidgetConfig::load_preset_overlay) for the 800x480 panel's
+grid only (medium@12x8; every other grid keeps the shipped defaults).
+Top row: nozzle and bed temperature, fan speeds, notifications. Left:
+print status, detailed (progress arc, file, layer, time left; a tap
+opens the print screen with Pause/Tune/Cancel; the last print with
+Reprint Last when idle), without the temperature row of its
+detailed card. Right: the IFS slots (the spool slot, moved), Preheat
+(PLA/PETG/ABS/TPU, Cool Down while heating) without its temperature
+column and one track tall; under it the LED light (its own slot, so a
+printer without a controllable light leaves the cell empty) and the
+live Z offset (tap: Tune with baby steps); Motion (homing and jog) and
+an "Unload" macro button for
+UNLOAD_FILAMENT. Preheat/Cool Down and Unload are greyed and do nothing
+while a print is printing or paused. printer_image, temp_graph and
+tips are switched off there. A tap on a temperature still opens the
+temperature graph.
+
+print_status takes a new config key, show_temps (default true): false
+hides the detailed active card's nozzle/bed/chamber row through the
+print_status_temps_hidden subject. Only the seed sets it.
+
+preheat may now be one track tall (registry min_rowspan 1, half rows):
+its fits_at() asks for the button's height, so a grid whose track is
+shorter (micro, tiny) grows it back to the whole cell. Tests that used
+preheat as the fixed-row-span or half-on-one-axis example use
+filament_buffer and control_buttons, or drop the one-axis case, which
+no widget has any more.
+
+The mock AD5X persona gets the printer's [led chamber_led].
+
+New widget config keys, all off by default so other layouts keep
+upstream behaviour:
+- preheat show_temps (default true): false hides the nozzle/bed column
+  beside the button.
+- preheat and favorite_macro lock_while_printing (default false): while
+  print_active is 1 (printing or paused) the button is drawn at 40%
+  opacity and a tap only shows "Not available while printing". Opacity
+  rather than LV_STATE_DISABLED, which the macro tile's XML already binds
+  to the connection state.
+- favorite_macro label: tile text in place of the macro's name, drawn
+  whatever show_widget_labels says and kept while the glyph shrinks. The
+  tile's name label now hides through its size verdict alone (which
+  already reads show_widget_labels) instead of also binding the setting
+  in XML. The config modal keeps the keys it does not edit.
+
+A seed may carry a "revision", which joins the preset in the default
+layout's signature. A home layout that is still the unedited default
+(its stored hash matches) is re-resolved on the first READY populate
+when the signature moves, so printers that never edited their home
+screen move to this layout on update; an edited layout is left alone.
+
+Upstream: not applicable (AD5X OS specific)
+---
+ assets/config/panel_widgets/ad5x/home.json    | 466 ++++++++++++++++++
+ include/default_layout_resolver.h             |   4 +-
+ include/favorite_macro_config.h               |   8 +
+ include/favorite_macro_widget.h               |   5 +
+ include/preheat_widget.h                      |  14 +
+ src/api/moonraker_client_mock.cpp             |   3 +-
+ src/system/default_layout_resolver.cpp        |  14 +-
+ src/ui/modals/favorite_macro_config_modal.cpp |   8 +-
+ src/ui/panel_widget_registry.cpp              |   2 +-
+ src/ui/panel_widgets/preheat_widget.cpp       |  39 ++
+ src/ui/panel_widgets/print_status_widget.cpp  |   9 +
+ src/ui/panel_widgets/print_status_widget.h    |   4 +
+ src/ui/widgets/favorite_macro_config.cpp      |   8 +
+ src/ui/widgets/favorite_macro_widget.cpp      |  45 +-
+ .../test_helpers/preheat_widget_test_access.h |   8 +
+ tests/unit/test_default_layout.cpp            | 135 +++++
+ tests/unit/test_default_layout_resolver.cpp   |   9 +
+ tests/unit/test_favorite_macro_config.cpp     |  28 ++
+ tests/unit/test_grid_edit_mode.cpp            |  32 +-
+ tests/unit/test_grid_layout.cpp               |   2 +-
+ tests/unit/test_material_preheat_actions.cpp  |  41 ++
+ tests/unit/test_widget_catalog_fit.cpp        |   8 +-
+ .../panel_widget_favorite_macro.xml           |   5 +-
+ .../print_status_detailed_active.xml          |   5 +-
+ 24 files changed, 868 insertions(+), 34 deletions(-)
+ create mode 100644 assets/config/panel_widgets/ad5x/home.json
+
+diff --git a/assets/config/panel_widgets/ad5x/home.json b/assets/config/panel_widgets/ad5x/home.json
+new file mode 100644
+index 0000000..e7c2971
+--- /dev/null
++++ b/assets/config/panel_widgets/ad5x/home.json
+@@ -0,0 +1,466 @@
++{
++  "_comment": "Kiln OS (AD5X) home seed, applied over default_layout.json for the 'ad5x' preset (PanelWidgetConfig::load_preset_overlay). Only the 800x480 panel's grid ('medium@12x8', 12x8 half-cell tracks) changes; every other grid keeps the shipped defaults. Top strip: nozzle, bed, fans, notifications. Left: print_status (detailed) without its temperature row, since the strip shows them; tapping a temperature opens the graph. Right: the IFS spools (spool_env_rl slot), Preheat/Cool Down one track tall without its temperature column; under it the LED light (the kiln_light slot, only with a controllable light) and the live Z offset (tap: Tune, baby steps); Motion (homing, jog) and an Unload button; Preheat/Cool Down and Unload are greyed and do nothing while a print is printing or paused (lock_while_printing). No printer image, temperature graph or tips. 'revision' joins the signature, so changing it re-resolves every still-unedited default; a layout the user edited stays as it is.",
++  "revision": "kiln-1",
++  "anchors": [
++    {
++      "id": "temperature",
++      "placements": {
++        "micro": {
++          "col": 6,
++          "row": 0,
++          "colspan": 2,
++          "rowspan": 2
++        },
++        "micro@8x6": {
++          "col": 0,
++          "row": 0,
++          "colspan": 2,
++          "rowspan": 2
++        },
++        "tiny": {
++          "col": 4,
++          "row": 0,
++          "colspan": 2,
++          "rowspan": 2
++        },
++        "small": {
++          "col": 4,
++          "row": 0,
++          "colspan": 2,
++          "rowspan": 2
++        },
++        "medium": {
++          "col": 4,
++          "row": 0,
++          "colspan": 2,
++          "rowspan": 2
++        },
++        "large": {
++          "col": 4,
++          "row": 0,
++          "colspan": 2,
++          "rowspan": 2
++        },
++        "xlarge": {
++          "col": 4,
++          "row": 0,
++          "colspan": 2,
++          "rowspan": 2
++        },
++        "xxlarge": {
++          "col": 16,
++          "row": 0,
++          "colspan": 2,
++          "rowspan": 2
++        },
++        "medium@12x8": {
++          "col": 0,
++          "row": 0,
++          "colspan": 4,
++          "rowspan": 2
++        }
++      }
++    },
++    {
++      "id": "bed_temperature",
++      "placements": {
++        "micro": {
++          "col": 8,
++          "row": 0,
++          "colspan": 2,
++          "rowspan": 2
++        },
++        "micro@8x6": {
++          "col": 2,
++          "row": 0,
++          "colspan": 2,
++          "rowspan": 2
++        },
++        "tiny": {
++          "col": 6,
++          "row": 0,
++          "colspan": 2,
++          "rowspan": 2
++        },
++        "small": {
++          "col": 6,
++          "row": 0,
++          "colspan": 2,
++          "rowspan": 2
++        },
++        "medium": {
++          "col": 6,
++          "row": 0,
++          "colspan": 2,
++          "rowspan": 2
++        },
++        "large": {
++          "col": 6,
++          "row": 0,
++          "colspan": 2,
++          "rowspan": 2
++        },
++        "xlarge": {
++          "col": 6,
++          "row": 0,
++          "colspan": 2,
++          "rowspan": 2
++        },
++        "xxlarge": {
++          "col": 18,
++          "row": 0,
++          "colspan": 2,
++          "rowspan": 2
++        },
++        "medium@12x8": {
++          "col": 4,
++          "row": 0,
++          "colspan": 4,
++          "rowspan": 2
++        }
++      }
++    },
++    {
++      "id": "fan_stack",
++      "placements": {
++        "micro": {
++          "col": 6,
++          "row": 2,
++          "colspan": 2,
++          "rowspan": 2
++        },
++        "tiny": {
++          "col": 4,
++          "row": 2,
++          "colspan": 2,
++          "rowspan": 2
++        },
++        "small": {
++          "col": 4,
++          "row": 2,
++          "colspan": 2,
++          "rowspan": 2
++        },
++        "medium": {
++          "col": 8,
++          "row": 0,
++          "colspan": 2,
++          "rowspan": 2
++        },
++        "large": {
++          "col": 12,
++          "row": 0,
++          "colspan": 2,
++          "rowspan": 2
++        },
++        "xlarge": {
++          "col": 12,
++          "row": 0,
++          "colspan": 2,
++          "rowspan": 2
++        },
++        "xxlarge": {
++          "col": 20,
++          "row": 0,
++          "colspan": 2,
++          "rowspan": 2
++        },
++        "medium@12x8": {
++          "col": 8,
++          "row": 0,
++          "colspan": 2,
++          "rowspan": 2
++        }
++      }
++    },
++    {
++      "id": "notifications",
++      "placements": {
++        "micro": {
++          "col": 10,
++          "row": 0,
++          "colspan": 2,
++          "rowspan": 2
++        },
++        "micro@8x6": {
++          "col": 6,
++          "row": 0,
++          "colspan": 2,
++          "rowspan": 2
++        },
++        "tiny": {
++          "col": 8,
++          "row": 0,
++          "colspan": 2,
++          "rowspan": 2
++        },
++        "small": {
++          "col": 8,
++          "row": 0,
++          "colspan": 2,
++          "rowspan": 2
++        },
++        "medium": {
++          "col": 10,
++          "row": 0,
++          "colspan": 2,
++          "rowspan": 2
++        },
++        "large": {
++          "col": 14,
++          "row": 0,
++          "colspan": 2,
++          "rowspan": 2
++        },
++        "xlarge": {
++          "col": 14,
++          "row": 0,
++          "colspan": 2,
++          "rowspan": 2
++        },
++        "xxlarge": {
++          "col": 22,
++          "row": 0,
++          "colspan": 2,
++          "rowspan": 2
++        },
++        "medium@12x8": {
++          "col": 10,
++          "row": 0,
++          "colspan": 2,
++          "rowspan": 2
++        }
++      }
++    },
++    {
++      "id": "print_status",
++      "config": {
++        "layout_style": "detailed"
++      },
++      "placements": {
++        "micro": {
++          "col": 0,
++          "row": 4,
++          "colspan": 8,
++          "rowspan": 4
++        },
++        "micro@8x6": {
++          "col": 0,
++          "row": 2,
++          "colspan": 8,
++          "rowspan": 4
++        },
++        "tiny": {
++          "col": 0,
++          "row": 4,
++          "colspan": 10,
++          "rowspan": 4
++        },
++        "small": {
++          "col": 0,
++          "row": 4,
++          "colspan": 10,
++          "rowspan": 4
++        },
++        "medium": {
++          "col": 0,
++          "row": 4,
++          "colspan": 8,
++          "rowspan": 4
++        },
++        "large": {
++          "col": 0,
++          "row": 4,
++          "colspan": 8,
++          "rowspan": 4
++        },
++        "xlarge": {
++          "col": 0,
++          "row": 4,
++          "colspan": 8,
++          "rowspan": 4
++        },
++        "xxlarge": {
++          "col": 6,
++          "row": 0,
++          "colspan": 10,
++          "rowspan": 6
++        },
++        "medium@12x8": {
++          "col": 0,
++          "row": 2,
++          "colspan": 8,
++          "rowspan": 6,
++          "config": {
++            "show_temps": false
++          }
++        }
++      }
++    },
++    {
++      "slot": "spool_env_rl",
++      "placements": {
++        "medium": {
++          "col": 4,
++          "row": 2,
++          "colspan": 4,
++          "rowspan": 2
++        },
++        "medium@12x8": {
++          "col": 8,
++          "row": 2,
++          "colspan": 4,
++          "rowspan": 2
++        }
++      },
++      "alternatives": [
++        {
++          "cells": [
++            {
++              "candidates": [
++                {
++                  "id": "tool_switcher",
++                  "requires": [
++                    "ams_is_tool_changer"
++                  ]
++                }
++              ],
++              "at": [
++                0,
++                0,
++                4,
++                2
++              ]
++            }
++          ]
++        },
++        {
++          "cells": [
++            {
++              "candidates": [
++                "ams"
++              ],
++              "at": [
++                0,
++                0,
++                4,
++                2
++              ]
++            }
++          ]
++        },
++        {
++          "cells": [
++            {
++              "candidates": "ENV_FIL",
++              "at": [
++                2,
++                0,
++                2,
++                2
++              ]
++            },
++            {
++              "candidates": "ENV_FIL",
++              "at": [
++                0,
++                0,
++                2,
++                2
++              ]
++            }
++          ]
++        }
++      ]
++    },
++    {
++      "id": "preheat",
++      "placements": {
++        "medium@12x8": {
++          "col": 8,
++          "row": 4,
++          "colspan": 4,
++          "rowspan": 1
++        }
++      },
++      "config": {
++        "show_temps": false,
++        "lock_while_printing": true
++      }
++    },
++    {
++      "id": "z_offset",
++      "placements": {
++        "medium@12x8": {
++          "col": 10,
++          "row": 5,
++          "colspan": 2,
++          "rowspan": 1
++        }
++      }
++    },
++    {
++      "id": "motion",
++      "placements": {
++        "medium@12x8": {
++          "col": 8,
++          "row": 6,
++          "colspan": 2,
++          "rowspan": 2
++        }
++      }
++    },
++    {
++      "id": "favorite_macro",
++      "config": {
++        "macro": "UNLOAD_FILAMENT",
++        "icon": "eject",
++        "label": "Unload",
++        "lock_while_printing": true
++      },
++      "placements": {
++        "medium@12x8": {
++          "col": 10,
++          "row": 6,
++          "colspan": 2,
++          "rowspan": 2
++        }
++      }
++    },
++    {
++      "slot": "kiln_light",
++      "placements": {
++        "medium@12x8": {
++          "col": 8,
++          "row": 5,
++          "colspan": 2,
++          "rowspan": 1
++        }
++      },
++      "alternatives": [
++        {
++          "cells": [
++            {
++              "candidates": [
++                "led"
++              ],
++              "at": [
++                0,
++                0,
++                2,
++                1
++              ]
++            }
++          ]
++        }
++      ]
++    }
++  ],
++  "disabled": {
++    "medium@12x8": [
++      "tips",
++      "printer_image",
++      "temp_graph"
++    ]
++  }
++}
+diff --git a/include/default_layout_resolver.h b/include/default_layout_resolver.h
+index 8439954..1296621 100644
+--- a/include/default_layout_resolver.h
++++ b/include/default_layout_resolver.h
+@@ -56,8 +56,8 @@ struct ResolvedPlacement {
+ struct ResolvedDefault {
+     std::vector<ResolvedPlacement> placed;
+     std::vector<std::string> disabled; // losing candidates + tier `disabled` ids
+-    std::string signature; // tier|cols|rows|variant chain|preset|name=value,... for every consulted
+-                           // subject, sorted
++    std::string signature; // tier|cols|rows|variant chain|preset[#seed revision]|name=value,...
++                           // for every consulted subject, sorted
+     bool ok = false; // false: table unusable (missing, no anchors for this tier); caller falls back
+ };
+ 
+diff --git a/include/favorite_macro_config.h b/include/favorite_macro_config.h
+index 6f47a8e..367f06f 100644
+--- a/include/favorite_macro_config.h
++++ b/include/favorite_macro_config.h
+@@ -23,6 +23,14 @@ struct FavoriteMacroConfig {
+     /// carry the inverse "skip_param_prompt", which favorite_macro_config_from_json()
+     /// still reads; see also migrate_v22_to_v23() in src/system/config.cpp.
+     bool require_confirmation = true;
++
++    /// Tile text in place of the macro's display name (empty = the name). A
++    /// set label is kept at small sizes: the glyph shrinks before it goes.
++    std::string label;
++
++    /// While a print is printing or paused the tile is greyed and a tap does
++    /// nothing (a layout's guard against a mis-tap mid-print). Off by default.
++    bool lock_while_printing = false;
+ };
+ 
+ /// Parse config from PanelWidgetConfig JSON (tolerant of missing/wrong types).
+diff --git a/include/favorite_macro_widget.h b/include/favorite_macro_widget.h
+index bc98bbb..54ea3bb 100644
+--- a/include/favorite_macro_widget.h
++++ b/include/favorite_macro_widget.h
+@@ -62,6 +62,10 @@ class FavoriteMacroWidget : public TiledPanelWidget {
+     std::string icon_name_;            ///< Custom icon name, empty = "play" default
+     uint32_t icon_color_ = 0;          ///< Custom icon color (RGB), 0 = theme secondary
+     bool require_confirmation_ = true; ///< Gate runs behind the param modal / confirm dialog
++    std::string label_;                ///< Tile text override, empty = the macro's name
++    bool lock_while_printing_ = false; ///< Greyed and inert while a print is active
++    bool locked_ = false;              ///< lock_while_printing_ and a print is active now
++    ObserverGuard print_active_obs_;
+     helix::AsyncLifetimeGuard lifetime_;
+ 
+     std::unique_ptr<FavoriteMacroConfigModal> config_modal_;
+@@ -70,6 +74,7 @@ class FavoriteMacroWidget : public TiledPanelWidget {
+ 
+     void update_display();
+     void save_config();
++    void apply_lock(bool print_active);
+ 
+     void fetch_and_execute();
+     void open_config_modal();
+diff --git a/include/preheat_widget.h b/include/preheat_widget.h
+index 3b00755..2fa4b7f 100644
+--- a/include/preheat_widget.h
++++ b/include/preheat_widget.h
+@@ -27,6 +27,10 @@ class PreheatWidget : public PanelWidget {
+     void set_config(const nlohmann::json& config) override;
+     void attach(lv_obj_t* widget_obj, lv_obj_t* parent_screen) override;
+     void detach() override;
++    /// One track tall where a track holds the button: the split button is the
++    /// only thing that must fit, and a smaller box (micro, tiny) grows back to
++    /// the whole cell.
++    bool fits_at(int width_px, int height_px) const override;
+     const char* id() const override {
+         return "preheat";
+     }
+@@ -61,6 +65,16 @@ class PreheatWidget : public PanelWidget {
+     int selected_material_ = 0; // index into helix::presets slots, not a fixed material
+     bool heaters_active_ = false;
+ 
++    // Config "show_temps" (default true): the nozzle/bed column beside the
++    // button. A layout with temperature tiles of its own turns it off.
++    bool show_temps_ = true;
++    // Config "lock_while_printing" (default false): while a print is printing
++    // or paused the button is greyed and Preheat/Cool Down does nothing.
++    bool lock_while_printing_ = false;
++    bool locked_ = false;
++    ObserverGuard print_active_obs_;
++    void apply_lock(bool print_active);
++
+     // Thermal tint for the two heater glyphs. Each binder owns its own animator
+     // and temperature observers, so the tile's numbers and icons agree.
+     helix::ui::HeaterIconBinder nozzle_icon_binder_;
+diff --git a/src/api/moonraker_client_mock.cpp b/src/api/moonraker_client_mock.cpp
+index 89e77ca..551c708 100644
+--- a/src/api/moonraker_client_mock.cpp
++++ b/src/api/moonraker_client_mock.cpp
+@@ -3179,7 +3179,8 @@ void MoonrakerClientMock::populate_hardware() {
+                                 "temperature_sensor chamber"};
+         discovery_.fans() = {"fan_generic fanM106", "heater_fan heat_fan",
+                              "fan_generic chamber_fan", "fan_generic pcb_fan"};
+-        discovery_.leds() = {};
++        // The chamber light: [led chamber_led] (white_pin PA11) on the printer.
++        discovery_.leds() = {"led chamber_led"};
+         break;
+ 
+     case PrinterType::CREALITY_K2_PLUS:
+diff --git a/src/system/default_layout_resolver.cpp b/src/system/default_layout_resolver.cpp
+index a067d54..fff21c0 100644
+--- a/src/system/default_layout_resolver.cpp
++++ b/src/system/default_layout_resolver.cpp
+@@ -473,9 +473,19 @@ ResolvedDefault resolve_default_layout(const json& table, const json* overlay,
+                                        const std::vector<std::string>& variant_chain,
+                                        std::string_view preset, const CapabilitySnapshot& caps) {
+     ResolvedDefault out;
++    // A seed's "revision" joins the preset in the signature, so a shipped seed
++    // that changes its arrangement re-resolves every default that is still
++    // unedited (reresolve_default_if_changed); an edited layout keeps its own.
++    std::string seed_key(preset);
++    if (overlay && overlay->is_object()) {
++        const std::string revision = ju::safe_string(*overlay, "revision");
++        if (!revision.empty()) {
++            seed_key += '#' + revision;
++        }
++    }
+     const int bp = breakpoint_from_name(std::string(tier).c_str());
+     if (!table.is_object() || bp < 0) {
+-        out.signature = make_signature(tier, cols, rows, variant_chain, preset, {});
++        out.signature = make_signature(tier, cols, rows, variant_chain, seed_key, {});
+         return out;
+     }
+ 
+@@ -531,7 +541,7 @@ ResolvedDefault resolve_default_layout(const json& table, const json* overlay,
+ 
+     out.placed = r.take_placed();
+     out.disabled = r.disabled();
+-    out.signature = make_signature(tier, cols, rows, variant_chain, preset, r.consulted());
++    out.signature = make_signature(tier, cols, rows, variant_chain, seed_key, r.consulted());
+     out.ok = !out.placed.empty();
+     spdlog::debug("[DefaultLayoutResolver] tier={} grid={}x{} table={} placed={} disabled={} "
+                   "signature={}",
+diff --git a/src/ui/modals/favorite_macro_config_modal.cpp b/src/ui/modals/favorite_macro_config_modal.cpp
+index f60fdd9..116a3c0 100644
+--- a/src/ui/modals/favorite_macro_config_modal.cpp
++++ b/src/ui/modals/favorite_macro_config_modal.cpp
+@@ -138,7 +138,13 @@ void FavoriteMacroConfigModal::load_config() {
+ 
+ void FavoriteMacroConfigModal::persist() {
+     auto& wc = PanelWidgetManager::instance().get_widget_config(panel_id_);
+-    FavoriteMacroConfig c{macro_name_, icon_name_, icon_color_, require_confirmation_};
++    // Starts from the stored config so the keys this modal does not edit
++    // (label, lock_while_printing) survive the save.
++    FavoriteMacroConfig c = favorite_macro_config_from_json(wc.get_widget_config(widget_id_));
++    c.macro = macro_name_;
++    c.icon = icon_name_;
++    c.color = icon_color_;
++    c.require_confirmation = require_confirmation_;
+     wc.set_widget_config(widget_id_, favorite_macro_config_to_json(c));
+     if (on_change_)
+         on_change_();
+diff --git a/src/ui/panel_widget_registry.cpp b/src/ui/panel_widget_registry.cpp
+index 6d57cde..def6609 100644
+--- a/src/ui/panel_widget_registry.cpp
++++ b/src/ui/panel_widget_registry.cpp
+@@ -121,7 +121,7 @@ static std::vector<PanelWidgetDef> s_widget_defs = {
+     {"temp_stack",       TR_NOOP("Temperatures"),      "thermometer",      TR_NOOP("Nozzle, bed, and chamber in one widget"),     nullptr,              nullptr,                               kCatTemp,     false, 2, 2, 2, 2, 6, 4, false, true, true},
+     {"thermistor",       TR_NOOP("Temperature Sensors"), "thermometer",    TR_NOOP("Readings from extra temperature sensors"), "temp_sensor_count", "No temperature sensors detected", kCatTemp,     false, 2, 2, 1, 1, kBandColspan, kBandColspan, true, true, true},
+     {"temp_graph",       TR_NOOP("Temperature Graph"), "chart_line",       TR_NOOP("Temperatures plotted over time"), nullptr,         nullptr,                               kCatTemp,     false, 4, 4, 2, 2, kBandColspan, 8, true, true, true, false},
+-    {"preheat",          TR_NOOP("Preheat"),           "heat_wave",        TR_NOOP("Warm up for a material in one tap"),            nullptr,            nullptr,                               kCatTemp,     false, 6, 2, 4, 2, 8, 2, false, true, false},
++    {"preheat",          TR_NOOP("Preheat"),           "heat_wave",        TR_NOOP("Warm up for a material in one tap"),            nullptr,            nullptr,                               kCatTemp,     false, 6, 2, 4, 1, 8, 2, false, true, true},
+     {"ams",              TR_NOOP("Multi-Filament System Status"),        "filament",         TR_NOOP("Slot colors, materials, and levels"),       "ams_slot_count",     "Requires Multi-Filament System or MMU hardware",        kCatFilament, false, 2, 2, 2, 2, 8, 4, false, true, true},
+     {"bypass",           TR_NOOP("Bypass"),           "source_branch",    TR_NOOP("Toggle external spool bypass"), "ams_supports_bypass", "Requires a filament system with bypass", kCatFilament, false, 2, 2, 1, 1, kBandColspan, kBandColspan, false, true, true},
+     {"active_spool",     TR_NOOP("Active Spool"),      "inventory",  TR_NOOP("The Spoolman spool currently loaded"),     nullptr,                  nullptr,                           kCatFilament, false, 2, 2, 1, 1, 8, 4, false, true, true},
+diff --git a/src/ui/panel_widgets/preheat_widget.cpp b/src/ui/panel_widgets/preheat_widget.cpp
+index e322e3c..1acc748 100644
+--- a/src/ui/panel_widgets/preheat_widget.cpp
++++ b/src/ui/panel_widgets/preheat_widget.cpp
+@@ -23,6 +23,7 @@
+ #include "preset_materials.h"
+ #include "printer_state.h"
+ #include "temperature_controller.h"
++#include "theme_manager.h"
+ #include "tool_state.h"
+ 
+ #include <spdlog/spdlog.h>
+@@ -71,6 +72,11 @@ void PreheatWidget::set_config(const nlohmann::json& config) {
+             selected_material_ = 0;
+         }
+     }
++    show_temps_ = !(config_.contains("show_temps") && config_["show_temps"].is_boolean() &&
++                    !config_["show_temps"].get<bool>());
++    lock_while_printing_ = config_.contains("lock_while_printing") &&
++                           config_["lock_while_printing"].is_boolean() &&
++                           config_["lock_while_printing"].get<bool>();
+ }
+ 
+ void PreheatWidget::attach(lv_obj_t* widget_obj, lv_obj_t* parent_screen) {
+@@ -119,6 +125,14 @@ void PreheatWidget::attach(lv_obj_t* widget_obj, lv_obj_t* parent_screen) {
+         }
+     }
+ 
++    if (lv_obj_t* temps = lv_obj_find_by_name(widget_obj_, "preheat_temp_column")) {
++        if (show_temps_) {
++            lv_obj_remove_flag(temps, LV_OBJ_FLAG_HIDDEN);
++        } else {
++            lv_obj_add_flag(temps, LV_OBJ_FLAG_HIDDEN);
++        }
++    }
++
+     // Set user_data on temp tap rows for callback recovery
+     lv_obj_t* nozzle_row = lv_obj_find_by_name(widget_obj_, "preheat_nozzle_row");
+     if (nozzle_row)
+@@ -150,6 +164,12 @@ void PreheatWidget::attach(lv_obj_t* widget_obj, lv_obj_t* parent_screen) {
+             self->update_heater_state();
+         },
+         bed_target_lifetime_);
++    if (lock_while_printing_) {
++        print_active_obs_ = observe<int>(
++            printer_state_.print_state().get_print_active_subject(), this,
++            [](PreheatWidget* self, int active) { self->apply_lock(active != 0); },
++            printer_state_.get_subjects_lifetime());
++    }
+     language_obs_ = helix::ui::observe_language_change(this, [](PreheatWidget* self) {
+         self->update_button_label();
+         self->update_tool_target_label();
+@@ -159,6 +179,10 @@ void PreheatWidget::attach(lv_obj_t* widget_obj, lv_obj_t* parent_screen) {
+                   presets::name(selected_material_), tool_target_);
+ }
+ 
++bool PreheatWidget::fits_at(int /*width_px*/, int height_px) const {
++    return height_px >= theme_manager_get_spacing("button_height");
++}
++
+ void PreheatWidget::detach() {
+     if (s_active_instance == this) {
+         s_active_instance = nullptr;
+@@ -168,6 +192,8 @@ void PreheatWidget::detach() {
+     bed_icon_binder_.unbind();
+ 
+     // Applying [L073]: subjects are alive during detach, use reset()
++    print_active_obs_.reset();
++    locked_ = false;
+     extruder_target_obs_.reset();
+     bed_target_lifetime_.reset();
+     bed_target_obs_.reset();
+@@ -301,7 +327,20 @@ void PreheatWidget::set_temperatures(int nozzle, int bed) {
+                    }});
+ }
+ 
++void PreheatWidget::apply_lock(bool print_active) {
++    locked_ = lock_while_printing_ && print_active;
++    if (split_btn_) {
++        lv_obj_set_style_opa(split_btn_, locked_ ? LV_OPA_40 : LV_OPA_COVER, LV_PART_MAIN);
++    }
++}
++
+ void PreheatWidget::handle_apply() {
++    if (locked_) {
++        spdlog::info("[PreheatWidget] {} tapped while printing - ignored",
++                     heaters_active_ ? "Cool Down" : "Preheat");
++        NOTIFY_INFO(lv_tr("Not available while printing"));
++        return;
++    }
+     if (heaters_active_) {
+         handle_cooldown();
+         return;
+diff --git a/src/ui/panel_widgets/print_status_widget.cpp b/src/ui/panel_widgets/print_status_widget.cpp
+index 841c22a..a791432 100644
+--- a/src/ui/panel_widgets/print_status_widget.cpp
++++ b/src/ui/panel_widgets/print_status_widget.cpp
+@@ -134,6 +134,8 @@ void PrintStatusWidget::init_static_subjects() {
+     s_static_subjects.publish("print_status_queue_hidden", &queue_hidden_subject_);
+     lv_subject_init_int(&actions_hidden_subject_, 0);
+     s_static_subjects.publish("print_status_actions_hidden", &actions_hidden_subject_);
++    lv_subject_init_int(&temps_hidden_subject_, 0);
++    s_static_subjects.publish("print_status_temps_hidden", &temps_hidden_subject_);
+     visibility_subjects_initialized_ = true;
+ 
+     // Detailed-layout subjects
+@@ -1393,6 +1395,12 @@ void PrintStatusWidget::set_config(const nlohmann::json& config) {
+     if (config.contains("show_job_queue") && config["show_job_queue"].is_boolean()) {
+         show_job_queue_ = config["show_job_queue"].get<bool>();
+     }
++    // Not in the configure picker: a layout that has its own temperature
++    // tiles (the AD5X default) turns the card's row off.
++    show_temps_ = true;
++    if (config.contains("show_temps") && config["show_temps"].is_boolean()) {
++        show_temps_ = config["show_temps"].get<bool>();
++    }
+     if (s_formatter_ && !s_formatter_->set_nozzle_tool_override(nozzle_tool_override_)) {
+         nozzle_tool_override_ = "auto";
+         config_["nozzle_tool_override"] = "auto";
+@@ -1422,6 +1430,7 @@ void PrintStatusWidget::apply_visibility_config() {
+     lv_subject_set_int(&files_hidden_subject_, show_print_files_ ? 0 : 1);
+     lv_subject_set_int(&last_hidden_subject_, show_reprint_last_ ? 0 : 1);
+     lv_subject_set_int(&recent_hidden_subject_, show_recent_prints_ ? 0 : 1);
++    lv_subject_set_int(&temps_hidden_subject_, show_temps_ ? 0 : 1);
+ 
+     // Queue row uses a live count — defer to the dedicated helper, which also
+     // triggers recompute_actions_visibility() since queue state affects it.
+diff --git a/src/ui/panel_widgets/print_status_widget.h b/src/ui/panel_widgets/print_status_widget.h
+index f99d574..ad1c603 100644
+--- a/src/ui/panel_widgets/print_status_widget.h
++++ b/src/ui/panel_widgets/print_status_widget.h
+@@ -359,6 +359,9 @@ class PrintStatusWidget : public PanelWidget {
+     static inline lv_subject_t recent_hidden_subject_;
+     static inline lv_subject_t queue_hidden_subject_;
+     static inline lv_subject_t actions_hidden_subject_;
++    // The detailed active card's nozzle/bed/chamber row; hidden by a layout
++    // that shows the temperatures in their own tiles (config show_temps).
++    static inline lv_subject_t temps_hidden_subject_;
+     static inline bool visibility_subjects_initialized_ = false;
+ 
+     // Detailed-layout subjects (static inline — shared across all widget instances)
+@@ -667,6 +670,7 @@ class PrintStatusWidget : public PanelWidget {
+     bool show_reprint_last_ = true;
+     bool show_recent_prints_ = true;
+     bool show_job_queue_ = true;
++    bool show_temps_ = true;
+ 
+     void show_configure_picker();
+     void apply_visibility_config();
+diff --git a/src/ui/widgets/favorite_macro_config.cpp b/src/ui/widgets/favorite_macro_config.cpp
+index f7a7182..b27f201 100644
+--- a/src/ui/widgets/favorite_macro_config.cpp
++++ b/src/ui/widgets/favorite_macro_config.cpp
+@@ -27,6 +27,10 @@ FavoriteMacroConfig favorite_macro_config_from_json(const nlohmann::json& j) {
+     } else if (j.contains("skip_param_prompt") && j["skip_param_prompt"].is_boolean()) {
+         c.require_confirmation = !j["skip_param_prompt"].get<bool>();
+     }
++    if (j.contains("label") && j["label"].is_string())
++        c.label = j["label"].get<std::string>();
++    if (j.contains("lock_while_printing") && j["lock_while_printing"].is_boolean())
++        c.lock_while_printing = j["lock_while_printing"].get<bool>();
+     return c;
+ }
+ 
+@@ -41,6 +45,10 @@ nlohmann::json favorite_macro_config_to_json(const FavoriteMacroConfig& c) {
+     // config that still carries it sheds it on the next save.
+     if (!c.require_confirmation)
+         j["require_confirmation"] = false;
++    if (!c.label.empty())
++        j["label"] = c.label;
++    if (c.lock_while_printing)
++        j["lock_while_printing"] = true;
+     return j;
+ }
+ 
+diff --git a/src/ui/widgets/favorite_macro_widget.cpp b/src/ui/widgets/favorite_macro_widget.cpp
+index 8b38415..7ffed3a 100644
+--- a/src/ui/widgets/favorite_macro_widget.cpp
++++ b/src/ui/widgets/favorite_macro_widget.cpp
+@@ -3,6 +3,8 @@
+ 
+ #include "favorite_macro_widget.h"
+ 
++#include "ui_error_reporting.h"
++
+ #include "ui_event_safety.h"
+ #include "ui_icon.h"
+ #include "ui_icon_codepoints.h"
+@@ -18,6 +20,7 @@
+ #include "macro_executor.h"
+ #include "macro_param_cache.h"
+ #include "macro_param_defaults.h"
++#include "observer_factory.h"
+ #include "panel_widget_config.h"
+ #include "panel_widget_manager.h"
+ #include "panel_widget_registry.h"
+@@ -140,6 +143,18 @@ void FavoriteMacroWidget::set_config(const nlohmann::json& config) {
+     }
+     icon_color_ = c.color;
+     require_confirmation_ = c.require_confirmation;
++    lock_while_printing_ = c.lock_while_printing;
++    if (c.label != label_) {
++        label_ = c.label;
++        // A label of its own names the tile: drawn whatever show_widget_labels
++        // says, measured as written and kept while the glyph shrinks. Without
++        // one the tile is sized as before.
++        TileSizing::Content content{"", "", label_.empty() ? "Macro" : label_, false, "",
++                                    /*label_always_drawn=*/!label_.empty(),
++                                    TileSizing::IconBox::Disc};
++        content.label_is_identity = !label_.empty();
++        sizing_.set_content(std::move(content));
++    }
+     spdlog::debug("[FavoriteMacroWidget] Config: {}={} icon={} color=0x{:06X} require_confirm={}",
+                   widget_id_, macro_name_, icon_name_.empty() ? "default" : icon_name_, icon_color_,
+                   require_confirmation_);
+@@ -167,11 +182,20 @@ void FavoriteMacroWidget::attach(lv_obj_t* widget_obj, lv_obj_t* parent_screen)
+ 
+     update_display();
+ 
++    if (lock_while_printing_) {
++        print_active_obs_ = helix::ui::observe<int>(
++            get_printer_state().print_state().get_print_active_subject(), this,
++            [](FavoriteMacroWidget* self, int active) { self->apply_lock(active != 0); },
++            get_printer_state().get_subjects_lifetime());
++    }
++
+     spdlog::debug("[FavoriteMacroWidget] Attached {} (macro: {})", widget_id_,
+                   macro_name_.empty() ? "none" : macro_name_);
+ }
+ 
+ void FavoriteMacroWidget::detach() {
++    print_active_obs_.reset();
++    locked_ = false;
+     lifetime_.invalidate();
+     config_modal_.reset();
+ 
+@@ -198,6 +222,12 @@ void FavoriteMacroWidget::handle_clicked() {
+                      widget_id_);
+         open_config_modal();
+     } else {
++        if (locked_) {
++            spdlog::info("[FavoriteMacroWidget] {} clicked while printing - ignored ({})",
++                         widget_id_, macro_name_);
++            NOTIFY_INFO(lv_tr("Not available while printing"));
++            return;
++        }
+         // Execute assigned macro
+         spdlog::info("[FavoriteMacroWidget] {} clicked - executing {}", widget_id_, macro_name_);
+         fetch_and_execute();
+@@ -225,7 +255,9 @@ void FavoriteMacroWidget::update_display() {
+             // A tag, not lv_tr() text: the label then re-translates itself.
+             lv_label_set_translation_tag(name_label_, "Configure");
+         } else {
+-            std::string display = helix::get_display_name(macro_name_, helix::DeviceType::MACRO);
++            std::string display = label_.empty()
++                                      ? helix::get_display_name(macro_name_, helix::DeviceType::MACRO)
++                                      : label_;
+             lv_label_set_text(name_label_, display.c_str());
+         }
+     }
+@@ -259,8 +291,19 @@ void FavoriteMacroWidget::update_display() {
+     }
+ }
+ 
++void FavoriteMacroWidget::apply_lock(bool print_active) {
++    locked_ = lock_while_printing_ && print_active;
++    if (widget_obj_) {
++        // Greyed, not LV_STATE_DISABLED: the XML binds that state to the
++        // connection, and either binding would undo the other's.
++        lv_obj_set_style_opa(widget_obj_, locked_ ? LV_OPA_40 : LV_OPA_COVER, LV_PART_MAIN);
++    }
++}
++
+ void FavoriteMacroWidget::save_config() {
+     helix::FavoriteMacroConfig c{macro_name_, icon_name_, icon_color_, require_confirmation_};
++    c.label = label_;
++    c.lock_while_printing = lock_while_printing_;
+     save_widget_config(helix::favorite_macro_config_to_json(c));
+     spdlog::debug(
+         "[FavoriteMacroWidget] Saved config: {}={} icon={} color=0x{:06X} require_confirm={}",
+diff --git a/tests/test_helpers/preheat_widget_test_access.h b/tests/test_helpers/preheat_widget_test_access.h
+index b20ca75..1b0b203 100644
+--- a/tests/test_helpers/preheat_widget_test_access.h
++++ b/tests/test_helpers/preheat_widget_test_access.h
+@@ -53,6 +53,14 @@ class PreheatWidgetTestAccess {
+         widget.handle_apply();
+     }
+ 
++    static void apply_lock(PreheatWidget& widget, bool print_active) {
++        widget.apply_lock(print_active);
++    }
++
++    static bool show_temps(const PreheatWidget& widget) {
++        return widget.show_temps_;
++    }
++
+     /// The tool-target caption update_tool_target_label() writes into @p label,
+     /// standing in for the attached tile's own label.
+     static std::string tool_target_caption(PreheatWidget& widget, lv_obj_t* label) {
+diff --git a/tests/unit/test_default_layout.cpp b/tests/unit/test_default_layout.cpp
+index ebec034..a4f7bfe 100644
+--- a/tests/unit/test_default_layout.cpp
++++ b/tests/unit/test_default_layout.cpp
+@@ -2868,3 +2868,138 @@ TEST_CASE("default_layout: a printer that is not a tool changer gets the layout
+         }
+     }
+ }
++
++// ============================================================================
++// The AD5X preset's home seed (assets/config/panel_widgets/ad5x/home.json)
++// ============================================================================
++
++namespace {
++
++nlohmann::json load_ad5x_seed() {
++    std::ifstream in(helix::find_readable("panel_widgets/ad5x/home.json"));
++    REQUIRE(in.is_open());
++    return nlohmann::json::parse(in);
++}
++
++} // namespace
++
++TEST_CASE("default_layout: the ad5x seed fills the 800x480 grid",
++          "[default_layout][shipped][ad5x]") {
++    const auto layout = load_shipped_layout();
++    const auto seed = load_ad5x_seed();
++    CapabilitySnapshot open = all_closed(layout);
++    for (const auto& s : helix::layout::subjects_named_by(seed)) {
++        open.subjects[s] = 0;
++    }
++    for (auto& [subject, value] : open.subjects) {
++        value = subject == "ams_slot_count" ? 4 : 1;
++    }
++    open.subjects["ams_is_tool_changer"] = 0;
++    CapabilitySnapshot no_ams = open;
++    no_ams.subjects["ams_slot_count"] = 0;
++
++    for (const CapabilitySnapshot* caps : {&open, &no_ams}) {
++        INFO((caps == &open ? "IFS" : "no IFS"));
++        const ResolvedDefault r = helix::layout::resolve_default_layout(
++            layout, &seed, "medium", 12, 8, {}, "ad5x", *caps);
++        REQUIRE(r.ok);
++        CHECK(r.signature.find("|ad5x#") != std::string::npos);
++
++        std::set<std::pair<int, int>> owned;
++        for (const auto& p : r.placed) {
++            const auto* def = helix::find_widget_def(p.id);
++            INFO("widget " << p.id << " at (" << p.col << "," << p.row << ") " << p.colspan << "x"
++                           << p.rowspan);
++            REQUIRE(def != nullptr);
++            CHECK(p.colspan >= def->effective_min_colspan());
++            CHECK(p.colspan <= def->effective_max_colspan());
++            CHECK(p.rowspan >= def->effective_min_rowspan());
++            CHECK(p.rowspan <= def->effective_max_rowspan());
++            CHECK(p.col + p.colspan <= 12);
++            CHECK(p.row + p.rowspan <= 8);
++            for (int row = p.row; row < p.row + p.rowspan; ++row) {
++                for (int col = p.col; col < p.col + p.colspan; ++col) {
++                    CHECK(owned.insert({col, row}).second);
++                }
++            }
++        }
++        if (caps == &open) {
++            CHECK(owned.size() == 96u);
++            const auto* ams = placed_widget(r, "ams");
++            REQUIRE(ams);
++            CHECK((ams->col == 8 && ams->row == 2 && ams->colspan == 4 && ams->rowspan == 2));
++            // The light under Preheat, from its own slot.
++            const auto* led = placed_widget(r, "led");
++            REQUIRE(led);
++            CHECK((led->col == 8 && led->row == 5 && led->colspan == 2 && led->rowspan == 1));
++        }
++
++        const auto* ps = placed_widget(r, "print_status");
++        REQUIRE(ps);
++        CHECK((ps->col == 0 && ps->row == 2 && ps->colspan == 8 && ps->rowspan == 6));
++        CHECK(ps->config.value("layout_style", "") == "detailed");
++        CHECK(ps->config.value("show_temps", true) == false);
++        const auto* preheat = placed_widget(r, "preheat");
++        REQUIRE(preheat);
++        CHECK((preheat->col == 8 && preheat->row == 4 && preheat->colspan == 4 &&
++               preheat->rowspan == 1));
++        const auto* z = placed_widget(r, "z_offset");
++        REQUIRE(z);
++        CHECK((z->col == 10 && z->row == 5 && z->colspan == 2 && z->rowspan == 1));
++        CHECK(preheat->config.value("show_temps", true) == false);
++        CHECK(preheat->config.value("lock_while_printing", false) == true);
++        const auto* unload = placed_widget(r, "favorite_macro");
++        REQUIRE(unload);
++        CHECK(unload->config.value("macro", "") == "UNLOAD_FILAMENT");
++        CHECK(unload->config.value("label", "") == "Unload");
++        CHECK(unload->config.value("lock_while_printing", false) == true);
++        for (const char* id : {"temperature", "bed_temperature", "fan_stack", "notifications",
++                               "preheat", "motion", "favorite_macro"}) {
++            INFO("widget " << id);
++            CHECK(placed_widget(r, id) != nullptr);
++        }
++        for (const char* id : {"printer_image", "temp_graph", "tips"}) {
++            INFO("widget " << id);
++            CHECK(placed_widget(r, id) == nullptr);
++            CHECK(resolved_disabled(r, id));
++        }
++    }
++}
++
++TEST_CASE("default_layout: the ad5x seed leaves every other grid as shipped",
++          "[default_layout][shipped][ad5x]") {
++    const auto layout = load_shipped_layout();
++    const auto seed = load_ad5x_seed();
++    CapabilitySnapshot open = all_closed(layout);
++    for (auto& [subject, value] : open.subjects) {
++        value = subject == "ams_slot_count" ? 4 : 1;
++    }
++    open.subjects["ams_is_tool_changer"] = 0;
++
++    for (const auto& g : helix::test::kMeasuredGrids) {
++        LayoutTypeGuard layout_type(g.panel_w, g.panel_h);
++        const std::vector<std::string> chain = helix::LayoutManager::instance().variant_chain();
++        const int bp = static_cast<int>(breakpoint_for(std::min(g.panel_w, g.panel_h)));
++        if (std::string(kBpNames[bp]) == "medium" && g.cols == 12 && g.rows == 8 && chain.empty()) {
++            continue;
++        }
++        INFO(g.name << " (" << kBpNames[bp] << " " << g.cols << "x" << g.rows << ")");
++        const ResolvedDefault with = helix::layout::resolve_default_layout(
++            layout, &seed, kBpNames[bp], g.cols, g.rows, chain, "ad5x", open);
++        const ResolvedDefault without = helix::layout::resolve_default_layout(
++            layout, nullptr, kBpNames[bp], g.cols, g.rows, chain, "ad5x", open);
++        REQUIRE(with.placed.size() == without.placed.size());
++        for (size_t i = 0; i < with.placed.size(); ++i) {
++            const auto& a = with.placed[i];
++            const auto& b = without.placed[i];
++            INFO("entry " << i << ": " << a.id << " vs " << b.id);
++            CHECK(a.id == b.id);
++            CHECK(a.col == b.col);
++            CHECK(a.row == b.row);
++            CHECK(a.colspan == b.colspan);
++            CHECK(a.rowspan == b.rowspan);
++            CHECK(a.config == b.config);
++        }
++        CHECK(with.disabled == without.disabled);
++    }
++}
+diff --git a/tests/unit/test_default_layout_resolver.cpp b/tests/unit/test_default_layout_resolver.cpp
+index e1b6fd3..4f13fa8 100644
+--- a/tests/unit/test_default_layout_resolver.cpp
++++ b/tests/unit/test_default_layout_resolver.cpp
+@@ -509,6 +509,15 @@ TEST_CASE("resolver: signature tracks exactly the consulted subjects",
+               a.signature);
+         CHECK(resolve(table, "medium", base, 12, 8, nullptr, {}, "ad5x").signature != a.signature);
+     }
++    SECTION("a seed's revision is part of it, its absence is not") {
++        const json seed = parse(R"json({"anchors": []})json");
++        const json revised = parse(R"json({"revision": "kiln-1", "anchors": []})json");
++        const auto plain = resolve(table, "medium", base, 12, 8, &seed, {}, "ad5x");
++        const auto rev = resolve(table, "medium", base, 12, 8, &revised, {}, "ad5x");
++        CHECK(plain.signature == resolve(table, "medium", base, 12, 8, nullptr, {}, "ad5x").signature);
++        CHECK(rev.signature != plain.signature);
++        CHECK(rev.signature.find("|ad5x#kiln-1|") != std::string::npos);
++    }
+     SECTION("a requires subject is consulted") {
+         const CapabilitySnapshot s0{{{"led_controllable", 1}, {"printer_has_spoolman", 0}}};
+         const CapabilitySnapshot s1{{{"led_controllable", 1}, {"printer_has_spoolman", 1}}};
+diff --git a/tests/unit/test_favorite_macro_config.cpp b/tests/unit/test_favorite_macro_config.cpp
+index 44fe0ff..10316d6 100644
+--- a/tests/unit/test_favorite_macro_config.cpp
++++ b/tests/unit/test_favorite_macro_config.cpp
+@@ -127,3 +127,31 @@ TEST_CASE("favorite macro config drops the legacy key on write", "[macro][favori
+     REQUIRE(j["require_confirmation"] == false);
+     REQUIRE(favorite_macro_config_from_json(j).require_confirmation == false);
+ }
++
++TEST_CASE("favorite macro config carries label and lock_while_printing",
++          "[macro][favorite_config]") {
++    SECTION("defaults: no label, no lock, neither written") {
++        auto c = favorite_macro_config_from_json(nlohmann::json{{"macro", "PURGE"}});
++        REQUIRE(c.label.empty());
++        REQUIRE_FALSE(c.lock_while_printing);
++        auto j = favorite_macro_config_to_json(c);
++        REQUIRE_FALSE(j.contains("label"));
++        REQUIRE_FALSE(j.contains("lock_while_printing"));
++    }
++    SECTION("round trip") {
++        nlohmann::json in{{"macro", "UNLOAD_FILAMENT"},
++                          {"icon", "eject"},
++                          {"label", "Unload"},
++                          {"lock_while_printing", true}};
++        auto c = favorite_macro_config_from_json(in);
++        REQUIRE(c.label == "Unload");
++        REQUIRE(c.lock_while_printing);
++        REQUIRE(favorite_macro_config_to_json(c) == in);
++    }
++    SECTION("wrong types fall back to the defaults") {
++        auto c = favorite_macro_config_from_json(
++            nlohmann::json{{"label", 3}, {"lock_while_printing", "yes"}});
++        REQUIRE(c.label.empty());
++        REQUIRE_FALSE(c.lock_while_printing);
++    }
++}
+diff --git a/tests/unit/test_grid_edit_mode.cpp b/tests/unit/test_grid_edit_mode.cpp
+index 86d9547..795d867 100644
+--- a/tests/unit/test_grid_edit_mode.cpp
++++ b/tests/unit/test_grid_edit_mode.cpp
+@@ -240,16 +240,16 @@ TEST_CASE("GridEditMode: clamp_span respects min/max from registry", "[grid_edit
+ 
+ TEST_CASE("GridEditMode: clamp_span holds an axis whose min equals its max",
+           "[grid_edit][resize]") {
+-    // "preheat" is authored at a fixed row span: min == max on that axis, so a
+-    // drag can never change its height. Assert that premise, or a widget that
+-    // later gains a range turns this into a test of nothing.
+-    const auto* def = find_widget_def("preheat");
++    // "filament_buffer" is authored at a fixed row span: min == max on that
++    // axis, so a drag can never change its height. Assert that premise, or a
++    // widget that later gains a range turns this into a test of nothing.
++    const auto* def = find_widget_def("filament_buffer");
+     REQUIRE(def != nullptr);
+     REQUIRE(def->effective_min_rowspan() == def->effective_max_rowspan());
+ 
+-    auto [c, r] = GridEditMode::clamp_span("preheat", 6, 6);
++    auto [c, r] = GridEditMode::clamp_span("filament_buffer", 6, 6);
+     CHECK(r == def->rowspan);
+-    auto [c2, r2] = GridEditMode::clamp_span("preheat", 6, 1);
++    auto [c2, r2] = GridEditMode::clamp_span("filament_buffer", 6, 1);
+     CHECK(r2 == def->rowspan);
+     (void)c;
+     (void)c2;
+@@ -1354,15 +1354,15 @@ TEST_CASE("clamp_span: clamps to widget min/max", "[grid_edit][sizing]") {
+ }
+ 
+ TEST_CASE("clamp_span: a fixed axis stays fixed while the other scales", "[grid_edit][sizing]") {
+-    // "preheat" scales its width but not its height. Assert the premise so a
+-    // widget that later gains a range does not leave this passing on a clamp
+-    // that never happened.
+-    const auto* def = find_widget_def("preheat");
++    // "filament_buffer" scales its width but not its height. Assert the
++    // premise so a widget that later gains a range does not leave this passing
++    // on a clamp that never happened.
++    const auto* def = find_widget_def("filament_buffer");
+     REQUIRE(def != nullptr);
+     REQUIRE(def->effective_min_rowspan() == def->effective_max_rowspan());
+     REQUIRE(def->effective_max_colspan() > def->effective_min_colspan());
+ 
+-    auto [c1, r1] = GridEditMode::clamp_span("preheat", def->effective_max_colspan(), 8);
++    auto [c1, r1] = GridEditMode::clamp_span("filament_buffer", def->effective_max_colspan(), 8);
+     CHECK(c1 == def->effective_max_colspan());
+     CHECK(r1 == def->rowspan);
+ }
+@@ -1760,14 +1760,8 @@ TEST_CASE("snap_step_for: whole-cell widgets step by a full cell",
+     CHECK(wc == helix::GridLayout::TRACKS_PER_CELL);
+     CHECK(wr == helix::GridLayout::TRACKS_PER_CELL);
+ 
+-    // preheat is half on the column only: its row span is authored fixed.
+-    const auto* mixed = helix::find_widget_def("preheat");
+-    REQUIRE(mixed != nullptr);
+-    REQUIRE(mixed->supports_half_col);
+-    REQUIRE_FALSE(mixed->supports_half_row);
+-    auto [hc, hr] = GridEditMode::snap_step_for("preheat");
+-    CHECK(hc == 1);
+-    CHECK(hr == helix::GridLayout::TRACKS_PER_CELL);
++    // No registry widget is half on one axis only (preheat was, until its row
++    // took half cells too); the two flags are read independently all the same.
+ 
+     auto [cc, cr] = GridEditMode::snap_step_for("clock");
+     CHECK(cc == 1);
+diff --git a/tests/unit/test_grid_layout.cpp b/tests/unit/test_grid_layout.cpp
+index 112ddec..dac6561 100644
+--- a/tests/unit/test_grid_layout.cpp
++++ b/tests/unit/test_grid_layout.cpp
+@@ -475,7 +475,7 @@ TEST_CASE("PanelWidgetDef: half-cell capability is classified per widget",
+         {"tool_switcher", {true, true}},     // horizontal chip strip
+         {"clog_detection", {true, true}},    // horizontal bar scales with the box
+         {"filament_buffer", {false, false}}, // slider tile; the trace needs a whole second cell
+-        {"preheat", {true, false}},          // flex row; row span is fixed
++        {"preheat", {true, true}},           // flex row; one track holds the button (fits_at)
+         {"fan", {true, true}},               // user fan name, long_mode=dots
+         {"thermistor", {true, true}},        // user sensor name, long_mode=dots
+         {"bypass", {true, true}},            // material name, long_mode=dots
+diff --git a/tests/unit/test_material_preheat_actions.cpp b/tests/unit/test_material_preheat_actions.cpp
+index 4cafdb6..d7bc2e8 100644
+--- a/tests/unit/test_material_preheat_actions.cpp
++++ b/tests/unit/test_material_preheat_actions.cpp
+@@ -602,3 +602,44 @@ TEST_CASE_METHOD(LVGLUITestFixture,
+     helix::ui::set_test_notification_info_hook(nullptr);
+     CHECK(toasts.empty());
+ }
++
++TEST_CASE_METHOD(LVGLUITestFixture,
++                 "Home preheat with lock_while_printing does nothing while a print is active",
++                 "[material_preheat][preheat]") {
++    MaterialSettingsScope settings;
++    Harness h;
++    discover_macros(h);
++    helix_test::ScopedSharedResource<helix::TemperatureController> controller(
++        std::make_shared<helix::TemperatureController>(h.state, &h.api));
++    feed_hot_nozzle(h);
++
++    helix::PreheatWidget widget(h.state);
++    widget.set_config({{"material_index", 2}, {"lock_while_printing", true}, {"show_temps", false}});
++    CHECK_FALSE(WidgetAccess::show_temps(widget));
++
++    WidgetAccess::apply_lock(widget, true);
++    WidgetAccess::handle_apply(widget);
++    CHECK(h.client.gcode_script_history().empty());
++
++    WidgetAccess::apply_lock(widget, false);
++    WidgetAccess::handle_apply(widget);
++    // Slot 2's targets, whatever material the defaults give it.
++    CHECK(h.client.gcode_script_history().size() == 2);
++}
++
++TEST_CASE_METHOD(LVGLUITestFixture, "Home preheat keeps upstream behaviour without the options",
++                 "[material_preheat][preheat]") {
++    MaterialSettingsScope settings;
++    Harness h;
++    discover_macros(h);
++    helix_test::ScopedSharedResource<helix::TemperatureController> controller(
++        std::make_shared<helix::TemperatureController>(h.state, &h.api));
++    feed_hot_nozzle(h);
++
++    helix::PreheatWidget widget(h.state);
++    widget.set_config({{"material_index", 2}});
++    CHECK(WidgetAccess::show_temps(widget));
++    WidgetAccess::apply_lock(widget, true); // lock_while_printing is off
++    WidgetAccess::handle_apply(widget);
++    CHECK(h.client.gcode_script_history().size() == 2);
++}
+diff --git a/tests/unit/test_widget_catalog_fit.cpp b/tests/unit/test_widget_catalog_fit.cpp
+index 85e8215..578f6f8 100644
+--- a/tests/unit/test_widget_catalog_fit.cpp
++++ b/tests/unit/test_widget_catalog_fit.cpp
+@@ -62,9 +62,11 @@ PanelWidgetDef def_with_spans(int colspan, int rowspan, int min_colspan, int min
+ constexpr int CELL = GridLayout::TRACKS_PER_CELL;
+ 
+ // Row-test IDs: no hardware gate, not multi-instance, default_enabled=false
+-// (so a seeded empty layout leaves them unplaced and offerable). "preheat"'s
+-// minimum is 2 cells by 1, the brief's own example string.
+-constexpr const char* kRefusedId = "preheat";
++// (so a seeded empty layout leaves them unplaced and offerable).
++// "control_buttons" has whole-cell minimums (1x1 cells), which
++// expected_fit_reason() renders; preheat, the earlier pick, now takes a
++// one-track row.
++constexpr const char* kRefusedId = "control_buttons";
+ constexpr const char* kOfferedId = "macros";
+ // Multi-instance base: 24 instances of it tile the full-page test below, where
+ // 24 copies of a single-instance def would be dropped at parse as unknown ids.
+diff --git a/ui_xml/components/panel_widget_favorite_macro.xml b/ui_xml/components/panel_widget_favorite_macro.xml
+index 51a4923..1d3212c 100644
+--- a/ui_xml/components/panel_widget_favorite_macro.xml
++++ b/ui_xml/components/panel_widget_favorite_macro.xml
+@@ -20,13 +20,14 @@
+     <bind_style_if_eq name="styles.tile_row" subject="$tile_dir_subject" ref_value="1"/>
+     <tile_badge name="fav_macro_badge" icon="script_text" icon_name="fav_macro_icon" rung_subject="$tile_icon_subject"/>
+     <!-- Macro name: one dotted line, so a long user-configured name never
+-         wraps. Follows show_widget_labels. -->
++         wraps. Follows show_widget_labels through the tile's verdict
++         (tile_label_subject), except a configured label, which is always
++         drawn. -->
+     <text_tiny name="fav_macro_name"
+                width="100%" text="Configure" style_text_align="center" style_text_color="#text_muted" long_mode="dots"
+                clickable="false" event_bubble="true">
+       <bind_tile_rung ladder="label" subject="$tile_icon_subject" one_line="true"/>
+       <bind_style_if_eq name="styles.tile_fill" subject="$tile_dir_subject" ref_value="1"/>
+-      <bind_flag_if_eq subject="show_widget_labels" flag="hidden" ref_value="0"/>
+       <bind_flag_if_eq subject="$tile_label_subject" flag="hidden" ref_value="0"/>
+     </text_tiny>
+   </view>
+diff --git a/ui_xml/components/print_status_detailed_active.xml b/ui_xml/components/print_status_detailed_active.xml
+index d101ec8..ad27855 100644
+--- a/ui_xml/components/print_status_detailed_active.xml
++++ b/ui_xml/components/print_status_detailed_active.xml
+@@ -68,11 +68,14 @@
+     <!-- Temps: always a full-width row at the bottom of the card. Uses the
+          standard temp_display widget so heating-color logic (red=heating up,
+          blue=cooling, etc.) matches the rest of the app — DRY with
+-         panel_widget_temp_stack.xml and controls_panel.xml. -->
++         panel_widget_temp_stack.xml and controls_panel.xml. Hidden where the
++         widget's config has show_temps false (a layout with temperature
++         tiles of its own). -->
+     <lv_obj name="detailed_temp_row"
+             width="100%" height="content" style_pad_all="0" flex_flow="row" style_pad_gap="#space_sm"
+             style_flex_main_place="space_evenly" style_flex_cross_place="center" scrollable="false" clickable="false"
+             event_bubble="true">
++      <bind_flag_if_eq subject="print_status_temps_hidden" flag="hidden" ref_value="1"/>
+       <!-- Nozzle group: split into two click targets.
+            Left = picker (T0 + nozzle_icon + chevron) → tool picker.
+            Right = temp_display → temp graph overlay (Mode::Nozzle).
+-- 
+2.56.0
+

@@ -430,7 +430,7 @@ an update.
 Patches on HelixScreen v1.1.0-beta.10, applied by Buildroot after
 extract (after the `GIT_INIT` hook has committed the pristine tree, so
 upstream's own submodule patching is unaffected; they touch only `src/`,
-`include/` and `ui_xml/`). Regenerate them from a clean clone of the build
+`include/`, `ui_xml/`, `tests/` and, for 0011, `assets/config/`). Regenerate them from a clean clone of the build
 dir's `import` commit with `git format-patch`.
 
 | Patch | What |
@@ -445,6 +445,7 @@ dir's `import` commit with `git format-patch`.
 | `0009-ad5x-bed-soak-and-nozzle-checks` | Settings > Printer > **Bed Heat Soak** (on/off, calibrated times, Calibrate with progress and Stop; `docs/print-start.md`); after a Nozzle Size change in Settings, the offer to run the hotend PID, Z offset and Save only |
 | `0007-sound-pwm-backend-and-printer-sounds` | HelixScreen's sounds on the speaker, Settings > Sound > **Printer Sounds** (`docs/sound.md`) |
 | `0010-ad5x-auto-refill` | Settings > Printer > **Filament Auto-Refill** (on/off, colour match, the backups per slot, Filament slots); the **No backup spool** pop-up during a print when Klipper's `refill_notice` is set |
+| `0011-ad5x-home-layout` | The AD5X home screen (preset seed `assets/config/panel_widgets/ad5x/home.json`, 800x480 grid only): nozzle, bed, fans and notifications along the top; the print status card (no temperature row of its own: config `show_temps`) on the left; IFS slots, Preheat/Cool Down (one track tall, no temperature column: preheat `show_temps`), the LED light and the live Z offset under it, Motion and an **Unload** button (`favorite_macro` `label`) on the right, Preheat/Cool Down and Unload greyed and inert while printing or paused (`lock_while_printing`); no printer picture, temperature graph or tips. A seed `revision` in the layout signature moves an unedited default to it on update; an edited layout stays |
 
 ### Steps
 
