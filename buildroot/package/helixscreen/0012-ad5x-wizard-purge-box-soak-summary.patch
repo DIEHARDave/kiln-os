@@ -1,0 +1,602 @@
+diff --git a/include/wizard_step.h b/include/wizard_step.h
+--- a/include/wizard_step.h
++++ b/include/wizard_step.h
+@@ -31,14 +31,17 @@
+     Ad5xMesh,
+     Ad5xShaper,
+     Ad5xIfs,
++    Ad5xTrash,
+     Ad5xZoffset,
++    Ad5xSoak,
++    Ad5xSummary,
+     Ad5xFinish,
+     InputShaper,
+     Preferences,
+     Summary,
+     Telemetry,
+ };
+-inline constexpr int STEP_COUNT = 23;
++inline constexpr int STEP_COUNT = 26;
+ 
+ // Plain data needed to decide skips — no LVGL, constructible in tests.
+ struct StepContext {
+diff --git a/src/system/wizard_step.cpp b/src/system/wizard_step.cpp
+--- a/src/system/wizard_step.cpp
++++ b/src/system/wizard_step.cpp
+@@ -39,8 +39,14 @@
+         return "Ad5xShaper";
+     case StepId::Ad5xIfs:
+         return "Ad5xIfs";
++    case StepId::Ad5xTrash:
++        return "Ad5xTrash";
+     case StepId::Ad5xZoffset:
+         return "Ad5xZoffset";
++    case StepId::Ad5xSoak:
++        return "Ad5xSoak";
++    case StepId::Ad5xSummary:
++        return "Ad5xSummary";
+     case StepId::Ad5xFinish:
+         return "Ad5xFinish";
+     case StepId::InputShaper:
+diff --git a/include/ui_wizard_ad5x_setup.h b/include/ui_wizard_ad5x_setup.h
+--- a/include/ui_wizard_ad5x_setup.h
++++ b/include/ui_wizard_ad5x_setup.h
+@@ -108,6 +108,11 @@
+     void abort();
+     void adjust(double delta_mm);
+     void accept();
++    /// Start the Z offset step with the load cell estimate first (ESTIMATE=1).
++    void start_estimate();
++    /// Move the purge box by (dx, dy) mm, or back to the factory spot (reset),
++    /// and move the nozzle there (TRASH_OFFSET ... MOVE=1).
++    void trash_move(double dx, double dy, bool reset);
+ 
+     /// Start parameters the targeted session now starting adds, by step key:
+     /// {"pid": {"heaters": "extruder"}}. Read only while a targeted session
+@@ -135,6 +140,10 @@
+     lv_subject_t message_{};
+     lv_subject_t results_{};
+     lv_subject_t zoffset_{};
++    lv_subject_t is_trash_{};
++    lv_subject_t can_accept_{};
++    lv_subject_t estimate_avail_{};
++    bool estimate_once_ = false;
+     char explanation_buf_[512] = "";
+     char message_buf_[256] = "";
+     char results_buf_[1536] = "";
+@@ -159,6 +168,10 @@
+ /// Run the AD5X tuning steps again as a targeted wizard session on @p parent
+ /// (the settings entry). Does not touch wizard_completed.
+ void launch_targeted(lv_obj_t* parent);
++
++/// The purge box (trash bin) check on its own (the settings entry): moves the
++/// box and saves its offset when accepted; no other step runs.
++void launch_purge_box(lv_obj_t* parent);
+ 
+ /// After a nozzle change: a targeted session with nozzle_check_step_ids(), the
+ /// PID step tuning only the hotend (heaters=extruder; the bed did not change).
+diff --git a/src/ui/ui_wizard_ad5x_setup.cpp b/src/ui/ui_wizard_ad5x_setup.cpp
+--- a/src/ui/ui_wizard_ad5x_setup.cpp
++++ b/src/ui/ui_wizard_ad5x_setup.cpp
+@@ -74,10 +74,23 @@
+      "Tunes filament swaps for every loaded IFS slot: the fastest reliable feed speed and the "
+      "load and unload distances. Load filament into the slots you use first.",
+      false},
++    {StepId::Ad5xTrash, "trash", "wizard_ad5x_trash",
++     "Moves the nozzle over the purge box (the trash bin) at the back. Check it is over the "
++     "box, use the arrows to move the box if it isn't, then press Accept.",
++     false},
+     {StepId::Ad5xZoffset, "zoffset", "wizard_ad5x_zoffset",
+      "Heats for the loaded filament, purges and prints a 30 mm test patch at the centre. While "
+      "it prints, press - or + until the lines are flat and just touch each other, then press "
+-     "Accept. Start again prints another patch beside it.",
++     "Accept. Start again prints another patch beside it. With the load cell estimate, the "
++     "patch starts from a measured offset instead of a guess.",
++     false},
++    {StepId::Ad5xSoak, "soak", "wizard_ad5x_soak",
++     "Calibrates the bed heat soak: how long the bed keeps warming after it reaches 60 \xC2\xB0"
++     "C, so the first layer stays flat. Takes about 15 minutes and starts from a cold bed. "
++     "Skip it if you don't need it.",
++     false},
++    {StepId::Ad5xSummary, "summary", "wizard_ad5x_summary",
++     "The results of the tuning so far. Check them, then Save.",
+      false},
+     {StepId::Ad5xFinish, "finish", "wizard_ad5x_finish",
+      "Saves the results to the printer configuration. Klipper restarts and the screen "
+@@ -99,8 +112,9 @@
+ constexpr ResultLabel k_result_labels[] = {
+     {"selfcheck", "Self-check"},      {"pid", "PID"},
+     {"mesh", "Bed mesh"},             {"shaper", "Vibration compensation"},
+-    {"ifs", "IFS tuning"},            {"zoffset", "Z offset"},
+-    {"finish", "Save"},
++    {"ifs", "IFS tuning"},            {"trash", "Purge box"},
++    {"zoffset", "Z offset"},          {"estimate", "Load cell estimate"},
++    {"soak", "Bed soak"},             {"finish", "Save"},
+ };
+ 
+ std::string str_field(const json& obj, const char* key) {
+@@ -226,6 +240,9 @@
+     }
+     UI_MANAGED_SUBJECT_INT(view_, 0, "ad5x_setup_view", subjects_);
+     UI_MANAGED_SUBJECT_INT(is_zoffset_, 0, "ad5x_setup_is_zoffset", subjects_);
++    UI_MANAGED_SUBJECT_INT(is_trash_, 0, "ad5x_setup_is_trash", subjects_);
++    UI_MANAGED_SUBJECT_INT(can_accept_, 0, "ad5x_setup_can_accept", subjects_);
++    UI_MANAGED_SUBJECT_INT(estimate_avail_, 0, "ad5x_setup_estimate_avail", subjects_);
+     UI_MANAGED_SUBJECT_INT(progress_, 0, "ad5x_setup_progress", subjects_);
+     UI_MANAGED_SUBJECT_STRING(explanation_, explanation_buf_, "", "ad5x_setup_explanation",
+                               subjects_);
+@@ -286,6 +303,9 @@
+         copy_if_changed(&explanation_,
+                         lv_tr(hotend_only ? k_pid_hotend_explanation : spec->explanation));
+         set_if_changed(&is_zoffset_, std::strcmp(spec->key, "zoffset") == 0 ? 1 : 0);
++        set_if_changed(&is_trash_, std::strcmp(spec->key, "trash") == 0 ? 1 : 0);
++        set_if_changed(&can_accept_, (std::strcmp(spec->key, "zoffset") == 0 ||
++                                      std::strcmp(spec->key, "trash") == 0) ? 1 : 0);
+     }
+     query_status();
+     refresh();
+@@ -313,6 +333,9 @@
+     json options = json::object();
+     if (!active_) {
+         return options;
++    }
++    if (estimate_once_ && std::strcmp(active_->key, "zoffset") == 0) {
++        options["estimate"] = 1;
+     }
+     // The mesh step keeps the bed hot when the Z offset test comes next.
+     if (std::strcmp(active_->key, "mesh") == 0) {
+@@ -487,6 +510,12 @@
+     local_error_.clear();
+     refresh();
+     send("start");
++    estimate_once_ = false;
++}
++
++void Ad5xSetupModel::start_estimate() {
++    estimate_once_ = true;
++    start();
+ }
+ 
+ void Ad5xSetupModel::abort() {
+@@ -499,6 +528,35 @@
+ 
+ void Ad5xSetupModel::accept() {
+     send("accept");
++}
++
++void Ad5xSetupModel::trash_move(double dx, double dy, bool reset) {
++    IMoonrakerAPI* api = get_moonraker_api();
++    if (!api) {
++        return;
++    }
++    const std::string cmd = reset ? std::string("TRASH_OFFSET RESET=1 MOVE=1")
++                                  : fmt::format("TRASH_OFFSET DX={:.2f} DY={:.2f} MOVE=1", dx, dy);
++    spdlog::info("[AD5X setup] {}", cmd);
++    const auto token = lifetime_.token();
++    api->execute_gcode(
++        cmd,
++        [this, token]() {
++            token.defer("Ad5xSetupModel::trash_done", [this]() {
++                query_status();
++                refresh();
++            });
++        },
++        [this, token](const MoonrakerError& err) {
++            const std::string message = err.message;
++            token.defer("Ad5xSetupModel::trash_error", [this, message]() {
++                NOTIFY_WARNING("{}", message);
++                query_status();
++                refresh();
++            });
++        },
++        IMoonrakerAPI::kMacroTimeoutMs, /*silent=*/false, /*on_queued=*/nullptr,
++        /*caller_surfaces_errors=*/true);
+ }
+ 
+ void Ad5xSetupModel::query_status() {
+@@ -585,8 +643,8 @@
+         }
+     }
+ 
+-    if (active_->restarts_klipper) {
+-        // The save step sums up everything that ran.
++    if (active_->restarts_klipper || key == "summary") {
++        // The save step (and the summary before it) sums up everything that ran.
+         for (const auto& label : k_result_labels) {
+             auto it = results.find(label.key);
+             if (it == results.end()) {
+@@ -655,6 +713,12 @@
+     if (auto it = status_.find("zoffset"); it != status_.end() && it->is_number()) {
+         zoffset = fmt::format("{:+.3f} mm", it->get<double>());
+     }
++    // The printer offers the load cell estimate (zoffset_estimate in setup.cfg)
++    int estimate_avail = 0;
++    if (auto it = status_.find("estimate"); it != status_.end() && it->is_boolean()) {
++        estimate_avail = it->get<bool>() ? 1 : 0;
++    }
++    set_if_changed(&estimate_avail_, estimate_avail);
+ 
+     copy_if_changed(&message_, message);
+     copy_if_changed(&results_, results_text());
+@@ -722,6 +786,11 @@
+ void launch_targeted(lv_obj_t* parent) {
+     spdlog::info("[AD5X setup] Running the setup steps again");
+     launch_session(parent, step_ids(), json::object());
++}
++
++void launch_purge_box(lv_obj_t* parent) {
++    spdlog::info("[AD5X setup] Purge box check");
++    launch_session(parent, {StepId::Ad5xTrash}, json::object());
+ }
+ 
+ void launch_nozzle_checks(lv_obj_t* parent) {
+@@ -817,11 +886,32 @@
+     LVGL_SAFE_EVENT_CB_END();
+ }
+ 
++static void on_ad5x_setup_start_estimate(lv_event_t* /*e*/) {
++    LVGL_SAFE_EVENT_CB_BEGIN("[AD5X setup] on_start_estimate");
++    model().start_estimate();
++    LVGL_SAFE_EVENT_CB_END();
++}
++
++/// user_data: "x:-1", "y:0.1" (mm), or "reset"
++static void on_ad5x_trash_move(lv_event_t* e) {
++    LVGL_SAFE_EVENT_CB_BEGIN("[AD5X setup] on_trash_move");
++    const char* arg = static_cast<const char*>(lv_event_get_user_data(e));
++    if (arg && std::strcmp(arg, "reset") == 0) {
++        model().trash_move(0., 0., true);
++    } else if (arg && std::strlen(arg) > 2 && arg[1] == ':') {
++        const double mm = std::strtod(arg + 2, nullptr);
++        model().trash_move(arg[0] == 'x' ? mm : 0., arg[0] == 'y' ? mm : 0., false);
++    }
++    LVGL_SAFE_EVENT_CB_END();
++}
++
+ void WizardAd5xSetupStep::register_callbacks() {
+     lv_xml_register_event_cb(nullptr, "on_ad5x_setup_start", on_ad5x_setup_start);
+     lv_xml_register_event_cb(nullptr, "on_ad5x_setup_abort", on_ad5x_setup_abort);
+     lv_xml_register_event_cb(nullptr, "on_ad5x_setup_adjust", on_ad5x_setup_adjust);
+     lv_xml_register_event_cb(nullptr, "on_ad5x_setup_accept", on_ad5x_setup_accept);
++    lv_xml_register_event_cb(nullptr, "on_ad5x_setup_start_estimate", on_ad5x_setup_start_estimate);
++    lv_xml_register_event_cb(nullptr, "on_ad5x_trash_move", on_ad5x_trash_move);
+ }
+ 
+ lv_obj_t* WizardAd5xSetupStep::create(lv_obj_t* parent) {
+diff --git a/ui_xml/wizard_ad5x_setup.xml b/ui_xml/wizard_ad5x_setup.xml
+--- a/ui_xml/wizard_ad5x_setup.xml
++++ b/ui_xml/wizard_ad5x_setup.xml
+@@ -53,6 +53,52 @@
+                     long_mode="wrap" style_text_align="center" style_text_color="#text_muted"/>
+       </lv_obj>
+ 
++      <!-- Purge box check: arrows move the box (and the nozzle over it), then Accept -->
++      <lv_obj name="ad5x_trash_panel"
++              width="100%" height="content" style_pad_all="0" style_pad_gap="#space_sm" style_bg_opa="0"
++              style_border_width="0" flex_flow="column" style_flex_cross_place="center" scrollable="false">
++        <bind_flag_if cond="ad5x_setup_is_trash eq 0 or ad5x_setup_view ne 2" flag="hidden"/>
++        <lv_obj width="100%"
++                height="content" style_pad_all="0" style_pad_gap="#space_sm" style_bg_opa="0" style_border_width="0"
++                flex_flow="row" style_flex_main_place="center" scrollable="false">
++          <ui_button name="btn_ad5x_trash_x_down_1" flex_grow="1" height="#button_height" text="X -1">
++            <event_cb trigger="clicked" callback="on_ad5x_trash_move" user_data="x:-1"/>
++          </ui_button>
++          <ui_button name="btn_ad5x_trash_x_down_01" flex_grow="1" height="#button_height" text="X -0.1">
++            <event_cb trigger="clicked" callback="on_ad5x_trash_move" user_data="x:-0.1"/>
++          </ui_button>
++          <ui_button name="btn_ad5x_trash_x_up_01" flex_grow="1" height="#button_height" text="X +0.1">
++            <event_cb trigger="clicked" callback="on_ad5x_trash_move" user_data="x:0.1"/>
++          </ui_button>
++          <ui_button name="btn_ad5x_trash_x_up_1" flex_grow="1" height="#button_height" text="X +1">
++            <event_cb trigger="clicked" callback="on_ad5x_trash_move" user_data="x:1"/>
++          </ui_button>
++        </lv_obj>
++        <lv_obj width="100%"
++                height="content" style_pad_all="0" style_pad_gap="#space_sm" style_bg_opa="0" style_border_width="0"
++                flex_flow="row" style_flex_main_place="center" scrollable="false">
++          <ui_button name="btn_ad5x_trash_y_down_1" flex_grow="1" height="#button_height" text="Y -1">
++            <event_cb trigger="clicked" callback="on_ad5x_trash_move" user_data="y:-1"/>
++          </ui_button>
++          <ui_button name="btn_ad5x_trash_y_down_01" flex_grow="1" height="#button_height" text="Y -0.1">
++            <event_cb trigger="clicked" callback="on_ad5x_trash_move" user_data="y:-0.1"/>
++          </ui_button>
++          <ui_button name="btn_ad5x_trash_y_up_01" flex_grow="1" height="#button_height" text="Y +0.1">
++            <event_cb trigger="clicked" callback="on_ad5x_trash_move" user_data="y:0.1"/>
++          </ui_button>
++          <ui_button name="btn_ad5x_trash_y_up_1" flex_grow="1" height="#button_height" text="Y +1">
++            <event_cb trigger="clicked" callback="on_ad5x_trash_move" user_data="y:1"/>
++          </ui_button>
++          <ui_button name="btn_ad5x_trash_reset" flex_grow="1" height="#button_height" text="Factory spot"
++                     variant="ghost">
++            <event_cb trigger="clicked" callback="on_ad5x_trash_move" user_data="reset"/>
++          </ui_button>
++        </lv_obj>
++        <text_small width="100%"
++                    text="X + moves the box to the right, Y + to the back. The nozzle follows the box."
++                    long_mode="wrap" style_text_align="center" style_text_color="#text_muted"/>
++      </lv_obj>
++
+       <!-- Actions -->
+       <lv_obj width="100%"
+               height="content" style_pad_all="0" style_pad_gap="#space_md" style_bg_opa="0" style_border_width="0"
+@@ -60,6 +106,12 @@
+         <ui_button name="btn_ad5x_start" width="#wizard_button_width" height="#button_height" text="Start">
+           <event_cb trigger="clicked" callback="on_ad5x_setup_start"/>
+           <bind_flag_if_not_eq subject="ad5x_setup_view" flag="hidden" ref_value="0"/>
++        </ui_button>
++        <!-- Z offset: start from the load cell estimate (when the printer offers it) -->
++        <ui_button name="btn_ad5x_start_estimate" width="#wizard_button_width" height="#button_height"
++                   text="Estimate first" variant="secondary">
++          <event_cb trigger="clicked" callback="on_ad5x_setup_start_estimate"/>
++          <bind_flag_if cond="ad5x_setup_is_zoffset eq 0 or ad5x_setup_view ne 0 or ad5x_setup_estimate_avail eq 0" flag="hidden"/>
+         </ui_button>
+         <ui_button name="btn_ad5x_retry" width="#wizard_button_width" height="#button_height" text="Retry">
+           <event_cb trigger="clicked" callback="on_ad5x_setup_start"/>
+@@ -79,7 +131,7 @@
+         <ui_button name="btn_ad5x_accept" width="#wizard_button_width" height="#button_height" text="Accept"
+                    variant="success">
+           <event_cb trigger="clicked" callback="on_ad5x_setup_accept"/>
+-          <bind_flag_if cond="ad5x_setup_is_zoffset eq 0 or ad5x_setup_view ne 2" flag="hidden"/>
++          <bind_flag_if cond="ad5x_setup_can_accept eq 0 or ad5x_setup_view ne 2" flag="hidden"/>
+         </ui_button>
+         <ui_button name="btn_ad5x_abort" width="#wizard_button_width" height="#button_height" text="Abort"
+                    variant="danger">
+diff --git a/ui_xml/wizard_ad5x_trash.xml b/ui_xml/wizard_ad5x_trash.xml
+new file mode 100644
+--- /dev/null
++++ b/ui_xml/wizard_ad5x_trash.xml
+@@ -0,0 +1,15 @@
++<?xml version="1.0"?>
++<!-- SPDX-License-Identifier: GPL-3.0-or-later -->
++<component>
++  <!-- First-Run Wizard: AD5X tuning step "trash" (ad5x_setup step "trash").
++       Title here; body and behaviour in wizard_ad5x_setup.xml / ui_wizard_ad5x_setup.cpp. -->
++  <consts>
++    <str name="step_title" value="Printer Setup: Purge Box" value_tag="Printer Setup: Purge Box"/>
++    <str name="step_subtitle" value="Check the nozzle is over the trash bin" value_tag="Check the nozzle is over the trash bin"/>
++  </consts>
++  <view name="wizard_ad5x_zoffset_root"
++        extends="lv_obj" width="100%" height="content" style_bg_opa="0" style_border_width="0" style_pad_all="0"
++        scrollable="false">
++    <wizard_ad5x_setup/>
++  </view>
++</component>
+diff --git a/ui_xml/wizard_ad5x_soak.xml b/ui_xml/wizard_ad5x_soak.xml
+new file mode 100644
+--- /dev/null
++++ b/ui_xml/wizard_ad5x_soak.xml
+@@ -0,0 +1,15 @@
++<?xml version="1.0"?>
++<!-- SPDX-License-Identifier: GPL-3.0-or-later -->
++<component>
++  <!-- First-Run Wizard: AD5X tuning step "soak" (ad5x_setup step "soak").
++       Title here; body and behaviour in wizard_ad5x_setup.xml / ui_wizard_ad5x_setup.cpp. -->
++  <consts>
++    <str name="step_title" value="Printer Setup: Bed Soak" value_tag="Printer Setup: Bed Soak"/>
++    <str name="step_subtitle" value="Bed heat soak calibration (optional)" value_tag="Bed heat soak calibration (optional)"/>
++  </consts>
++  <view name="wizard_ad5x_zoffset_root"
++        extends="lv_obj" width="100%" height="content" style_bg_opa="0" style_border_width="0" style_pad_all="0"
++        scrollable="false">
++    <wizard_ad5x_setup/>
++  </view>
++</component>
+diff --git a/ui_xml/wizard_ad5x_summary.xml b/ui_xml/wizard_ad5x_summary.xml
+new file mode 100644
+--- /dev/null
++++ b/ui_xml/wizard_ad5x_summary.xml
+@@ -0,0 +1,15 @@
++<?xml version="1.0"?>
++<!-- SPDX-License-Identifier: GPL-3.0-or-later -->
++<component>
++  <!-- First-Run Wizard: AD5X tuning step "summary" (ad5x_setup step "summary").
++       Title here; body and behaviour in wizard_ad5x_setup.xml / ui_wizard_ad5x_setup.cpp. -->
++  <consts>
++    <str name="step_title" value="Printer Setup: Summary" value_tag="Printer Setup: Summary"/>
++    <str name="step_subtitle" value="The results so far, before Save" value_tag="The results so far, before Save"/>
++  </consts>
++  <view name="wizard_ad5x_zoffset_root"
++        extends="lv_obj" width="100%" height="content" style_bg_opa="0" style_border_width="0" style_pad_all="0"
++        scrollable="false">
++    <wizard_ad5x_setup/>
++  </view>
++</component>
+diff --git a/include/ui_overlay_network_settings.h b/include/ui_overlay_network_settings.h
+--- a/include/ui_overlay_network_settings.h
++++ b/include/ui_overlay_network_settings.h
+@@ -85,6 +85,10 @@
+  */
+ class NetworkSettingsOverlay : public OverlayBase {
+   public:
++    /// The wizard's "Add Hidden Network": prepares the dialog's subjects and
++    /// callbacks (show() does that for Settings) and opens the dialog.
++    void show_hidden_network_from_wizard();
++
+     NetworkSettingsOverlay();
+     ~NetworkSettingsOverlay();
+ 
+diff --git a/src/ui/ui_overlay_network_settings.cpp b/src/ui/ui_overlay_network_settings.cpp
+--- a/src/ui/ui_overlay_network_settings.cpp
++++ b/src/ui/ui_overlay_network_settings.cpp
+@@ -197,6 +197,14 @@
+ // ============================================================================
+ // Callback Registration
+ // ============================================================================
++
++void NetworkSettingsOverlay::show_hidden_network_from_wizard() {
++    if (!are_subjects_initialized()) {
++        init_subjects();
++    }
++    register_callbacks();
++    handle_add_other_clicked();
++}
+ 
+ void NetworkSettingsOverlay::register_callbacks() {
+     register_xml_callbacks({
+diff --git a/src/ui/ui_wizard_wifi.cpp b/src/ui/ui_wizard_wifi.cpp
+--- a/src/ui/ui_wizard_wifi.cpp
++++ b/src/ui/ui_wizard_wifi.cpp
+@@ -2,6 +2,8 @@
+ // SPDX-License-Identifier: GPL-3.0-or-later
+ 
+ #include "ui_wizard_wifi.h"
++
++#include "ui_overlay_network_settings.h"
+ 
+ #include "ui_callback_helpers.h"
+ #include "ui_error_reporting.h"
+@@ -863,6 +865,8 @@
+                  self->handle_modal_connect_clicked();
+              }
+          }},
++        {"on_wizard_wifi_add_hidden",
++         [](lv_event_t*) { get_network_settings_overlay().show_hidden_network_from_wizard(); }},
+     });
+ 
+     spdlog::debug("[{}] Event callbacks registered", get_name());
+diff --git a/ui_xml/wizard_wifi_setup.xml b/ui_xml/wizard_wifi_setup.xml
+--- a/ui_xml/wizard_wifi_setup.xml
++++ b/ui_xml/wizard_wifi_setup.xml
+@@ -90,6 +90,13 @@
+           <bind_flag_if_eq subject="wifi_enabled" flag="hidden" ref_value="1"/>
+         </text_body>
+         <!-- Network list populated dynamically from C++ -->
++        <!-- A network that doesn't show up in the scan (hidden SSID) -->
++        <ui_button name="btn_wizard_wifi_add_hidden" width="100%" height="content" icon="wifi"
++                   text="Add Hidden Network" variant="secondary">
++          <event_cb trigger="clicked" callback="on_wizard_wifi_add_hidden"/>
++          <bind_state_if_eq subject="wifi_hardware_available" state="disabled" ref_value="0"/>
++          <bind_flag_if_eq subject="wifi_enabled" flag="hidden" ref_value="0"/>
++        </ui_button>
+       </ui_card>
+     </lv_obj>
+     <!-- Password modal now created on-demand via modal system -->
+diff --git a/ui_xml/settings_panel.xml b/ui_xml/settings_panel.xml
+--- a/ui_xml/settings_panel.xml
++++ b/ui_xml/settings_panel.xml
+@@ -57,6 +57,12 @@
+                           bind_description="ad5x_nozzle_size_text" description_min_bp="0">
+         <bind_flag_if_eq subject="settings_show_ad5x_nozzle" flag="hidden" ref_value="0"/>
+       </setting_action_row>
++      <!-- AD5X: the purge box (trash bin) position: a targeted session with the purge box check -->
++      <setting_action_row name="row_ad5x_purge"
++                          label="Purge Box" icon="printer_3d" callback="on_ad5x_purge_clicked"
++                          description="Move the trash bin the nozzle purges into" description_min_bp="0">
++        <bind_flag_if_eq subject="settings_show_ad5x_setup" flag="hidden" ref_value="0"/>
++      </setting_action_row>
+       <!-- AD5X: how long the print start lets the bed settle before the Z check (ad5x_soak object) -->
+       <setting_action_row name="row_ad5x_soak"
+                           label="Bed Heat Soak" icon="heat_wave" callback="on_ad5x_soak_clicked"
+diff --git a/src/ui/ui_panel_settings.cpp b/src/ui/ui_panel_settings.cpp
+--- a/src/ui/ui_panel_settings.cpp
++++ b/src/ui/ui_panel_settings.cpp
+@@ -363,6 +363,13 @@
+     overlay.show(parent_screen_);
+ }
+ 
++void SettingsPanel::handle_ad5x_purge_clicked() {
++    if (is_wizard_active()) {
++        return;
++    }
++    helix::ad5x_setup::launch_purge_box(parent_screen_);
++}
++
+ void SettingsPanel::handle_ad5x_setup_clicked() {
+     if (is_wizard_active()) {
+         return;
+@@ -440,6 +447,8 @@
+         {"on_ad5x_setup_clicked",
+          [](lv_event_t*) { get_global_settings_panel().handle_ad5x_setup_clicked(); }},
+         {"on_ad5x_nozzle_clicked", [](lv_event_t*) { helix::ui::Ad5xNozzleModal::show_owned(); }},
++        {"on_ad5x_purge_clicked",
++         [](lv_event_t*) { get_global_settings_panel().handle_ad5x_purge_clicked(); }},
+ 
+         // Restart prompt and the shared header back button
+         {"on_restart_later_clicked",
+diff --git a/include/ui_panel_settings.h b/include/ui_panel_settings.h
+--- a/include/ui_panel_settings.h
++++ b/include/ui_panel_settings.h
+@@ -191,6 +191,7 @@
+ 
+     /// Confirms, then runs the AD5X setup steps again as a targeted wizard session.
+     void handle_ad5x_setup_clicked();
++    void handle_ad5x_purge_clicked();
+ 
+     // The root rows' callback table lives in register_settings_panel_callbacks()
+     // and reaches the handlers above.
+diff --git a/tests/unit/test_wizard_step_logic.cpp b/tests/unit/test_wizard_step_logic.cpp
+--- a/tests/unit/test_wizard_step_logic.cpp
++++ b/tests/unit/test_wizard_step_logic.cpp
+@@ -30,6 +30,15 @@
+             e.skipped = true;
+ }
+ 
++static void skip_ad5x(std::vector<helix::StepSkip>& v) {
++    // The AD5X tuning steps are for the AD5X preset only
++    for (StepId s : {StepId::Ad5xTimezone, StepId::Ad5xNozzle, StepId::Ad5xSelfcheck,
++                     StepId::Ad5xPid, StepId::Ad5xMesh, StepId::Ad5xShaper,
++                     StepId::Ad5xIfs, StepId::Ad5xTrash, StepId::Ad5xZoffset,
++                     StepId::Ad5xSoak, StepId::Ad5xSummary, StepId::Ad5xFinish})
++        skip_step(v, s);
++}
++
+ // ============================================================================
+ // Default vector (no skips) — baseline behavior
+ // ============================================================================
+@@ -67,6 +76,7 @@
+ 
+ TEST_CASE("Preset mode: skip hardware steps", "[wizard][step_logic][preset]") {
+     auto v = full_vec();
++    skip_ad5x(v);
+     skip_step(v, StepId::Wifi);
+     skip_step(v, StepId::PrinterIdentify);
+     skip_step(v, StepId::HeaterSelect);
+@@ -89,6 +99,7 @@
+ 
+ TEST_CASE("Preset mode: next skips hardware", "[wizard][step_logic][preset]") {
+     auto v = full_vec();
++    skip_ad5x(v);
+     skip_step(v, StepId::Wifi);
+     skip_step(v, StepId::PrinterIdentify);
+     skip_step(v, StepId::HeaterSelect);
+@@ -117,6 +128,7 @@
+ 
+ TEST_CASE("Preset mode: prev works", "[wizard][step_logic][preset]") {
+     auto v = full_vec();
++    skip_ad5x(v);
+     skip_step(v, StepId::Wifi);
+     skip_step(v, StepId::PrinterIdentify);
+     skip_step(v, StepId::HeaterSelect);
+@@ -136,6 +148,7 @@
+ 
+ TEST_CASE("Preset mode: connection also skipped", "[wizard][step_logic][preset]") {
+     auto v = full_vec();
++    skip_ad5x(v);
+     skip_step(v, StepId::Wifi);
+     skip_step(v, StepId::Connection); // auto-validated
+     skip_step(v, StepId::PrinterIdentify);
+@@ -210,6 +223,7 @@
+     REQUIRE_FALSE(plan.first_run);
+ 
+     auto v = full_vec();
++    skip_ad5x(v);
+     // first three steps are skipped for any subsequent printer
+     skip_step(v, StepId::TouchCalibration);
+     skip_step(v, StepId::Language);
+@@ -255,6 +269,7 @@
+ 
+ TEST_CASE("id-nav: non-contiguous skips are honored", "[wizard][step_logic][idnav]") {
+     auto v = all_visible();
++    skip_ad5x(v); // the AD5X steps sit between FilamentSensor and InputShaper
+     for (auto& s : v)
+         if (s.id == StepId::HeaterSelect || s.id == StepId::AmsIdentify ||
+             s.id == StepId::InputShaper)
+@@ -262,7 +277,7 @@
+     REQUIRE(helix::wizard_next(StepId::PrinterIdentify, v) == StepId::FanSelect);
+     REQUIRE(helix::wizard_next(StepId::FanSelect, v) == StepId::LedSelect);
+     REQUIRE(helix::wizard_next(StepId::FilamentSensor, v) == StepId::Preferences);
+-    REQUIRE(helix::wizard_visible_count(v) == helix::wizard::STEP_COUNT - 3);
++    REQUIRE(helix::wizard_visible_count(v) == helix::wizard::STEP_COUNT - 15); // 3 + 12 AD5X
+ }
+ 
+ TEST_CASE("id-nav: last visible step reports done", "[wizard][step_logic][idnav]") {

@@ -20,7 +20,13 @@ import math
 import os
 import re
 
-STEPS = ("selfcheck", "pid", "mesh", "shaper", "ifs", "zoffset", "finish")
+# Order on the screen. The mesh step comes before the Z offset step: the
+# mesh's nozzle scrub doesn't yet work after a Z offset step (the offset
+# is still applied there). The purge box check sits before the Z offset
+# (the test patch purges at the box); the soak calibration takes ~15 min,
+# so it comes after the IFS tuning and before the summary.
+STEPS = ("selfcheck", "pid", "mesh", "shaper", "ifs", "trash", "zoffset",
+         "soak", "summary", "finish")
 
 # Z offset test patch temperatures per material (nozzle, bed); MATERIAL=
 # picks one, default the loaded IFS slot's type, else PLA.
@@ -91,6 +97,9 @@ class AD5XSetup:
         # with here (stock's or zMod's, carried over at install), and too
         # low scrapes the bed
         self.patch_start_z = config.getfloat('patch_start_z', .1)
+        # ESTIMATE=1 on the Z offset step (Z_OFFSET_ESTIMATE, the load cells):
+        # off until it has been checked against tuned offsets on printers
+        self.estimate_enabled = config.getboolean('zoffset_estimate', False)
         self.max_adjust = config.getfloat('max_adjust', .5, above=0.)
         self.max_total_adjust = config.getfloat('max_total_adjust', 1.,
                                                 above=0.)
@@ -146,6 +155,7 @@ class AD5XSetup:
             'checks': [dict(c) for c in self.checks],
             'pending_save': self.pending_save,
             'zoffset': round(self._zoffset(), 4),
+            'estimate': self.estimate_enabled,
         }
     def _zoffset(self):
         """The live G-code Z offset during the zoffset step, else the
@@ -208,8 +218,9 @@ class AD5XSetup:
             logging.warning("ad5x_setup: can't save results: %s", e)
     # Commands and the API endpoint
     cmd_SETUP_WIZARD_STEP_help = (
-        "Setup wizard step: STEP=selfcheck|pid|mesh|shaper|ifs|zoffset|"
-        "finish [ACTION=start|abort|adjust|accept] [DELTA=] [WAIT=1]; "
+        "Setup wizard step: STEP=selfcheck|pid|trash|zoffset|mesh|shaper|"
+        "ifs|soak|summary|finish [ACTION=start|abort|adjust|accept] "
+        "[DELTA=] [WAIT=1] [ESTIMATE=1]; "
         "ACTION=wizard asks the screen to run the wizard again")
     def cmd_SETUP_WIZARD_STEP(self, gcmd):
         action = gcmd.get('ACTION', 'start').lower()
@@ -234,7 +245,7 @@ class AD5XSetup:
                 delta = float(delta)
             params = {}
             for key in ('material', 'extruder', 'bed', 'keep_bed', 'tube',
-                        'channel', 'heaters'):
+                        'channel', 'heaters', 'estimate', 'force'):
                 if web_request.get(key, None) is not None:
                     params[key.upper()] = str(web_request.get(key))
             msg = self._dispatch(step, action, params, delta)
@@ -256,12 +267,16 @@ class AD5XSetup:
         if action == 'wizard':
             return self._request_wizard()
         if action in ('adjust', 'accept'):
-            if self.step != "zoffset" or self.state != "waiting_user":
+            if self.state != "waiting_user" or self.step not in (
+                    ("zoffset", "trash") if action == 'accept'
+                    else ("zoffset",)):
                 raise error("SETUP_WIZARD_STEP: ACTION=%s works only while "
-                            "the Z offset test patch is up" % (action,))
+                            "the %s is waiting for you" % (
+                                action, "Z offset test patch" if action
+                                == 'adjust' else "step"))
             if action == 'accept':
                 self.z_accept = True
-                return "AD5X setup: Z offset accepted"
+                return "AD5X setup: %s accepted" % (self.step,)
             if delta is None or abs(delta) > self.max_adjust:
                 raise error("SETUP_WIZARD_STEP: DELTA= must be between -%g "
                             "and %g" % (self.max_adjust, self.max_adjust))
@@ -637,7 +652,11 @@ class AD5XSetup:
             # squashes a little more at every touch, and the probe's
             # samples then exceed samples_tolerance.
             self._set("Cleaning the nozzle on the bed edge", .32)
-            self._gcode("G1 Z5 F800\nG1 X60 Y-3 F30000\nWEIGHT_TARE\nPROBE")
+            # The Z offset from the step before is still applied: clear it for
+            # the tap and the scrub, as PRINT_START does (the scrub's height
+            # is in the offset's frame)
+            self._gcode("G90\n_SET_GCODE_OFFSET Z=0\nG1 Z5 F800\nG1 X60 Y-3 F30000\n"
+                        "WEIGHT_TARE\nPROBE")
             self._scrub()
             self._set("Probing the bed", .35)
             self._gcode("BED_MESH_CALIBRATE PROFILE=default")
@@ -671,7 +690,10 @@ class AD5XSetup:
         if lp is None:
             return
         z = lp.z + float(self._settings('probe').get('z_offset', 0.))
-        self._gcode("M106 S255\nG1 Z%.3f F1000\nG1 X130 F1200\n"
+        logging.info("ad5x_setup: scrub: probe at %.3f, z_offset %.3f, "
+                     "height %.3f", lp.z, float(
+                         self._settings('probe').get('z_offset', 0.)), z)
+        self._gcode("G90\nM106 S255\nG1 Z%.3f F1000\nG1 X130 F1200\n"
                     "G1 X150 F1200\nG1 Z%.3f F1000\nM106 S0\nG1 Z5 F6000"
                     % (z + .3, z + .1))
     def _step_shaper(self, params):
@@ -735,8 +757,12 @@ class AD5XSetup:
             self._gcode("IFS_LOAD CHANNEL=%d" % (chan,))
         # PRINT_START applies the saved offset (and its prime line prints
         # with it): save the fresh start for it; abort puts z_saved back
+        start_z = self.patch_start_z
+        if params.get('ESTIMATE') and str(params['ESTIMATE']).strip() not in (
+                '', '0'):
+            start_z = self._estimate_start(nozzle)
         self._gcode('SAVE_VARIABLE VARIABLE=zoffset VALUE="%r"'
-                    % ({'z': round(self.patch_start_z, 4)},))
+                    % ({'z': round(start_z, 4)},))
         self._set("Preparing like a print: home, heat to %.0f/%.0f C, "
                   "clean the nozzle, check Z" % (nozzle, bed), .05)
         self._gcode("PRINT_START BED=%g EXTRUDER=%g" % (bed, nozzle))
@@ -744,8 +770,9 @@ class AD5XSetup:
         index = 0
         while True:
             self.state = "waiting_user"
-            self._set("Printing test patch %d (starts high): lower it with "
-                      "- until the lines touch and flatten" % (index + 1,), .5)
+            self._set("Test patch %d: lower with - until the lines touch and "
+                      "flatten. Gaps or lifted edges: too high. Squashed, "
+                      "torn lines: too low" % (index + 1,), .5)
             for line in self._patch_gcode(index):
                 self._apply_z_deltas()
                 self._gcode(line)
@@ -824,6 +851,79 @@ class AD5XSetup:
         lines += ["G1 E-1 F1800", "G1 Z%.2f F600" % (h + 10.),
                   "G1 X%.2f Y%.2f F12000" % (self.patch_center[0], 215.)]
         return lines
+    def _estimate_start(self, nozzle):
+        """Z offset from the load cells (Z_OFFSET_ESTIMATE, ad5x_zestimate):
+        only when zoffset_estimate is on. The nozzle is hot first, as the
+        estimate expects; the test patch then checks the result."""
+        if not self.estimate_enabled:
+            raise self.printer.command_error(
+                "The Z offset estimate is off (zoffset_estimate: 1 in "
+                "local.cfg, [ad5x_setup], once checked on this printer)")
+        est = self.printer.lookup_object('ad5x_zestimate', None)
+        if est is None:
+            raise self.printer.command_error(
+                "The Z offset estimate isn't in this image")
+        self._set("Heating the nozzle for the estimate", .02)
+        self._heat_and_wait({'extruder': nozzle}, (0., .05))
+        self._set("Estimating the Z offset from the bed load cells", .06)
+        self._gcode("Z_OFFSET_ESTIMATE")
+        val = est.get_status(self.reactor.monotonic()).get('estimate')
+        if val is None:
+            raise self.printer.command_error(
+                "The estimate gave no result: use the test patch")
+        self._result("estimate", "%.3f mm" % (val,))
+        self._gcode("G1 Z10 F3000")
+        self._gcode_raw("SET_HEATER_TEMPERATURE HEATER=extruder TARGET=0")
+        return float(val)
+    def _step_trash(self, params):
+        """The purge box (trash bin): move there and check the nozzle is over
+        it. TRASH_OFFSET X= Y= moves it (typed in the console for now);
+        accept when it's right."""
+        self._home()
+        self.z_accept = False
+        self._gcode("_TRASH_CHECK")
+        self.state = "waiting_user"
+        self._set("Is the nozzle over the purge box? If not, TRASH_OFFSET "
+                  "X= Y=; then accept", .9)
+        end = self.reactor.monotonic() + self.user_timeout
+        while not self.z_accept:
+            if self.reactor.monotonic() > end:
+                self._set("No answer: keeping the purge box where it is")
+                break
+            self._pause(.1)
+        self.state = "running"
+        self._gcode("G1 Z10 F3000")
+        self._result("trash", "box at X%.1f Y%.1f" % (
+            52.5 + self._trash_offset()[0], 229. + self._trash_offset()[1]))
+        self._set("Purge box checked", 1.)
+    def _trash_offset(self):
+        """(x, y) of the purge box from its factory spot: variables.cfg
+        trash_offset (TRASH_OFFSET), else unit.cfg."""
+        t = self._variables().get('trash_offset')
+        if isinstance(t, dict) and 'x' in t and 'y' in t:
+            return float(t['x']), float(t['y'])
+        unit = self.printer.lookup_object('gcode_macro _AD5X_UNIT', None)
+        if unit is None:
+            return 0., 0.
+        return float(unit.variables.get('x_offset', 0.)), float(
+            unit.variables.get('y_offset', 0.))
+    def _step_soak(self, params):
+        """Bed heat soak calibration (BED_SOAK_CALIBRATE at 60 C, about 15
+        minutes). Optional; starts from a cold bed, as the command requires."""
+        bed = self._heater('heater_bed')
+        if self._temp(bed) > 40. and not int(params.get('FORCE', 0) or 0):
+            raise self.printer.command_error(
+                "The bed is still warm: let it cool below 40 C, then run "
+                "the soak again")
+        self._set("Bed soak calibration at 60 C (about 15 minutes)", .05)
+        self._gcode("BED_SOAK_CALIBRATE BED=60")
+        self._gcode_raw("SET_HEATER_TEMPERATURE HEATER=heater_bed TARGET=0")
+        self._result("soak", "calibrated at 60 C")
+        self._set("Bed soak calibrated", 1.)
+    def _step_summary(self, params):
+        """Nothing to run: the results so far, for review before Save."""
+        self._result("summary", "%d step(s) done" % (len(self.results) - 1,))
+        self._set("Review the results, then Save", 1.)
     def _step_finish(self, params):
         cf = self.printer.lookup_object('configfile')
         moved = {s: self._autosave(s) for s in TUNING_SECTIONS}

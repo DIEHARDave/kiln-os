@@ -21,14 +21,17 @@ install). Our AD5X steps are added by a HelixScreen patch:
 | 2 | Language | HelixScreen |
 | 3 | Wi-Fi (optional) | HelixScreen |
 | 4 | Connection (auto, local Moonraker) | HelixScreen |
-| 5 | **Self-check** | AD5X step, `SETUP_WIZARD_STEP STEP=selfcheck` |
+| 5 | **Self-check** | AD5X step, `STEP=selfcheck` |
 | 6 | **PID tune** (nozzle 220, bed 60) | AD5X step, `STEP=pid` |
-| 7 | **Bed mesh** (bed at 60) | AD5X step, `STEP=mesh` |
+| 7 | **Bed mesh** (bed at 60; cleans the nozzle on the bed edge first) | AD5X step, `STEP=mesh` |
 | 8 | **Vibration compensation** | AD5X step, `STEP=shaper` |
 | 9 | **IFS tuning** (load filament in slots first) | AD5X step, `STEP=ifs` |
-| 10 | **Z offset: first layer** | AD5X step, `STEP=zoffset` (+ live adjust) |
-| 11 | **Save** (SAVE_CONFIG, Klipper restarts) | AD5X step, `STEP=finish` |
-| 12 | Preferences / Summary | HelixScreen (telemetry stays off) |
+| 10 | **Purge box check** (is the nozzle over the trash bin? `TRASH_OFFSET X= Y=` moves it) | AD5X step, `STEP=trash` |
+| 11 | **Z offset: first layer** (test patch; optional load cell estimate first, `ESTIMATE=1`, when `zoffset_estimate: 1`) | AD5X step, `STEP=zoffset` (+ live adjust) |
+| 12 | **Bed soak calibration** (optional, about 15 min; starts from a cold bed) | AD5X step, `STEP=soak` |
+| 13 | **Summary** (the results, before Save) | AD5X step, `STEP=summary` |
+| 14 | **Save** (SAVE_CONFIG, Klipper restarts) | AD5X step, `STEP=finish` |
+| 15 | Preferences | HelixScreen (telemetry stays off) |
 
 Every AD5X step has Start, Skip and (while running) Abort. A failed step
 shows the message and offers Retry / Skip.
@@ -458,6 +461,7 @@ dir's `import` commit with `git format-patch`.
 | `0007-sound-pwm-backend-and-printer-sounds` | HelixScreen's sounds on the speaker, Settings > Sound > **Printer Sounds** (`docs/sound.md`) |
 | `0010-ad5x-auto-refill` | Settings > Printer > **Filament Auto-Refill** (on/off, colour match, the backups per slot, Filament slots); the **No backup spool** pop-up during a print when Klipper's `refill_notice` is set |
 | `0011-ad5x-home-layout` | The AD5X home screen (preset seed `assets/config/panel_widgets/ad5x/home.json`, 800x480 grid only): nozzle, bed, fans and notifications along the top; the print status card (no temperature row of its own: config `show_temps`) on the left; IFS slots, Preheat/Cool Down (one track tall, no temperature column: preheat `show_temps`), the LED light and the live Z offset under it, Motion and an **Unload** button (`favorite_macro` `label`) on the right, Preheat/Cool Down and Unload greyed and inert while printing or paused (`lock_while_printing`); no printer picture, temperature graph or tips. A seed `revision` in the layout signature moves an unedited default to it on update; an edited layout stays |
+| `0012-ad5x-wizard-purge-box-soak-summary` | The AD5X steps on the screen follow the Klipper order (mesh before the Z offset): the purge box check (`trash`, arrows move the box and the nozzle over it, Factory spot), the Z offset's **Estimate first** (shown with `zoffset_estimate: 1`), the optional bed soak and the summary before Save; Wi-Fi's **Add Hidden Network** in the wizard; Settings > **Purge Box** (the purge box check alone) |
 
 ### Steps
 

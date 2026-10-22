@@ -7,6 +7,14 @@ the release has no section of its own yet (rename it after the release).
 ## Unreleased
 
 ### Fixed
+- **Home screen: a finger drifting to the edge no longer pages the screen**
+  when the arrows page it (resistive touch): the Unload button in the corner
+  is pressed reliably. Swiping still works in widget edit mode.
+- **Keyboard: the second period on the number page is now an underscore**
+  (`_`), for Wi-Fi passwords and commands. The period stays on the row above.
+- **The purge box offset applies everywhere**: the box moves at the start
+  of a print, the wipe and the nozzle brush used the fixed spot and ignored
+  unit.cfg's offset; now every box move uses it (and TRASH_OFFSET's value).
 - **Nozzle 10 °C hotter than the file** (245 instead of 235): a file whose
   start line is zMod's `START_PRINT` without `EXTRUDER_TEMP=` (Orca
   profiles that send their own `M104` first) got zMod's default of 245
@@ -15,6 +23,18 @@ the release has no section of its own yet (rename it after the release).
   none. Files that give `EXTRUDER_TEMP=` work as before.
 
 ### Added
+- **Touch screen: purge box check, bed soak and summary steps** in the
+  setup wizard, plus the Z offset's load cell estimate (off until
+  `zoffset_estimate: 1`), Wi-Fi's Add Hidden Network in the wizard, and
+  Settings > Purge Box to move the trash bin.
+- **`TRASH_OFFSET X= Y= [RESET=1]`**: moves the purge box (the trash bin)
+  from its factory spot (X 52.5, Y 229) and saves it, so it survives
+  restarts and updates. X -10 to 10, Y -14 to 2 mm. `RESET=1` goes back to
+  the value in unit.cfg. A menu entry and a wizard step can follow.
+- **OrcaSlicer printer profiles for every nozzle size** (`orca/`):
+  import one per nozzle (0.2 to 1.0 mm) in Orca with File > Import; each
+  has the machine G-code and build area. Retraction is from the 0.6 mm
+  profile, to be checked on the others (see `orca/README.md`).
 - **Recommended OrcaSlicer machine G-code** (`docs/orcaslicer.md`): start,
   end, layer change and colour change G-code to paste into OrcaSlicer's
   printer settings, where the printer does the heating, mesh, first load

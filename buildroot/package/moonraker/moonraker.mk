@@ -5,8 +5,8 @@
 ################################################################################
 
 # tools/bump_upstream.py sets both lines (DESCRIBE: git describe of it)
-MOONRAKER_VERSION = 9e676eba6b02661a4dfa3ec6e7ac3f3504498e6d
-MOONRAKER_DESCRIBE = v0.11.0-3-g9e676eba6
+MOONRAKER_VERSION = b559b9a81161f958a43c2f527b6ad96f73310d5d
+MOONRAKER_DESCRIBE = v0.11.0-4-gb559b9a81
 MOONRAKER_SITE = $(call github,Arksine,moonraker,$(MOONRAKER_VERSION))
 MOONRAKER_LICENSE = GPL-3.0
 MOONRAKER_LICENSE_FILES = LICENSE
