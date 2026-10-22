@@ -350,8 +350,8 @@ index 7c98d03e..2c39a616 100644
  #include "ui_update_queue.h"
  #include "ui_wizard.h"
  
-@@ -151,6 +152,13 @@ void manual_probe_autoopen_step(DiscoveryContext& ctx) {
-     });
+@@ -167,6 +168,13 @@ void remote_screen_webcam_step(DiscoveryContext&) {
+     RemoteScreenService::instance().apply_settings();
  }
  
 +// AD5X filament auto-refill: follow the IFS's refill state from now on, so its
@@ -364,9 +364,9 @@ index 7c98d03e..2c39a616 100644
  constexpr DiscoveryStep kTailSteps[] = {
      {"update_checker_connected", false, update_checker_connected_step, nullptr},
      {"about_print_hours", false, about_print_hours_step, nullptr},
-@@ -165,6 +173,7 @@ constexpr DiscoveryStep kTailSteps[] = {
-     {"auto_update_check", false, auto_update_check_step, nullptr},
-     {"moonraker_update_channel", false, moonraker_update_channel_step, nullptr},
+@@ -183,6 +191,7 @@ constexpr DiscoveryStep kTailSteps[] = {
+     {"filament_temperatures", false, filament_temperatures_step, nullptr},
+     {"remote_screen_webcam", false, remote_screen_webcam_step, nullptr},
      {"manual_probe_autoopen", false, manual_probe_autoopen_step, nullptr},
 +    {"ad5x_refill_watch", false, ad5x_refill_watch_step, nullptr},
  };
@@ -1127,12 +1127,12 @@ index 00000000..4710785d
 +
 +} // namespace helix::settings
 diff --git a/tests/unit/test_discovery_steps.cpp b/tests/unit/test_discovery_steps.cpp
-index 117bcf7d..9f34e479 100644
+index 7c98d03e..2c39a616 100644
 --- a/tests/unit/test_discovery_steps.cpp
 +++ b/tests/unit/test_discovery_steps.cpp
-@@ -146,6 +146,7 @@ TEST_CASE("the tail discovery steps run in this order", "[discovery_steps]") {
-         "auto_update_check",
-         "moonraker_update_channel",
+@@ -152,6 +152,7 @@ TEST_CASE("the tail discovery steps run in this order", "[discovery_steps]") {
+         "filament_temperatures",
+         "remote_screen_webcam",
          "manual_probe_autoopen",
 +        "ad5x_refill_watch",
      };

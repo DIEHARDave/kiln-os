@@ -1302,12 +1302,11 @@ index 112ddec..dac6561 100644
          {"thermistor", {true, true}},        // user sensor name, long_mode=dots
          {"bypass", {true, true}},            // material name, long_mode=dots
 diff --git a/tests/unit/test_material_preheat_actions.cpp b/tests/unit/test_material_preheat_actions.cpp
-index 4cafdb6..d7bc2e8 100644
 --- a/tests/unit/test_material_preheat_actions.cpp
 +++ b/tests/unit/test_material_preheat_actions.cpp
-@@ -602,3 +602,44 @@ TEST_CASE_METHOD(LVGLUITestFixture,
-     helix::ui::set_test_notification_info_hook(nullptr);
-     CHECK(toasts.empty());
+@@ -677,3 +677,44 @@ TEST_CASE_METHOD(LVGLUITestFixture,
+     }
+     helix::AmsState::instance().clear_backends();
  }
 +
 +TEST_CASE_METHOD(LVGLUITestFixture,
