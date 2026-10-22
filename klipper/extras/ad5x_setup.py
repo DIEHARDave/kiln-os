@@ -722,6 +722,17 @@ class AD5XSetup:
         args = "".join(" %s=%s" % (k, params[k]) for k in ("TUBE", "CHANNEL")
                        if params.get(k))
         self._home()
+        # Filament left in the toolhead (from an earlier run): unload it first.
+        # IFS_TUNE only does that when it knows the slot; after a restart it
+        # doesn't, so the step does it here.
+        if ifs._head_has_filament():
+            chan = int(params.get('CHANNEL', 0) or 0) or self._reload_channel()
+            if not chan:
+                raise self.printer.command_error(
+                    "The toolhead holds filament from an unknown slot: pull it "
+                    "out by hand (cut the tip first), then Retry")
+            self._set("Unloading slot %d from the toolhead" % (chan,), .02)
+            self._gcode("IFS_UNLOAD SLOT=%d" % (chan,))
         self._set("Tuning the IFS (QuickSwap-like)", 0.)
         def progress():
             if ifs.tune_message:
@@ -765,14 +776,16 @@ class AD5XSetup:
                     % ({'z': round(start_z, 4)},))
         self._set("Preparing like a print: home, heat to %.0f/%.0f C, "
                   "clean the nozzle, check Z" % (nozzle, bed), .05)
-        self._gcode("PRINT_START BED=%g EXTRUDER=%g" % (bed, nozzle))
+        # LEVEL=0: the centre Z check only. A mesh here probed the whole bed
+        # (adaptive without exclude_object labels), which the test patch doesn't need.
+        self._gcode("PRINT_START BED=%g EXTRUDER=%g LEVEL=0" % (bed, nozzle))
         self.z_start = self._zoffset()
         index = 0
         while True:
             self.state = "waiting_user"
-            self._set("Test patch %d: lower with - until the lines touch and "
-                      "flatten. Gaps or lifted edges: too high. Squashed, "
-                      "torn lines: too low" % (index + 1,), .5)
+            self._set("Test patch %d: press Closer until the lines touch and "
+                      "flatten. Gaps or lifted edges: Closer. Squashed, "
+                      "torn lines: Away" % (index + 1,), .5)
             for line in self._patch_gcode(index):
                 self._apply_z_deltas()
                 self._gcode(line)
@@ -909,12 +922,20 @@ class AD5XSetup:
             unit.variables.get('y_offset', 0.))
     def _step_soak(self, params):
         """Bed heat soak calibration (BED_SOAK_CALIBRATE at 60 C, about 15
-        minutes). Optional; starts from a cold bed, as the command requires."""
+        minutes). Optional; starts from a cold bed, as the command requires.
+        The Z offset step heats the bed, so a warm bed is cooled first (the
+        heater off), not refused."""
         bed = self._heater('heater_bed')
         if self._temp(bed) > 40. and not int(params.get('FORCE', 0) or 0):
-            raise self.printer.command_error(
-                "The bed is still warm: let it cool below 40 C, then run "
-                "the soak again")
+            self._gcode_raw("SET_HEATER_TEMPERATURE HEATER=heater_bed TARGET=0")
+            end = self.reactor.monotonic() + self.heat_timeout
+            while self._temp(bed) > 40.:
+                self._set("Waiting for the bed to cool below 40 C (now %.0f C)"
+                          % (self._temp(bed),), 0.)
+                if self.reactor.monotonic() > end:
+                    raise self.printer.command_error(
+                        "The bed did not cool below 40 C in time")
+                self._pause(1.)
         self._set("Bed soak calibration at 60 C (about 15 minutes)", .05)
         self._gcode("BED_SOAK_CALIBRATE BED=60")
         self._gcode_raw("SET_HEATER_TEMPERATURE HEATER=heater_bed TARGET=0")

@@ -442,7 +442,7 @@ an update.
 
 ## HelixScreen side (`buildroot/package/helixscreen/000*.patch`)
 
-Patches on HelixScreen v1.1.0-beta.10, applied by Buildroot after
+Patches on HelixScreen v1.1.0-beta.11 (fifteen, `0001` to `0015`), applied by Buildroot after
 extract (after the `GIT_INIT` hook has committed the pristine tree, so
 upstream's own submodule patching is unaffected; they touch only `src/`,
 `include/`, `ui_xml/`, `tests/` and, for 0011, `assets/config/`). Regenerate them from a clean clone of the build
@@ -462,6 +462,9 @@ dir's `import` commit with `git format-patch`.
 | `0010-ad5x-auto-refill` | Settings > Printer > **Filament Auto-Refill** (on/off, colour match, the backups per slot, Filament slots); the **No backup spool** pop-up during a print when Klipper's `refill_notice` is set |
 | `0011-ad5x-home-layout` | The AD5X home screen (preset seed `assets/config/panel_widgets/ad5x/home.json`, 800x480 grid only): nozzle, bed, fans and notifications along the top; the print status card (no temperature row of its own: config `show_temps`) on the left; IFS slots, Preheat/Cool Down (one track tall, no temperature column: preheat `show_temps`), the LED light and the live Z offset under it, Motion and an **Unload** button (`favorite_macro` `label`) on the right, Preheat/Cool Down and Unload greyed and inert while printing or paused (`lock_while_printing`); no printer picture, temperature graph or tips. A seed `revision` in the layout signature moves an unedited default to it on update; an edited layout stays |
 | `0012-ad5x-wizard-purge-box-soak-summary` | The AD5X steps on the screen follow the Klipper order (mesh before the Z offset): the purge box check (`trash`, arrows move the box and the nozzle over it, Factory spot), the Z offset's **Estimate first** (shown with `zoffset_estimate: 1`), the optional bed soak and the summary before Save; Wi-Fi's **Add Hidden Network** in the wizard; Settings > **Purge Box** (the purge box check alone) |
+| `0013-ad5x-keyboard-underscore` | The keyboard's second period on the number page is an underscore |
+| `0014-ad5x-home-no-swipe-with-arrows` | The home screen does not page by swipe where the arrows page it (resistive touch) |
+| `0015-ad5x-wizard-one-page-steps` | The Z offset step's buttons read Closer / Away (no hint line); the purge box is one row of arrows (Left, Right, Front, Back, Factory), so Accept and Abort fit on the page; shorter step text |
 
 ### Steps
 
@@ -502,8 +505,8 @@ Each step's screen (`ui_xml/wizard_ad5x_<step>.xml` for the title,
 - **Start** (`action: start`);
 - while `state` is `running`: `message`, progress bar (`progress`),
   **Abort**; the footer's Next is disabled;
-- Z offset, `state` `waiting_user`: the current `zoffset`, buttons -0.05,
-  -0.01, +0.01, +0.05 (`adjust`), **New Patch** (`start` again: another
+- Z offset, `state` `waiting_user`: the current `zoffset`, buttons Closer 0.05,
+  Closer 0.01, Away 0.01, Away 0.05 (`adjust` -0.05, -0.01, +0.01, +0.05), **New Patch** (`start` again: another
   patch beside the first), **Accept** and Abort;
 - `done`: the step's line from `results` (self-check: one line per entry of
   `checks`, `OK`, `FAIL`, or `WARN` for a failed item with `required:

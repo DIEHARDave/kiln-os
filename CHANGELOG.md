@@ -6,6 +6,25 @@ the release has no section of its own yet (rename it after the release).
 
 ## Unreleased
 
+### Added
+- **OrcaSlicer filament profiles** (`orca/`): `AD5X PLA`, `AD5X PETG` and
+  `AD5X TPU`, starting points with temperatures and volumetric speed limits
+  (see `orca/README.md`). Not yet tried in the Orca GUI.
+
+### Changed
+- **Setup wizard: Z offset test** checks only the centre, not the whole bed
+  (no full-bed mesh); the buttons say **Closer** and **Away** instead of
+  `-` and `+`.
+- **Setup wizard: purge box** is one row of arrows (Left, Right, Front, Back,
+  Factory), so Accept and Abort fit on the page without scrolling. The 0.1 mm
+  steps are gone; use 1 mm and Z offset as needed.
+- **Setup wizard: bed soak** cools a warm bed first (heater off, up to 15 min
+  of waiting, shown on the screen) instead of stopping with "the bed is still
+  warm".
+- **Setup wizard: IFS tuning** unloads filament left in the toolhead first, when
+  the slot is known. If it isn't, the screen says to pull it out by hand, then Retry.
+
+## v0.0.18 (2026-10-22)
 ### Fixed
 - **Home screen: a finger drifting to the edge no longer pages the screen**
   when the arrows page it (resistive touch): the Unload button in the corner
@@ -35,6 +54,56 @@ the release has no section of its own yet (rename it after the release).
   import one per nozzle (0.2 to 1.0 mm) in Orca with File > Import; each
   has the machine G-code and build area. Retraction is from the 0.6 mm
   profile, to be checked on the others (see `orca/README.md`).
+- **Recommended OrcaSlicer machine G-code** (`docs/orcaslicer.md`): start,
+  end, layer change and colour change G-code to paste into OrcaSlicer's
+  printer settings, where the printer does the heating, mesh, first load
+  and the purge at the box.
+
+## v0.0.17 (2026-10-22)
+### Fixed
+- **Home screen: a finger drifting to the edge no longer pages the screen**
+  when the arrows page it (resistive touch): the Unload button in the corner
+  is pressed reliably. Swiping still works in widget edit mode.
+- **Keyboard: the second period on the number page is now an underscore**
+  (`_`), for Wi-Fi passwords and commands. The period stays on the row above.
+- **The purge box offset applies everywhere**: the box moves at the start
+  of a print, the wipe and the nozzle brush used the fixed spot and ignored
+  unit.cfg's offset; now every box move uses it (and TRASH_OFFSET's value).
+- **Nozzle 10 °C hotter than the file** (245 instead of 235): a file whose
+  start line is zMod's `START_PRINT` without `EXTRUDER_TEMP=` (Orca
+  profiles that send their own `M104` first) got zMod's default of 245
+  for the whole print. `START_PRINT` and `PRINT_START` now keep the
+  temperatures the file already set and use the defaults only when it set
+  none. Files that give `EXTRUDER_TEMP=` work as before.
+
+### Added
+- **Touch screen: purge box check, bed soak and summary steps** in the
+  setup wizard, plus the Z offset's load cell estimate (off until
+  `zoffset_estimate: 1`), Wi-Fi's Add Hidden Network in the wizard, and
+  Settings > Purge Box to move the trash bin.
+- **`TRASH_OFFSET X= Y= [RESET=1]`**: moves the purge box (the trash bin)
+  from its factory spot (X 52.5, Y 229) and saves it, so it survives
+  restarts and updates. X -10 to 10, Y -14 to 2 mm. `RESET=1` goes back to
+  the value in unit.cfg. A menu entry and a wizard step can follow.
+- **OrcaSlicer printer profiles for every nozzle size** (`orca/`):
+  import one per nozzle (0.2 to 1.0 mm) in Orca with File > Import; each
+  has the machine G-code and build area. Retraction is from the 0.6 mm
+  profile, to be checked on the others (see `orca/README.md`).
+- **Recommended OrcaSlicer machine G-code** (`docs/orcaslicer.md`): start,
+  end, layer change and colour change G-code to paste into OrcaSlicer's
+  printer settings, where the printer does the heating, mesh, first load
+  and the purge at the box.
+
+## v0.0.16 (2026-10-21)
+### Fixed
+- **Nozzle 10 °C hotter than the file** (245 instead of 235): a file whose
+  start line is zMod's `START_PRINT` without `EXTRUDER_TEMP=` (Orca
+  profiles that send their own `M104` first) got zMod's default of 245
+  for the whole print. `START_PRINT` and `PRINT_START` now keep the
+  temperatures the file already set and use the defaults only when it set
+  none. Files that give `EXTRUDER_TEMP=` work as before.
+
+### Added
 - **Recommended OrcaSlicer machine G-code** (`docs/orcaslicer.md`): start,
   end, layer change and colour change G-code to paste into OrcaSlicer's
   printer settings, where the printer does the heating, mesh, first load

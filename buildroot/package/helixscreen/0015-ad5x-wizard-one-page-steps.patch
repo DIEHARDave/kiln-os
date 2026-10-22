@@ -1,0 +1,103 @@
+--- a/ui_xml/wizard_ad5x_setup.xml
++++ b/ui_xml/wizard_ad5x_setup.xml
+@@ -35,22 +35,20 @@
+         <lv_obj width="100%"
+                 height="content" style_pad_all="0" style_pad_gap="#space_sm" style_bg_opa="0" style_border_width="0"
+                 flex_flow="row" style_flex_main_place="center" scrollable="false">
+-          <ui_button name="btn_ad5x_z_down_005" flex_grow="1" height="#button_height" text="-0.05">
++          <!-- The labels say the direction: closer squishes the line more -->
++          <ui_button name="btn_ad5x_z_down_005" flex_grow="1" height="#button_height" text="Closer 0.05">
+             <event_cb trigger="clicked" callback="on_ad5x_setup_adjust" user_data="-0.05"/>
+           </ui_button>
+-          <ui_button name="btn_ad5x_z_down_001" flex_grow="1" height="#button_height" text="-0.01">
++          <ui_button name="btn_ad5x_z_down_001" flex_grow="1" height="#button_height" text="Closer 0.01">
+             <event_cb trigger="clicked" callback="on_ad5x_setup_adjust" user_data="-0.01"/>
+           </ui_button>
+-          <ui_button name="btn_ad5x_z_up_001" flex_grow="1" height="#button_height" text="+0.01">
++          <ui_button name="btn_ad5x_z_up_001" flex_grow="1" height="#button_height" text="Away 0.01">
+             <event_cb trigger="clicked" callback="on_ad5x_setup_adjust" user_data="0.01"/>
+           </ui_button>
+-          <ui_button name="btn_ad5x_z_up_005" flex_grow="1" height="#button_height" text="+0.05">
++          <ui_button name="btn_ad5x_z_up_005" flex_grow="1" height="#button_height" text="Away 0.05">
+             <event_cb trigger="clicked" callback="on_ad5x_setup_adjust" user_data="0.05"/>
+           </ui_button>
+         </lv_obj>
+-        <text_small width="100%"
+-                    text="- moves the nozzle closer to the bed (more squish), + moves it away."
+-                    long_mode="wrap" style_text_align="center" style_text_color="#text_muted"/>
+       </lv_obj>
+ 
+       <!-- Purge box check: arrows move the box (and the nozzle over it), then Accept -->
+@@ -58,45 +56,27 @@
+               width="100%" height="content" style_pad_all="0" style_pad_gap="#space_sm" style_bg_opa="0"
+               style_border_width="0" flex_flow="column" style_flex_cross_place="center" scrollable="false">
+         <bind_flag_if cond="ad5x_setup_is_trash eq 0 or ad5x_setup_view ne 2" flag="hidden"/>
++        <!-- One row of 1 mm arrows: the labels say which way the box moves -->
+         <lv_obj width="100%"
+                 height="content" style_pad_all="0" style_pad_gap="#space_sm" style_bg_opa="0" style_border_width="0"
+                 flex_flow="row" style_flex_main_place="center" scrollable="false">
+-          <ui_button name="btn_ad5x_trash_x_down_1" flex_grow="1" height="#button_height" text="X -1">
++          <ui_button name="btn_ad5x_trash_x_down_1" flex_grow="1" height="#button_height" text="Left">
+             <event_cb trigger="clicked" callback="on_ad5x_trash_move" user_data="x:-1"/>
+           </ui_button>
+-          <ui_button name="btn_ad5x_trash_x_down_01" flex_grow="1" height="#button_height" text="X -0.1">
+-            <event_cb trigger="clicked" callback="on_ad5x_trash_move" user_data="x:-0.1"/>
+-          </ui_button>
+-          <ui_button name="btn_ad5x_trash_x_up_01" flex_grow="1" height="#button_height" text="X +0.1">
+-            <event_cb trigger="clicked" callback="on_ad5x_trash_move" user_data="x:0.1"/>
+-          </ui_button>
+-          <ui_button name="btn_ad5x_trash_x_up_1" flex_grow="1" height="#button_height" text="X +1">
++          <ui_button name="btn_ad5x_trash_x_up_1" flex_grow="1" height="#button_height" text="Right">
+             <event_cb trigger="clicked" callback="on_ad5x_trash_move" user_data="x:1"/>
+           </ui_button>
+-        </lv_obj>
+-        <lv_obj width="100%"
+-                height="content" style_pad_all="0" style_pad_gap="#space_sm" style_bg_opa="0" style_border_width="0"
+-                flex_flow="row" style_flex_main_place="center" scrollable="false">
+-          <ui_button name="btn_ad5x_trash_y_down_1" flex_grow="1" height="#button_height" text="Y -1">
++          <ui_button name="btn_ad5x_trash_y_down_1" flex_grow="1" height="#button_height" text="Front">
+             <event_cb trigger="clicked" callback="on_ad5x_trash_move" user_data="y:-1"/>
+           </ui_button>
+-          <ui_button name="btn_ad5x_trash_y_down_01" flex_grow="1" height="#button_height" text="Y -0.1">
+-            <event_cb trigger="clicked" callback="on_ad5x_trash_move" user_data="y:-0.1"/>
+-          </ui_button>
+-          <ui_button name="btn_ad5x_trash_y_up_01" flex_grow="1" height="#button_height" text="Y +0.1">
+-            <event_cb trigger="clicked" callback="on_ad5x_trash_move" user_data="y:0.1"/>
+-          </ui_button>
+-          <ui_button name="btn_ad5x_trash_y_up_1" flex_grow="1" height="#button_height" text="Y +1">
++          <ui_button name="btn_ad5x_trash_y_up_1" flex_grow="1" height="#button_height" text="Back">
+             <event_cb trigger="clicked" callback="on_ad5x_trash_move" user_data="y:1"/>
+           </ui_button>
+-          <ui_button name="btn_ad5x_trash_reset" flex_grow="1" height="#button_height" text="Factory spot"
++          <ui_button name="btn_ad5x_trash_reset" flex_grow="1" height="#button_height" text="Factory"
+                      variant="ghost">
+             <event_cb trigger="clicked" callback="on_ad5x_trash_move" user_data="reset"/>
+           </ui_button>
+         </lv_obj>
+-        <text_small width="100%"
+-                    text="X + moves the box to the right, Y + to the back. The nozzle follows the box."
+-                    long_mode="wrap" style_text_align="center" style_text_color="#text_muted"/>
+       </lv_obj>
+ 
+       <!-- Actions -->
+--- a/src/ui/ui_wizard_ad5x_setup.cpp
++++ b/src/ui/ui_wizard_ad5x_setup.cpp
+@@ -75,14 +75,12 @@
+      "load and unload distances. Load filament into the slots you use first.",
+      false},
+     {StepId::Ad5xTrash, "trash", "wizard_ad5x_trash",
+-     "Moves the nozzle over the purge box (the trash bin) at the back. Check it is over the "
+-     "box, use the arrows to move the box if it isn't, then press Accept.",
++     "Moves the nozzle over the purge box at the back. If the box isn't under the nozzle, "
++     "move it with the arrows, then Accept.",
+      false},
+     {StepId::Ad5xZoffset, "zoffset", "wizard_ad5x_zoffset",
+-     "Heats for the loaded filament, purges and prints a 30 mm test patch at the centre. While "
+-     "it prints, press - or + until the lines are flat and just touch each other, then press "
+-     "Accept. Start again prints another patch beside it. With the load cell estimate, the "
+-     "patch starts from a measured offset instead of a guess.",
++     "Prints a 30 mm test patch. While it prints, press Closer or Away until the lines are "
++     "flat and just touch, then Accept. Start again prints another patch beside it.",
+      false},
+     {StepId::Ad5xSoak, "soak", "wizard_ad5x_soak",
+      "Calibrates the bed heat soak: how long the bed keeps warming after it reaches 60 \xC2\xB0"
