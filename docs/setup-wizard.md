@@ -442,7 +442,7 @@ an update.
 
 ## HelixScreen side (`buildroot/package/helixscreen/000*.patch`)
 
-Patches on HelixScreen v1.1.0-beta.11 (fifteen, `0001` to `0015`), applied by Buildroot after
+Patches on HelixScreen v1.1.0-beta.11 (seventeen, `0001` to `0017`), applied by Buildroot after
 extract (after the `GIT_INIT` hook has committed the pristine tree, so
 upstream's own submodule patching is unaffected; they touch only `src/`,
 `include/`, `ui_xml/`, `tests/` and, for 0011, `assets/config/`). Regenerate them from a clean clone of the build
@@ -465,6 +465,8 @@ dir's `import` commit with `git format-patch`.
 | `0013-ad5x-keyboard-underscore` | The keyboard's second period on the number page is an underscore |
 | `0014-ad5x-home-no-swipe-with-arrows` | The home screen does not page by swipe where the arrows page it (resistive touch) |
 | `0015-ad5x-wizard-one-page-steps` | The Z offset step's buttons read Closer / Away (no hint line); the purge box is one row of arrows (Left, Right, Front, Back, Factory), so Accept and Abort fit on the page; shorter step text |
+| `0016-ad5x-network-menu-fixes` | Network settings: the status cards scroll so Test Network stays on screen with Wi-Fi and Ethernet both up; the Wi-Fi IP comes from the kernel when wpa_supplicant's status has none (issue #7); hidden networks with all-zero names are not listed |
+| `0017-ad5x-wifi-5ghz-from-scan` | The Wi-Fi band note follows the scan: a 5 GHz network in the list means 5 GHz works (issue #6) |
 
 ### Steps
 

@@ -24,6 +24,20 @@ the release has no section of its own yet (rename it after the release).
 - **Setup wizard: IFS tuning** unloads filament left in the toolhead first, when
   the slot is known. If it isn't, the screen says to pull it out by hand, then Retry.
 
+### Fixed
+- **Network settings: Test Network stays on screen** when Wi-Fi and Ethernet
+  are both connected. The status cards scroll above the button.
+- **Wi-Fi IP shows right away** (issue #7): when wpa_supplicant's status has no
+  IP address, the screen reads the address from the kernel, so a connected
+  network no longer shows an empty IP.
+- **No junk network names**: a hidden network whose name is all zero bytes is
+  left out of the list (it showed as `\x00\x00…`).
+- **Wi-Fi reachable after unplugging Ethernet** (issue #8): routes through a
+  port with no cable are ignored, so the Wi-Fi replies no longer go out the
+  dead Ethernet port. The printer needed a reboot before.
+- **Wi-Fi band label** (issue #6): the "2.4GHz only" note follows the scan. A
+  5 GHz network in the list means the radio can see 5 GHz.
+
 ## v0.0.18 (2026-10-22)
 ### Fixed
 - **Home screen: a finger drifting to the edge no longer pages the screen**

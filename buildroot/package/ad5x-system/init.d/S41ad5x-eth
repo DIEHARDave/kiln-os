@@ -14,6 +14,12 @@ start)
 			umount /tmp/usershare
 		fi
 	done
+	# A route through a port whose cable is out is ignored. Without this, unplugging
+	# Ethernet leaves its subnet route first in the table and the Wi-Fi replies go
+	# out the dead port (issue #8: Wi-Fi unreachable until a reboot). Set before the
+	# link comes up so Wi-Fi (S42) inherits it too.
+	echo 1 > /proc/sys/net/ipv4/conf/default/ignore_routes_with_linkdown 2>/dev/null
+	echo 1 > /proc/sys/net/ipv4/conf/all/ignore_routes_with_linkdown 2>/dev/null
 	ifconfig eth0 down
 	[ -n "$mac" ] && ifconfig eth0 hw ether "$mac"
 	ifconfig eth0 up
