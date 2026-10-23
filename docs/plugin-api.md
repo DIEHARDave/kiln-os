@@ -317,7 +317,7 @@ Read them; write only your own (prefixed) variables, except
 - Loaded by `[ad5x_plugins]` as `extras.<module>`, only for enabled,
   compatible plugins; `load_config(config)` / `load_config_prefix(config)`
   as for any Klipper module (`docs/plugins.md`, "Python extras").
-- Klipper is mainline v0.13.0-800 (`buildroot/package/klipper`); its
+- Klipper is mainline v0.13.0-816 (`buildroot/package/klipper`); its
   module interfaces are Klipper's, not part of this API's promise. Python
   3 is the image's (3.14 now); no compiler on the printer, no pip.
 - Our modules' Python classes (`ifs.IFS`, ...) are internal: use their

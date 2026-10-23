@@ -12,6 +12,10 @@ the release has no section of its own yet (rename it after the release).
   (see `orca/README.md`). Not yet tried in the Orca GUI.
 
 ### Changed
+- **HelixScreen beta.11**, patches rebased onto it (0010, 0011 kept as before).
+- **Moonraker** pin moved to `b559b9a`; **Klipper** pin moved to `v0.13.0-816`.
+- **Orca printer profiles**: every machine G-code field is set.
+- **Reboot host**: Moonraker's reboot works; `klipper` may run `/sbin/reboot` with no arguments.
 - **Setup wizard: Z offset test** checks only the centre, not the whole bed
   (no full-bed mesh); the buttons say **Closer** and **Away** instead of
   `-` and `+`.
@@ -25,6 +29,20 @@ the release has no section of its own yet (rename it after the release).
   the slot is known. If it isn't, the screen says to pull it out by hand, then Retry.
 
 ### Fixed
+- **Setup wizard**: Abort also stops a bed soak's wait; the soak's heat wait gives up after 15 min; a PID test that left a heater off refuses to start until Klipper restarts; an aborted Z offset step restores zero when no offset was saved; the summary step counts its steps correctly.
+- **Buttons stay put under a finger**: a press that moved a little used to
+  scroll the panel behind the button. Plain buttons no longer pass the drag
+  on; list rows still scroll when dragged.
+- **Reboot host works from Fluidd and HelixScreen**: Moonraker runs
+  `sudo reboot`, and the image had no `sudo`. It now has `sudo`, with a rule
+  letting only `klipper` run `/sbin/reboot`.
+- **Fan step no longer comes back at every start**: the AD5X preset named an
+  aux fan the printer doesn't have (`chamber_fan`), and the empty aux role was
+  filled from it at each boot. The preset now leaves aux empty.
+- **Dead cameras are not Fluidd tiles**: the camera list is no longer fixed in
+  `moonraker.conf`. At boot each USB camera is registered once its stream
+  answers, and disabled when it doesn't (the "Snapshot Camera" on the OTG port
+  shows as disabled).
 - **Network settings: Test Network stays on screen** when Wi-Fi and Ethernet
   are both connected. The status cards scroll above the button.
 - **Wi-Fi IP shows right away** (issue #7): when wpa_supplicant's status has no

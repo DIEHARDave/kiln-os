@@ -1,0 +1,52 @@
+--- a/include/ui_utils.h
++++ b/include/ui_utils.h
+@@ -11,6 +11,7 @@
+ #include "static_panel_registry.h"
+ 
+ #include <cstdint>
++#include <cstring>
+ #include <string_view>
+ 
+ // ============================================================================
+@@ -499,6 +500,31 @@
+     }
+ }
+ 
++/**
++ * @brief Stop plain buttons under obj from passing a drag to the scroll container.
++ *
++ * A finger held on a button and moved a little scrolled the panel behind it,
++ * so the button moved. LVGL picks the drag-scroll target by walking up the
++ * tree and stopping at an object with LV_OBJ_FLAG_SCROLL_CHAIN cleared, so a
++ * clickable, non-scrollable widget with the chain cleared keeps the drag.
++ *
++ * List rows keep the chain, so a drag that starts on a row still scrolls the
++ * list. A widget is a row when its name contains "_row" (so indexed names such
++ * as profile_row_0 match) or is "row", or when an ancestor's does.
++ */
++inline void stop_drag_chain_on_buttons(lv_obj_t* obj, bool in_row = false) {
++    const char* name = lv_obj_get_name(obj);
++    bool row = in_row || (name && (strstr(name, "_row") != nullptr || strcmp(name, "row") == 0));
++    if (!row && lv_obj_has_flag(obj, LV_OBJ_FLAG_CLICKABLE) &&
++        !lv_obj_has_flag(obj, LV_OBJ_FLAG_SCROLLABLE)) {
++        lv_obj_remove_flag(obj, LV_OBJ_FLAG_SCROLL_CHAIN);
++    }
++    uint32_t count = lv_obj_get_child_count(obj);
++    for (uint32_t i = 0; i < count; ++i) {
++        stop_drag_chain_on_buttons(lv_obj_get_child(obj, static_cast<int32_t>(i)), row);
++    }
++}
++
+ /// Marks an object whose CLICKABLE disable_widget_clicks_recursive() removed,
+ /// so enable_widget_clicks_recursive() restores exactly those and leaves an
+ /// object that was never clickable alone.
+--- a/src/ui/ui_panel_common.cpp
++++ b/src/ui/ui_panel_common.cpp
+@@ -161,6 +161,7 @@
+     if (root) {
+         lv_obj_add_flag(root, LV_OBJ_FLAG_HIDDEN); // XML_HIDDEN_OK: built under the holder
+         lv_obj_set_parent(root, parent);
++        stop_drag_chain_on_buttons(root);
+     }
+     lv_obj_delete(holder);
+     return root;

@@ -293,6 +293,10 @@ class AD5XSetup:
         if step not in STEPS:
             raise error("SETUP_WIZARD_STEP: STEP must be one of %s" % (
                 ", ".join(STEPS),))
+        if getattr(self, 'held_off', None):
+            raise error("SETUP_WIZARD_STEP: %s was left off by an aborted PID "
+                        "test: RESTART Klipper first" % (
+                            ", ".join(self.held_off),))
         if self.state in ("running", "waiting_user"):
             if (step == "zoffset" and self.step == "zoffset"
                     and self.state == "waiting_user"):
@@ -354,6 +358,11 @@ class AD5XSetup:
             return "AD5X setup: nothing running (heaters off)"
         self.abort_requested = True
         self._set("Aborting: heaters off, stopping after the current move")
+        # The soak waits for the bed to reach its target; the heaters are off
+        # now, so only its own abort flag ends that wait
+        soak = self.printer.lookup_object('ad5x_soak', None)
+        if soak is not None and getattr(soak, 'running', False):
+            soak.abort = True
         # Heaters off now, without the G-code lock, ending any heater wait
         pheaters = self.printer.lookup_object('heaters', None)
         if pheaters is not None:
@@ -376,6 +385,8 @@ class AD5XSetup:
                 # Leave the heater held off; a restart brings it back.
                 logging.warning("ad5x_setup: %s left off after abort",
                                 heater.get_name())
+                self.held_off = getattr(self, 'held_off', []) + [
+                    heater.get_name()]
                 continue
             heater.set_control(control)
         self.stubbed = []
@@ -751,7 +762,8 @@ class AD5XSetup:
         nozzle = float(params.get('EXTRUDER') or nozzle)
         bed = float(params.get('BED') or bed)
         zo = self._variables().get('zoffset')
-        self.z_saved = dict(zo) if isinstance(zo, dict) else None
+        # No saved value: abort puts zero back, not the patch's start offset
+        self.z_saved = dict(zo) if isinstance(zo, dict) else {'z': 0.}
         self.z_deltas = []
         self.z_accept = self.z_reprint = False
         sensor = self.printer.lookup_object(
@@ -943,7 +955,8 @@ class AD5XSetup:
         self._set("Bed soak calibrated", 1.)
     def _step_summary(self, params):
         """Nothing to run: the results so far, for review before Save."""
-        self._result("summary", "%d step(s) done" % (len(self.results) - 1,))
+        done = [k for k in self.results if k != "summary"]
+        self._result("summary", "%d step(s) done" % (len(done),))
         self._set("Review the results, then Save", 1.)
     def _step_finish(self, params):
         cf = self.printer.lookup_object('configfile')

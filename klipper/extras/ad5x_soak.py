@@ -249,7 +249,12 @@ class BedSoak:
                              % (left // 60, left % 60))
                 self._sleep(min(left, 5.))
             self.gcode.run_script_from_command("M140 S%.0f" % (bed,))
+            heat_end = self.reactor.monotonic() + 900.
             while self._temp('heater_bed') < bed - 1.:
+                if self.reactor.monotonic() > heat_end:
+                    raise self.gcode.error(
+                        "Bed did not reach %.0f C in 15 min: check the bed"
+                        % (bed,))
                 self._status("Bed soak test: bed %.0f / %.0f C"
                              % (self._temp('heater_bed'), bed))
                 self._sleep(5.)

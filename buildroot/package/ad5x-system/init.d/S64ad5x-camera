@@ -26,6 +26,41 @@ cameras() {
 	done | sort | cut -d' ' -f2
 }
 
+# Moonraker's webcam list (Fluidd, HelixScreen). Camera n is registered as
+# camera$n once its snapshot answers, and as disabled when it does not, so a
+# camera that is plugged in but dead is not a tile. Only database webcams can
+# be changed through the API (config webcams cannot), hence POST only.
+WEBCAM_API=http://127.0.0.1:7125/server/webcams/item
+
+sync_webcams() {
+	count=$1
+	# Moonraker (S62) may still be starting: wait for its HTTP port first
+	w=0
+	while [ $w -lt 60 ] && ! wget -q -O /dev/null -T 3 http://127.0.0.1:7125/server/info; do
+		w=$((w + 1))
+		sleep 2
+	done
+	i=1
+	while [ $i -le $count ]; do
+		port=$((BASE_PORT + i - 1))
+		suffix=""
+		[ $i -gt 1 ] && suffix=$i
+		enabled=false
+		# Moonraker and the streamer take a few seconds to come up
+		for try in 1 2 3 4 5 6 7 8; do
+			if wget -q -O /dev/null -T 5 "http://127.0.0.1:$port/?action=snapshot"; then
+				enabled=true
+				break
+			fi
+			sleep 2
+		done
+		wget -q -O /dev/null -T 5 --post-data "name=camera$i&enabled=$enabled&service=mjpegstreamer-adaptive&stream_url=/webcam$suffix/stream&snapshot_url=/webcam$suffix/snapshot&location=printer&icon=mdiWebcam&aspect_ratio=4:3&target_fps=15&target_fps_idle=5" \
+			"$WEBCAM_API" || echo "camera $i: could not register with Moonraker"
+		echo "camera $i: webcam enabled=$enabled"
+		i=$((i + 1))
+	done
+}
+
 start() {
 	[ -x $USTREAMER ] || exit 0
 	CAMERA=on RESOLUTION=1280x720 FPS=15
@@ -46,6 +81,8 @@ start() {
 		echo "camera $n: $dev ${res}@${fps} on /webcam$([ $n -gt 1 ] && echo $n)/"
 	done
 	[ $n -gt 0 ] || echo "camera: none found"
+	# Background: the streams take seconds, and boot must not wait for them
+	[ $n -gt 0 ] && sync_webcams $n &
 }
 
 stop() {

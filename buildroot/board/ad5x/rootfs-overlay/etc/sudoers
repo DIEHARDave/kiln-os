@@ -1,0 +1,6 @@
+# Kiln OS. Moonraker's "reboot host" runs "sudo reboot" as the klipper user,
+# and sudo is needed for nothing else. Keep this file the only rule set.
+Defaults secure_path="/sbin:/bin:/usr/sbin:/usr/bin"
+Defaults !requiretty
+root ALL=(ALL:ALL) ALL
+klipper ALL=(root) NOPASSWD: /sbin/reboot ""

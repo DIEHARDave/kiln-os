@@ -109,7 +109,7 @@ Status object `ad5x_setup` (Moonraker `printer.objects.subscribe`):
 | `state` | str | `idle`, `running`, `waiting_user`, `done`, `failed`, `aborted` |
 | `message` | str | one human line for the screen ("Heating: bed 45/60 C, nozzle 120/140 C") |
 | `progress` | float | 0.0–1.0, best effort (PID: from the tuning cycles; IFS: from the IFS module) |
-| `results` | dict | per step: short result strings, e.g. `{"pid": "nozzle Kp=… Ki=… Kd=…, bed Kp=…", "shaper": "X mzv 58.2 Hz, Y ei 47.0 Hz"}`; keys `selfcheck`, `pid`, `mesh`, `shaper`, `ifs`, `zoffset`, `finish`. Kept in `variables.cfg` (`ad5x_setup`), so they survive restarts |
+| `results` | dict | per step: short result strings, e.g. `{"pid": "nozzle Kp=… Ki=… Kd=…, bed Kp=…", "shaper": "X mzv 58.2 Hz, Y ei 47.0 Hz"}`; keys `selfcheck`, `pid`, `mesh`, `shaper`, `ifs`, `trash`, `soak`, `zoffset`, `estimate`, `summary`, `finish`. Kept in `variables.cfg` (`ad5x_setup`), so they survive restarts |
 | `checks` | list | self-check items `[{"name": "...", "ok": true, "detail": "...", "required": true}]` |
 | `pending_save` | bool | results waiting for `STEP=finish` |
 | `zoffset` | float | live G-code Z offset during the Z offset step, else the saved print Z offset (`zoffset.z` in variables.cfg) |
@@ -158,15 +158,14 @@ The steps:
 - **ifs** `[TUBE=1] [CHANNEL=n]`: home, then `IFS_TUNE` (see below).
   Progress and message come from the IFS module.
 - **zoffset** `[MATERIAL=PLA] [EXTRUDER=] [BED=]`:
-  - Refused if the toolhead sensor reads empty.
+  - If the toolhead sensor reads empty, loads the slot the IFS step cut out;
+    refused only when no slot has filament.
   - Temperatures come from `MATERIAL`; the default is the loaded IFS
     slot's type, else PLA. PLA 220/60, PETG 240/70, ABS/ASA 250/90,
     TPU 230/50.
-  - Runs `PRINT_START BED= EXTRUDER=`: home, heat, purge, brush, then
-    what a print does: with the printer's `macros/print_start.cfg` a new
-    mesh (no object labels: the whole bed) and the prime line, with the
-    factory one the centre Z check. The patch then has the same
-    first-layer reference as a real print.
+  - Runs `PRINT_START BED= EXTRUDER= LEVEL=0`: home, heat, purge, brush,
+    then the centre Z check only, with no new mesh and no prime line. The
+    patch starts from the same first-layer reference as a print's centre.
   - Starts fresh every run at `patch_start_z` (0.1 mm, a little high),
     not at the saved offset: that may be stock's or zMod's, carried over
     at install and never printed with here, and too low scrapes the bed.
@@ -187,7 +186,8 @@ The steps:
     z_offset` into this saved offset (ad5x.cfg's -0.25 minus the new
     value), and moves PID / shaper results into `ad5x-tuning.cfg`.
   - The wrapper already saves every adjust as it happens, as it does for
-    baby-steps from anywhere. Abort writes the starting value back.
+    baby-steps from anywhere. Abort writes the starting value back (zero
+    when no offset was saved).
 - **finish**:
   - `PID_CALIBRATE` and `SHAPER_CALIBRATE` leave their values for
     SAVE_CONFIG in `[extruder]`, `[heater_bed]` and `[input_shaper]`.
@@ -442,7 +442,7 @@ an update.
 
 ## HelixScreen side (`buildroot/package/helixscreen/000*.patch`)
 
-Patches on HelixScreen v1.1.0-beta.11 (seventeen, `0001` to `0017`), applied by Buildroot after
+Patches on HelixScreen v1.1.0-beta.11 (nineteen, `0001` to `0019`), applied by Buildroot after
 extract (after the `GIT_INIT` hook has committed the pristine tree, so
 upstream's own submodule patching is unaffected; they touch only `src/`,
 `include/`, `ui_xml/`, `tests/` and, for 0011, `assets/config/`). Regenerate them from a clean clone of the build
@@ -467,6 +467,8 @@ dir's `import` commit with `git format-patch`.
 | `0015-ad5x-wizard-one-page-steps` | The Z offset step's buttons read Closer / Away (no hint line); the purge box is one row of arrows (Left, Right, Front, Back, Factory), so Accept and Abort fit on the page; shorter step text |
 | `0016-ad5x-network-menu-fixes` | Network settings: the status cards scroll so Test Network stays on screen with Wi-Fi and Ethernet both up; the Wi-Fi IP comes from the kernel when wpa_supplicant's status has none (issue #7); hidden networks with all-zero names are not listed |
 | `0017-ad5x-wifi-5ghz-from-scan` | The Wi-Fi band note follows the scan: a 5 GHz network in the list means 5 GHz works (issue #6) |
+| `0018-ad5x-preset-no-aux-fan` | The AD5X preset has no aux fan (`chamber_fan` is not on the printer): an empty `fans/aux` is no longer filled from the preset at every boot, which made the fan step come back each start |
+| `0019-ad5x-buttons-no-drag-scroll` | Plain buttons do not pass a drag to the panel behind them (LVGL scroll chain off); list rows (`*_row`) keep drag-scroll. Set in `create_xml_hidden`, the home page walk and the home tile resize |
 
 ### Steps
 
