@@ -1,0 +1,58 @@
+--- a/src/ui/ui_carousel.cpp
++++ b/src/ui/ui_carousel.cpp
+@@ -2,6 +2,7 @@
+ 
+ #include "ui_carousel.h"
+ 
++#include "panel_widget.h"
+ #include "ui_utils.h"
+ 
+ #include "helix-xml/src/xml/lv_xml.h"
+@@ -10,6 +11,7 @@
+ #include "helix-xml/src/xml/lv_xml_widget.h"
+ #include "helix-xml/src/xml/parsers/lv_xml_obj_parser.h"
+ #include "lvgl/lvgl.h"
++#include "lvgl/src/indev/lv_indev_private.h" // indev->long_pr_sent: LVGL has no getter
+ #include "theme_manager.h"
+ 
+ #include <spdlog/spdlog.h>
+@@ -186,6 +188,25 @@
+ }
+ 
+ /**
++ * @brief True when the press under @p indev began on a tile and has been held
++ * long enough for LVGL's long press to fire (400 ms).
++ *
++ * A finger that rests on a tile and then drifts is a hold, not a page swipe.
++ * A quick flick from a tile does not fire the long press, so it still pages.
++ */
++bool held_tile_press(lv_indev_t* indev) {
++    if (!indev || !indev->long_pr_sent) {
++        return false;
++    }
++    for (lv_obj_t* obj = indev->pointer.act_obj; obj != nullptr; obj = lv_obj_get_parent(obj)) {
++        if (lv_obj_has_flag(obj, helix::kPanelWidgetTileFlag)) {
++            return true;
++        }
++    }
++    return false;
++}
++
++/**
+  * @brief SCROLL_BEGIN event handler: only a swipe or a goto moves the page
+  *
+  * Any other animated scroll of the scroll container is aimed at the current
+@@ -205,6 +226,13 @@
+     // an offset set outright.
+     auto* anim = static_cast<lv_anim_t*>(lv_event_get_param(e));
+     if (!anim) {
++        // A drag that starts on a tile the finger has been holding stays on the
++        // tile: wait for the release and stop this scroll.
++        lv_indev_t* indev = lv_indev_active();
++        if (held_tile_press(indev)) {
++            lv_indev_wait_release(indev);
++            lv_indev_reset(indev, scroll);
++        }
+         return;
+     }
+     CarouselState* state = ui_carousel_get_state(lv_obj_get_parent(scroll));

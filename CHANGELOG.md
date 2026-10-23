@@ -6,27 +6,24 @@ the release has no section of its own yet (rename it after the release).
 
 ## Unreleased
 
-### Added
-- **OrcaSlicer filament profiles** (`orca/`): `AD5X PLA`, `AD5X PETG` and
-  `AD5X TPU`, starting points with temperatures and volumetric speed limits
-  (see `orca/README.md`). Not yet tried in the Orca GUI.
+### Changed
+- **IFS reconnects by itself**: when the IFS is not answering (at start, or
+  after a loose cable), the printer tries again every 10 seconds, so a replug
+  needs no restart. If it does not come back in line, see
+  `docs/ifs-troubleshooting.md`.
+
+### Fixed
+- **IFS abort puts the printer back**: a swap that fails or is stopped restores
+  the toolhead sensor, the part fan and the G-code state (`abort_gcode`). The Z
+  lift stays, so a move never happens mid-print.
+- **Home screen tiles stay put under a finger**:
+  a tile held for about 0.4 s and then dragged no longer moves. A quick swipe
+  from a tile still pages.
+
+## v0.0.21
 
 ### Changed
-- **HelixScreen beta.11**, patches rebased onto it (0010, 0011 kept as before).
-- **Moonraker** pin moved to `b559b9a`; **Klipper** pin moved to `v0.13.0-816`.
-- **Orca printer profiles**: every machine G-code field is set.
 - **Reboot host**: Moonraker's reboot works; `klipper` may run `/sbin/reboot` with no arguments.
-- **Setup wizard: Z offset test** checks only the centre, not the whole bed
-  (no full-bed mesh); the buttons say **Closer** and **Away** instead of
-  `-` and `+`.
-- **Setup wizard: purge box** is one row of arrows (Left, Right, Front, Back,
-  Factory), so Accept and Abort fit on the page without scrolling. The 0.1 mm
-  steps are gone; use 1 mm and Z offset as needed.
-- **Setup wizard: bed soak** cools a warm bed first (heater off, up to 15 min
-  of waiting, shown on the screen) instead of stopping with "the bed is still
-  warm".
-- **Setup wizard: IFS tuning** unloads filament left in the toolhead first, when
-  the slot is known. If it isn't, the screen says to pull it out by hand, then Retry.
 
 ### Fixed
 - **Setup wizard**: Abort also stops a bed soak's wait; the soak's heat wait gives up after 15 min; a PID test that left a heater off refuses to start until Klipper restarts; an aborted Z offset step restores zero when no offset was saved; the summary step counts its steps correctly.
@@ -43,6 +40,31 @@ the release has no section of its own yet (rename it after the release).
   `moonraker.conf`. At boot each USB camera is registered once its stream
   answers, and disabled when it doesn't (the "Snapshot Camera" on the OTG port
   shows as disabled).
+
+## v0.0.20
+
+### Added
+- **OrcaSlicer filament profiles** (`orca/`): `AD5X PLA`, `AD5X PETG` and
+  `AD5X TPU`, starting points with temperatures and volumetric speed limits
+  (see `orca/README.md`). Not yet tried in the Orca GUI.
+
+### Changed
+- **HelixScreen beta.11**, patches rebased onto it (0010, 0011 kept as before).
+- **Moonraker** pin moved to `b559b9a`; **Klipper** pin moved to `v0.13.0-816`.
+- **Orca printer profiles**: every machine G-code field is set.
+- **Setup wizard: Z offset test** checks only the centre, not the whole bed
+  (no full-bed mesh); the buttons say **Closer** and **Away** instead of
+  `-` and `+`.
+- **Setup wizard: purge box** is one row of arrows (Left, Right, Front, Back,
+  Factory), so Accept and Abort fit on the page without scrolling. The 0.1 mm
+  steps are gone; use 1 mm and Z offset as needed.
+- **Setup wizard: bed soak** cools a warm bed first (heater off, up to 15 min
+  of waiting, shown on the screen) instead of stopping with "the bed is still
+  warm".
+- **Setup wizard: IFS tuning** unloads filament left in the toolhead first, when
+  the slot is known. If it isn't, the screen says to pull it out by hand, then Retry.
+
+### Fixed
 - **Network settings: Test Network stays on screen** when Wi-Fi and Ethernet
   are both connected. The status cards scroll above the button.
 - **Wi-Fi IP shows right away** (issue #7): when wpa_supplicant's status has no

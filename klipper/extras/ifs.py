@@ -64,6 +64,10 @@ REFILL_MATCHES = ("exact", "similar", "any")
 # "paused": the print resumes with the same map.
 PRINT_END_STATES = ("complete", "cancelled", "error", "standby")
 
+# Seconds between tries while the IFS is not answering (at start, or after
+# the link drops, e.g. a loose cable). The link comes back by itself.
+RECONNECT_INTERVAL = 10.
+
 # Swap tuning (IFS_TUNE, QuickSwap-like; ideas from ninjamida/quickswap-5x,
 # MIT, no code used). Feed speeds tried, in mm/min; the sweep starts at
 # load_speed and stops at tune_max_speed.
@@ -335,6 +339,9 @@ class IFS:
             config, 'prime_gcode', '')
         self.after_template = gcode_macro.load_template(
             config, 'after_gcode', '')
+        self.abort_template = gcode_macro.load_template(
+            config, 'abort_gcode', '')
+        self.swap_open = None     # (old, new) between before_gcode and after_gcode
         # Runtime state
         self.fd = None
         self.fd_handle = None
@@ -343,6 +350,7 @@ class IFS:
         self.rx_event = None
         self.mutex = self.reactor.mutex()
         self.status_timer = None
+        self.retry_timer = None
         self.version = None
         self.channel = 0          # channel loaded to the toolhead, 0 = none
         # Per slot: material type, colour '#RRGGBB', temperature override
@@ -393,20 +401,50 @@ class IFS:
     def _handle_connect(self):
         self._load_variables()
         try:
-            self._open()
-            with self.mutex:
-                reply = self._request("F19")
-            self.version = reply.split("version:")[-1].strip(" .")
+            reply = self._connect_now()
             logging.info("ifs: connected on %s, %s", self.serial_port, reply)
         except (OSError, IfsError) as e:
             logging.warning("ifs: not available on %s: %s",
                             self.serial_port, e)
             self.error = "IFS not available on %s: %s" % (self.serial_port, e)
             self._close()
+            self._schedule_reconnect()
             return
-        if self.status_interval:
+        self._start_status()
+    def _connect_now(self):
+        """Open the link and read the IFS version (F19). Raises OSError or
+        IfsError; on success the link is up and self.version is set."""
+        self._open()
+        with self.mutex:
+            reply = self._request("F19")
+        self.version = reply.split("version:")[-1].strip(" .")
+        return reply
+    def _start_status(self):
+        if self.status_interval and self.status_timer is None:
             self.status_timer = self.reactor.register_timer(
                 self._status_event, self.reactor.NOW)
+    def _schedule_reconnect(self):
+        if self.retry_timer is None:
+            self.retry_timer = self.reactor.register_timer(
+                self._reconnect_event,
+                self.reactor.monotonic() + RECONNECT_INTERVAL)
+    def _reconnect_event(self, eventtime):
+        try:
+            reply = self._connect_now()
+        except (OSError, IfsError) as e:
+            self.error = "IFS not available on %s: %s" % (self.serial_port, e)
+            self._close()
+            return eventtime + RECONNECT_INTERVAL
+        self.error = None
+        self.retry_timer = None
+        logging.info("ifs: reconnected on %s, %s", self.serial_port, reply)
+        self._start_status()
+        return self.reactor.NEVER
+    def _drop_link(self, e):
+        logging.warning("ifs: link lost on %s: %s", self.serial_port, e)
+        self.error = "IFS link lost on %s: %s" % (self.serial_port, e)
+        self._close()
+        self._schedule_reconnect()
     def _load_variables(self):
         """Loaded channel and slot materials from save_variables.
         ifs_loaded (FX's name) replaced ifs_channel; ifs_materials replaced
@@ -462,6 +500,9 @@ class IFS:
             self.gcode.run_script_from_command(
                 "SAVE_VARIABLE VARIABLE=%s VALUE=\"%r\"" % (name, value))
     def _handle_disconnect(self):
+        if self.retry_timer is not None:
+            self.reactor.unregister_timer(self.retry_timer)
+            self.retry_timer = None
         self._close()
     def _open(self):
         fd = os.open(self.serial_port, os.O_RDWR | os.O_NOCTTY | os.O_NONBLOCK)
@@ -493,7 +534,14 @@ class IFS:
     def _handle_read(self, eventtime):
         try:
             data = os.read(self.fd, 4096)
-        except OSError:
+        except BlockingIOError:
+            return
+        except OSError as e:
+            self._drop_link(e)
+            return
+        if not data:
+            # Hang-up: a closed link reads as end-of-file, forever
+            self._drop_link("end of file")
             return
         self.rx_buf += data
         *lines, self.rx_buf = self.rx_buf.split(b"\n")
@@ -508,7 +556,11 @@ class IFS:
         if self.fd is None:
             raise IfsError("IFS not connected")
         logging.debug("ifs: -> %s", cmd)
-        os.write(self.fd, (cmd + "\r\n").encode("ascii"))
+        try:
+            os.write(self.fd, (cmd + "\r\n").encode("ascii"))
+        except OSError as e:
+            self._drop_link(e)
+            raise IfsError("write failed: %s" % (e,))
     def _request(self, cmd):
         """Send one command and return its reply (caller holds the mutex).
 
@@ -1028,6 +1080,18 @@ class IFS:
         context = self.gcode_macro.create_template_context()
         context['params'] = params
         template.run_gcode_from_command(context)
+    def _abort_swap(self):
+        """A swap failed after before_gcode ran: put back what it changed
+        (abort_gcode). The Z lift stays: a blind move mid-print could hit the
+        part. Errors here are logged, so the IFS error is what the user sees."""
+        if self.swap_open is None:
+            return
+        old, new = self.swap_open
+        self.swap_open = None
+        try:
+            self._run_template(self.abort_template, OLD=old, NEW=new)
+        except Exception as e:
+            logging.warning("ifs: abort_gcode failed: %s", e)
     def _run(self, func, *args, **kw):
         """Run an operation under the mutex, turning IFS errors into
         G-code errors after a best-effort controller reset. wait=False skips
@@ -1048,6 +1112,7 @@ class IFS:
                         self._request("F15")
                     except IfsError:
                         pass
+                    self._abort_swap()
                     raise self.gcode.error("IFS: %s" % (e,))
                 self.error = None
                 return result
@@ -1409,6 +1474,7 @@ class IFS:
     def _swap(self, old, new, flush=None, rounds=None, purge=True):
         toolhead = self.printer.lookup_object('toolhead')
         self._run_template(self.before_template, OLD=old, NEW=new)
+        self.swap_open = (old, new)
         # Stock cuts only when the toolhead sensor shows filament. With
         # no sensor configured, trust the recorded channel.
         head = self._head_has_filament()
@@ -1428,6 +1494,7 @@ class IFS:
         self._load(new, self.load_length, self.load_speed)
         if not purge:
             self._prime(old, new)
+            self.swap_open = None
             return
         # Stock purge, in rounds: at the purge box, push the new strand
         # through the hotend (IFS and extruder together), release the
@@ -1464,6 +1531,7 @@ class IFS:
             toolhead.wait_moves()
             self._clear_inserted(new)
         self._run_template(self.after_template, OLD=old, NEW=new)
+        self.swap_open = None
     def _prime(self, old, new):
         """Second half of a swap without purge (the slicer purges: prime
         tower or its own flush): at the purge box, feed the new strand

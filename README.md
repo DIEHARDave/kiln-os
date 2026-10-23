@@ -138,6 +138,8 @@ panel. The serial protocol, as far as it is known, is documented in
 [docs/ifs-protocol.md](docs/ifs-protocol.md). Each IFS behaviour that
 differs from stock is listed in
 [docs/deviations-from-stock.md](docs/deviations-from-stock.md).
+If the IFS drops off, it retries every 10 seconds on its own; if it does not
+come back in line, see [docs/ifs-troubleshooting.md](docs/ifs-troubleshooting.md).
 
 ## Install, update, recover, go back
 

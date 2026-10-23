@@ -442,7 +442,7 @@ an update.
 
 ## HelixScreen side (`buildroot/package/helixscreen/000*.patch`)
 
-Patches on HelixScreen v1.1.0-beta.11 (nineteen, `0001` to `0019`), applied by Buildroot after
+Patches on HelixScreen v1.1.0-beta.11 (twenty, `0001` to `0020`), applied by Buildroot after
 extract (after the `GIT_INIT` hook has committed the pristine tree, so
 upstream's own submodule patching is unaffected; they touch only `src/`,
 `include/`, `ui_xml/`, `tests/` and, for 0011, `assets/config/`). Regenerate them from a clean clone of the build
