@@ -7,6 +7,11 @@ the release has no section of its own yet (rename it after the release).
 ## Unreleased
 
 ### Fixed
+- **Print start loads the tool you chose** (issue #12): a `TOOL=` value that is not a number, such as an unexpanded `[initial_tool]`, used to load tool 0 (spool 1). Now no tool is loaded and the console shows an error. Use the number from your slicer's start G-code (`macros/print_start.cfg`).
+
+## v0.0.24
+
+### Fixed
 - **Ethernet shows disconnected when unplugged** (issue #8): the Network Settings row
   kept saying "Connected" with the old address after the cable was pulled. It now
   shows "No cable" (HelixScreen patch 0024).
