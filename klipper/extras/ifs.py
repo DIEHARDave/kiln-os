@@ -59,6 +59,9 @@ TOOLS = (0, 1, 2, 3)
 
 # Auto-refill colour matching (IFS_AUTO_REFILL MATCH=)
 REFILL_MATCHES = ("exact", "similar", "any")
+# Tool map: "fixed" = T0-T3 -> slots 1-4; "loaded" = tools use the slots that
+# have filament, in slot order (one loaded slot: every tool uses it)
+MAP_MODES = ("fixed", "loaded")
 
 # print_stats states that end a print (and the tool map with it). Not
 # "paused": the print resumes with the same map.
@@ -357,6 +360,7 @@ class IFS:
         self.materials = [{'type': None, 'color': None, 'temp': None}
                           for c in CHANNELS]
         self.tool_map = [c for c in CHANNELS]   # slicer tool n -> channel
+        self.map_mode = "fixed"                 # see MAP_MODES
         self.last_status = {}
         self.silk = [0, 0, 0, 0]
         self.stall = [0, 0, 0, 0]
@@ -394,7 +398,7 @@ class IFS:
                     "IFS_SET_MATERIAL", "IFS_MATERIALS", "IFS_PREFEED",
                     "IFS_TUNE", "IFS_TUNE_SPEED", "IFS_TUNE_LOAD",
                     "IFS_TUNE_UNLOAD", "IFS_TUNE_RESET", "IFS_SET_FLUSH",
-                    "IFS_AUTO_REFILL"):
+                    "IFS_AUTO_REFILL", "IFS_MAP_MODE"):
             self.gcode.register_command(cmd, getattr(self, "cmd_" + cmd),
                                         desc=getattr(self, "cmd_%s_help" % cmd))
     # Serial link
@@ -489,6 +493,9 @@ class IFS:
         rm = v.get('ifs_refill_match')
         if rm in REFILL_MATCHES:
             self.refill_match = rm
+        mm = v.get('ifs_map_mode')
+        if mm in MAP_MODES:
+            self.map_mode = mm
         self.tuned = {
             'speed': num('ifs_speed'),
             'unload_dist': num('ifs_unload_dist'),
@@ -642,6 +649,8 @@ class IFS:
             self.first_swap_pending = True
             self.refill_noticed = set()
             self.refill_notice = ""
+            if self.map_mode == "loaded":
+                self._map_loaded()
         self.print_state = state
         if ended and self.tool_map != list(CHANNELS):
             self.tool_map = list(CHANNELS)
@@ -737,6 +746,7 @@ class IFS:
             'activity_channel': activity_channel,
             'error': self.error,
             'auto_refill': self.auto_refill,
+            'map_mode': self.map_mode,
             'refill': self.refill_note,
             'refill_match': self.refill_match,
             'refill_backups': self._refill_backups(),
@@ -1462,6 +1472,86 @@ class IFS:
             raise gcmd.error("IFS_MAP_TOOL: slot %d has no filament" % (slot,))
         self.tool_map[tool] = slot
         gcmd.respond_info("IFS: T%d -> slot %d" % (tool, slot))
+    def _file_filaments(self):
+        """(types, colours) per tool from the header or footer of the file
+        printing now ('; filament_type' and '; filament_colour', as Orca and
+        PrusaSlicer write them), so files made before this change work too.
+        ([], []) when there is no file or it has no such lines."""
+        vsd = self.printer.lookup_object('virtual_sdcard', None)
+        path = vsd.file_path() if vsd is not None else None
+        if not path:
+            return [], []
+        found = {}
+        try:
+            with open(path, 'r', errors='replace') as f:
+                for line in f:
+                    if not line.startswith(';'):
+                        continue
+                    key, sep, value = line[1:].partition('=')
+                    key = key.strip()
+                    if sep and key in ('filament_type', 'filament_colour'):
+                        found[key] = [v.strip().strip('"')
+                                      for v in value.split(';')]
+        except OSError as e:
+            logging.warning("ifs: cannot read %s for filament colours: %s",
+                            path, e)
+            return [], []
+        return found.get('filament_type', []), found.get('filament_colour', [])
+    def _match_slot(self, mtype, color, present):
+        """The loaded slot for one tool's filament: a slot with the same
+        material and the nearest colour; if no loaded slot has that material,
+        the nearest colour of any loaded slot. None if nothing is loaded."""
+        rgb = parse_color(color)
+        def distance(chan):
+            orgb = parse_color(self.materials[chan - 1]['color'])
+            if rgb is None or orgb is None:
+                return 441.     # unknown colour: no preference
+            return math.sqrt(sum((a - b) ** 2 for a, b in zip(rgb, orgb)))
+        same = [c for c in present
+                if mtype and self.materials[c - 1]['type'] == mtype]
+        pool = same or list(present)
+        return min(pool, key=distance) if pool else None
+    def _map_loaded(self):
+        """Loaded-slot mode: each tool uses the loaded slot that matches its
+        filament in the file (material, then nearest colour). Without file
+        colours, tool t uses the (t mod n)th loaded slot in slot order. Returns
+        the loaded slots; none loaded leaves the map as it is."""
+        loaded = mask_channels(self.last_status.get('silk_state', 0))
+        if not loaded:
+            return loaded
+        types, colours = self._file_filaments()
+        new = []
+        for t in TOOLS:
+            fallback = loaded[t % len(loaded)]
+            if t >= len(colours) and t >= len(types):
+                new.append(fallback)
+                continue
+            try:
+                mtype = parse_material(types[t]) if t < len(types) else None
+            except ValueError:
+                mtype = None
+            color = colours[t] if t < len(colours) else None
+            new.append(self._match_slot(mtype, color, loaded) or fallback)
+        self.tool_map = new
+        return loaded
+    cmd_IFS_MAP_MODE_help = ("Tool map mode: fixed (T0-T3 -> slots 1-4) or "
+                             "loaded (tools use the slots with filament)")
+    def cmd_IFS_MAP_MODE(self, gcmd):
+        mode = gcmd.get('MODE', None)
+        if mode is not None:
+            mode = mode.strip().lower()
+            if mode not in MAP_MODES:
+                raise gcmd.error("IFS_MAP_MODE: MODE is one of %s"
+                                 % (", ".join(MAP_MODES),))
+            self.map_mode = mode
+            self._save_variable('ifs_map_mode', mode)
+            if mode == "fixed":
+                self.tool_map = list(CHANNELS)
+            elif not self._map_loaded():
+                gcmd.respond_info("IFS: no slot has filament; the map is "
+                                  "applied at the next print")
+        gcmd.respond_info("IFS: map mode %s; T0-T3 -> slots %s" % (
+            self.map_mode, ",".join(str(c) for c in self.tool_map)))
     cmd_IFS_PREFEED_help = ("Feed a channel's new spool up to the IFS "
                             "(as stock does for a new spool)")
     def cmd_IFS_PREFEED(self, gcmd):

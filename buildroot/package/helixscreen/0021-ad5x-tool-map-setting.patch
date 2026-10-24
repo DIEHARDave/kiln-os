@@ -1,0 +1,134 @@
+--- a/src/ui/ui_settings_ad5x_refill.cpp
++++ b/src/ui/ui_settings_ad5x_refill.cpp
+@@ -38,8 +38,11 @@
+ constexpr const char* kMaterialsObject = "ifs_materials";
+ /// The `ifs` fields this uses; the object has many more, updated often.
+ constexpr const char* kFields[] = {"auto_refill", "refill_match", "refill_backups", "refill_notice",
+-                                   "loaded_channels"};
++                                   "loaded_channels", "map_mode"};
+ constexpr const char* kMatchNames[] = {"exact", "similar", "any"};
++// Tool to slot: fixed = the file's own mapping (T0-T3 -> slots 1-4); loaded = the
++// loaded slot with the same material and the nearest colour (IFS_MAP_MODE)
++constexpr const char* kMapNames[] = {"fixed", "loaded"};
+ constexpr int kSlotCount = 4;
+ 
+ void copy_if_changed(lv_subject_t* subject, const std::string& text) {
+@@ -121,6 +124,11 @@
+     return fmt::format("IFS_AUTO_REFILL MATCH={}", match_name(index));
+ }
+ 
++std::string map_gcode(int index) {
++    return fmt::format("IFS_MAP_MODE MODE={}",
++                       kMapNames[std::clamp(index, 0, static_cast<int>(std::size(kMapNames)) - 1)]);
++}
++
+ std::vector<SlotBackup> parse_backups(const json& ifs, const json& materials) {
+     const json* backups = json_util::find_member(ifs, "refill_backups");
+     const json* loaded = json_util::find_member(ifs, "loaded_channels");
+@@ -279,6 +287,8 @@
+     UI_MANAGED_SUBJECT_INT(enabled_, 0, "ad5x_refill_enabled", subjects_);
+     // Match: 0 exact, 1 similar, 2 any
+     UI_MANAGED_SUBJECT_INT(match_, 1, "ad5x_refill_match", subjects_);
++    // Tool to slot: 0 slot per file, 1 auto colour (loaded)
++    UI_MANAGED_SUBJECT_INT(map_mode_, 0, "ad5x_map_mode", subjects_);
+     // 1 while a change is pending, the object has not answered or Klipper is not ready
+     UI_MANAGED_SUBJECT_INT(busy_, 1, "ad5x_refill_busy", subjects_);
+     // 1 when some slot has a backup: hides the "No backups" hint
+@@ -505,6 +515,14 @@
+     send(match_gcode(index));
+ }
+ 
++void Ad5xRefillModel::set_map_mode(int index) {
++    index = std::clamp(index, 0, static_cast<int>(std::size(kMapNames)) - 1);
++    if (subjects_initialized_) {
++        lv_subject_set_int(&map_mode_, index);
++    }
++    send(map_gcode(index));
++}
++
+ void Ad5xRefillModel::refresh() {
+     std::vector<SlotBackup> slots = parse_backups(ifs_, materials_);
+     // The list is rebuilt only when what it shows changed
+@@ -526,6 +544,8 @@
+         if (loaded_ && pending_ == 0) {
+             set_if_changed(&enabled_, enabled ? 1 : 0);
+             set_if_changed(&match_, match);
++            const bool loaded_map = json_util::safe_string(ifs_, "map_mode", "fixed") == "loaded";
++            set_if_changed(&map_mode_, loaded_map ? 1 : 0);
+         }
+         set_if_changed(&busy_, (pending_ > 0 || !loaded_ || !klippy_ready_) ? 1 : 0);
+         set_if_changed(&has_backups_, any_backup(slots_) ? 1 : 0);
+@@ -621,6 +641,10 @@
+          [](lv_event_t* e) {
+              get_ad5x_refill_overlay().handle_enabled_changed(helix::ui::event_checked(e));
+          }},
++        {"on_ad5x_map_mode_changed",
++         [](lv_event_t* e) {
++             get_ad5x_refill_overlay().handle_map_mode_changed(helix::ui::event_selected(e));
++         }},
+         {"on_ad5x_refill_match_changed",
+          [](lv_event_t* e) {
+              get_ad5x_refill_overlay().handle_match_changed(helix::ui::event_selected(e));
+@@ -695,6 +719,10 @@
+     ad5x_refill::model().set_enabled(on);
+ }
+ 
++void Ad5xRefillOverlay::handle_map_mode_changed(int index) {
++    ad5x_refill::model().set_map_mode(index);
++}
++
+ void Ad5xRefillOverlay::handle_match_changed(int index) {
+     ad5x_refill::model().set_match(index);
+ }
+--- a/include/ui_settings_ad5x_refill.h
++++ b/include/ui_settings_ad5x_refill.h
+@@ -65,6 +65,9 @@
+ /// "IFS_AUTO_REFILL MATCH=similar"
+ std::string match_gcode(int index);
+ 
++/// "IFS_MAP_MODE MODE=loaded" (index 1), "IFS_MAP_MODE MODE=fixed" (index 0)
++std::string map_gcode(int index);
++
+ /// One slot with filament and the slots that would take over from it.
+ struct SlotBackup {
+     int slot = 0;                ///< 1-4
+@@ -136,6 +139,9 @@
+     /// IFS_AUTO_REFILL MATCH=exact|similar|any
+     void set_match(int index);
+ 
++    /// IFS_MAP_MODE MODE=fixed|loaded (0 slot per file, 1 auto colour)
++    void set_map_mode(int index);
++
+     /// Called (main thread) when the backup list changed; the overlay sets it
+     /// while it is built. Empty to stop.
+     void set_on_slots_changed(std::function<void()> cb) {
+@@ -154,6 +160,7 @@
+     lv_subject_t summary_{};
+     lv_subject_t enabled_{};
+     lv_subject_t match_{};
++    lv_subject_t map_mode_{};
+     lv_subject_t busy_{};
+     lv_subject_t has_backups_{};
+     char summary_buf_[160] = "";
+@@ -237,6 +244,7 @@
+ 
+     void handle_enabled_changed(bool on);
+     void handle_match_changed(int index);
++    void handle_map_mode_changed(int index);
+     void handle_filament_slots();
+ 
+   private:
+--- a/ui_xml/settings_ad5x_refill_overlay.xml
++++ b/ui_xml/settings_ad5x_refill_overlay.xml
+@@ -32,6 +32,11 @@
+                               description="Exact: the same colour code. Similar: close shades. Any colour: the same material is enough."
+                               bind_selected="ad5x_refill_match" callback="on_ad5x_refill_match_changed"
+                               disabled="ad5x_refill_busy" dropdown_width="40%"/>
++        <setting_dropdown_row name="row_ad5x_map_mode"
++                              label="Tool to slot" icon="filament" options="Slot per file&#10;Auto colour"
++                              description="Slot per file: the file's own slot for each tool. Auto colour: each tool uses the loaded slot with the same material and the nearest colour, so a file made before can still print."
++                              bind_selected="ad5x_map_mode" callback="on_ad5x_map_mode_changed"
++                              disabled="ad5x_refill_busy" dropdown_width="40%"/>
+       </setting_group>
+       <!-- Per slot with filament: its colour, material and the slots that would take over -->
+       <setting_group name="ad5x_refill_backups_group">

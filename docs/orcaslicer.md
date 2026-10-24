@@ -118,3 +118,14 @@ A slicer tool T0-T3 loads IFS slot 1-4 unless the file maps it otherwise
 with `IFS_MAP_TOOL TOOL=n SLOT=m` (per print). The separate OrcaSlicer
 plugin [kiln-orca](https://github.com/djvalic/kiln-orca) adds those lines to exported
 G-code by matching each tool's material and colour against the slots.
+
+To print with whatever is loaded, without a plugin: `IFS_MAP_MODE MODE=loaded`
+(saved; it applies at each print start). Each tool then goes to the loaded slot
+with the same material and the nearest colour, read from the file's
+`; filament_type` and `; filament_colour` lines when it starts, so an older
+file that maps to the wrong slot is corrected too. Without those lines, tools
+use the loaded slots in slot order; with only slot 2 loaded, every tool uses it.
+An `IFS_MAP_TOOL` line in the file still wins, so a file exported by the
+kiln-orca plugin keeps the map the plugin wrote.
+`IFS_MAP_MODE MODE=fixed` goes back to T0-T3 -> slots 1-4. An explicit
+`IFS_MAP_TOOL` in the file still wins for the tools it names.

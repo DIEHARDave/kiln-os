@@ -6,11 +6,30 @@ the release has no section of its own yet (rename it after the release).
 
 ## Unreleased
 
+### Added
+- **IFS tool map mode `loaded`**: `IFS_MAP_MODE MODE=loaded` maps each tool to
+  the loaded slot that matches the file's filament: the same material with the
+  nearest colour (from the file's `; filament_type` and `; filament_colour`
+  lines, so files made before this change work too). Without those lines, tools
+  use the loaded slots in slot order; with one slot loaded, every tool uses it.
+  `MODE=fixed` (the default) keeps T0-T3 -> slots 1-4. The mode is saved across
+  restarts and applied at each print start. An `IFS_MAP_TOOL` line in the file
+  still wins.
+- **Settings > Filament Auto-Refill > Tool to slot**: choose **Slot per file**
+  (the file's own slot for each tool) or **Auto colour** (the `loaded` mode
+  above, on the touch screen).
+
 ### Changed
 - **IFS reconnects by itself**: when the IFS is not answering (at start, or
   after a loose cable), the printer tries again every 10 seconds, so a replug
   needs no restart. If it does not come back in line, see
   `docs/ifs-troubleshooting.md`.
+- **Filament and cutter readings hidden from temperature charts**: the AD5X
+  toolhead `filamentValue` and `cutValue` readings are raw sensor values, not
+  temperatures. HelixScreen now starts them disabled, so they no longer show in
+  the temperature widgets and graphs (HelixScreen patch 0022). They are still
+  there for the printer's own use. There is no switch for them on the touch
+  screen yet.
 
 ### Fixed
 - **IFS abort puts the printer back**: a swap that fails or is stopped restores

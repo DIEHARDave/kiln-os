@@ -1,0 +1,15 @@
+--- a/src/sensors/temperature_sensor_manager.cpp
++++ b/src/sensors/temperature_sensor_manager.cpp
+@@ -90,6 +90,12 @@
+             config.priority = 100;
+         }
+ 
++        // AD5X toolhead filament and cutter readings are raw ADC values, not
++        // temperatures. Keep them out of the temperature widgets by default.
++        if (sensor_name == "filamentValue" || sensor_name == "cutValue") {
++            config.enabled = false;
++        }
++
+         // Ensure a dynamic subject exists for this sensor
+         ensure_sensor_subject(klipper_name);
+ 
