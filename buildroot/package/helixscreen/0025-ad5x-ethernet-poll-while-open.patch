@@ -1,0 +1,69 @@
+--- a/include/ui_overlay_network_settings.h
++++ b/include/ui_overlay_network_settings.h
+@@ -288,6 +288,11 @@
+     void arm_wlan_toggle_backstop();
+     void cancel_wlan_toggle_backstop();
+     lv_timer_t* wlan_toggle_backstop_ = nullptr;
++    // Re-reads Ethernet while the overlay is open: the link can change with no
++    // Wi-Fi event. Started in on_activate(), stopped when the overlay closes.
++    void start_ethernet_poll();
++    void stop_ethernet_poll();
++    lv_timer_t* eth_poll_timer_ = nullptr;
+     bool wlan_toggle_requested_ = false;
+     // While a radio change is in flight the switch shows the requested state and
+     // stays locked until the radio answers, so a second tap cannot queue the
+--- a/src/ui/ui_overlay_network_settings.cpp
++++ b/src/ui/ui_overlay_network_settings.cpp
+@@ -335,6 +335,7 @@
+     update_wifi_status();
+     update_ethernet_status();
+     update_any_network_connected();
++    start_ethernet_poll();
+ 
+     // Subscribe to backend state changes so an open overlay refreshes its
+     // transport rows when the backend flips transports underneath it: on a
+@@ -383,6 +384,8 @@
+ void NetworkSettingsOverlay::on_deactivating(DeactivateReason) {
+     spdlog::debug("[NetworkSettingsOverlay] on_deactivating()");
+ 
++    stop_ethernet_poll();
++
+     // Stop scanning
+     if (wifi_manager_) {
+         wifi_manager_->stop_scan();
+@@ -415,6 +418,7 @@
+     // The lifetime token drops the radio's answer from here on, so nothing else
+     // would unlock the switch for the next instance of this overlay.
+     cancel_wlan_toggle_backstop();
++    stop_ethernet_poll();
+     if (subjects_initialized_) {
+         set_wlan_toggle_in_flight(false);
+     }
+@@ -1128,6 +1132,27 @@
+     }
+ }
+ 
++// Kiln OS: Ethernet is re-read every few seconds while this overlay is open, so
++// a cable pulled or plugged in shows up without reopening it. update_ethernet_status()
++// coalesces, so a probe still in flight is not doubled.
++void NetworkSettingsOverlay::start_ethernet_poll() {
++    stop_ethernet_poll();
++    eth_poll_timer_ = lv_timer_create(
++        [](lv_timer_t* t) {
++            auto* self = static_cast<NetworkSettingsOverlay*>(lv_timer_get_user_data(t));
++            if (self)
++                self->update_ethernet_status();
++        },
++        3000, this);
++}
++
++void NetworkSettingsOverlay::stop_ethernet_poll() {
++    if (eth_poll_timer_) {
++        helix::ui::lv_timer_cancel_safe(eth_poll_timer_);
++        eth_poll_timer_ = nullptr;
++    }
++}
++
+ void NetworkSettingsOverlay::handle_refresh_clicked() {
+     spdlog::debug("[NetworkSettingsOverlay] Refresh clicked");
+ 

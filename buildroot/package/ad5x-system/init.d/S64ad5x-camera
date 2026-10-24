@@ -61,10 +61,69 @@ sync_webcams() {
 	done
 }
 
+# --- camera.conf reader begin
+# camera.conf is read as data, never run. Only the keys below are taken, and
+# each value is checked; anything else is logged and skipped. The file must be
+# a plain file owned by the user running this (root at boot) and not writable
+# by group or others. Keys: CAMERA=on|off, RESOLUTION=WIDTHxHEIGHT, FPS=1..60,
+# and the numbered forms RESOLUTION_2=, FPS_2=, ...
+load_conf() {
+	f=$1
+	[ -e "$f" ] || return 0
+	if [ -L "$f" ] || [ ! -f "$f" ]; then
+		echo "camera: $f is not a plain file, not read"
+		return 0
+	fi
+	[ "$(stat -c %u "$f")" = "$(id -u)" ] || {
+		echo "camera: $f is not owned by root, not read"
+		return 0
+	}
+	case "$(stat -c %A "$f")" in
+	?????w????|????????w?)
+		echo "camera: $f is writable by group or others, not read"
+		return 0 ;;
+	esac
+	while IFS= read -r line || [ -n "$line" ]; do
+		line=${line%"$(printf '\r')"}
+		case "$line" in ''|'#'*) continue ;; esac
+		case "$line" in
+		*=*) ;;
+		*) echo "camera: ignored a line without '='"; continue ;;
+		esac
+		key=${line%%=*}
+		val=${line#*=}
+		case "$key" in
+		CAMERA|RESOLUTION|FPS) ;;
+		RESOLUTION_*|FPS_*)
+			# the number is all digits, so it is safe to build the name below
+			case "${key#*_}" in
+			''|*[!0-9]*) echo "camera: ignored key $key"; continue ;;
+			esac ;;
+		*) echo "camera: ignored unknown key $key"; continue ;;
+		esac
+		base=${key%%_*}
+		ok=0
+		case "$base" in
+		CAMERA)
+			case "$val" in on|off) ok=1 ;; esac ;;
+		RESOLUTION)
+			echo "$val" | grep -qx '[0-9]\{3,4\}x[0-9]\{3,4\}' && ok=1 ;;
+		FPS)
+			case "$val" in
+			''|*[!0-9]*) ;;
+			*) [ "$val" -ge 1 ] && [ "$val" -le 60 ] && ok=1 ;;
+			esac ;;
+		esac
+		[ $ok = 1 ] || { echo "camera: ignored $key (not a valid value)"; continue; }
+		eval "$key=\$val"
+	done < "$f"
+}
+# --- camera.conf reader end
+
 start() {
 	[ -x $USTREAMER ] || exit 0
 	CAMERA=on RESOLUTION=1280x720 FPS=15
-	[ -f $CONF ] && . $CONF
+	load_conf $CONF
 	[ "$CAMERA" = off ] && { echo "camera: off ($CONF)"; exit 0; }
 	mkdir -p $RUN
 	n=0

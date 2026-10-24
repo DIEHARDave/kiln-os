@@ -6,6 +6,28 @@ the release has no section of its own yet (rename it after the release).
 
 ## Unreleased
 
+### Fixed
+- **Ethernet shows disconnected when unplugged** (issue #8): the Network Settings row
+  kept saying "Connected" with the old address after the cable was pulled. It now
+  shows "No cable" (HelixScreen patch 0024).
+- **Network Settings updates while open**: the Ethernet row re-reads every 3 s
+  while Network Settings is open, so plugging or unplugging the cable shows
+  straight away (HelixScreen patch 0025). Nothing runs when the screen is closed.
+
+### Changed
+- **No LED strip prompts**: the setup wizard's LED step and the Hardware Health
+  "LED strip available" item are no longer shown. The chamber LED is declared
+  for every printer, so they asked everyone. The LED controls stay, and a strip
+  is set up in Settings > LED Settings (HelixScreen patch 0023).
+- **Camera settings file is read as data, not run**: `/data/ad5x/camera.conf`
+  used to run as shell code as root at boot. It is now read as settings only:
+  `CAMERA`, `RESOLUTION`, `FPS` and their numbered forms (`RESOLUTION_2`,
+  `FPS_2`), each value checked. Other lines are skipped with a log line, and a
+  file that is not owned by root, or that others can write, is not read. Write
+  `FPS=15`: spaces around `=` are no longer accepted.
+
+## v0.0.23
+
 ### Added
 - **IFS tool map mode `loaded`**: `IFS_MAP_MODE MODE=loaded` maps each tool to
   the loaded slot that matches the file's filament: the same material with the
@@ -20,16 +42,20 @@ the release has no section of its own yet (rename it after the release).
   above, on the touch screen).
 
 ### Changed
-- **IFS reconnects by itself**: when the IFS is not answering (at start, or
-  after a loose cable), the printer tries again every 10 seconds, so a replug
-  needs no restart. If it does not come back in line, see
-  `docs/ifs-troubleshooting.md`.
 - **Filament and cutter readings hidden from temperature charts**: the AD5X
   toolhead `filamentValue` and `cutValue` readings are raw sensor values, not
   temperatures. HelixScreen now starts them disabled, so they no longer show in
   the temperature widgets and graphs (HelixScreen patch 0022). They are still
   there for the printer's own use. There is no switch for them on the touch
   screen yet.
+
+## v0.0.22
+
+### Changed
+- **IFS reconnects by itself**: when the IFS is not answering (at start, or
+  after a loose cable), the printer tries again every 10 seconds, so a replug
+  needs no restart. If it does not come back in line, see
+  `docs/ifs-troubleshooting.md`.
 
 ### Fixed
 - **IFS abort puts the printer back**: a swap that fails or is stopped restores

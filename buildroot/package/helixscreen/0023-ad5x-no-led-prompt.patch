@@ -1,0 +1,67 @@
+--- a/src/printer/hardware_validator.cpp
++++ b/src/printer/hardware_validator.cpp
+@@ -672,36 +672,8 @@
+         expected_hardware = config->get_string_array(config->df() + "hardware/expected");
+     }
+ 
+-    const auto& leds = hardware.leds();
+-
+-    // Check for LEDs not in config
+-    // Only suggest if user hasn't configured any LED yet
+-    const bool has_configured_led = !configured_led_strips(config).empty();
+-
+-    if (!has_configured_led && !leds.empty()) {
+-        // User has no LED configured but printer has some
+-        // Suggest the first "main" LED (prefer ones with "chamber", "case", "light" in name)
+-        std::string suggested;
+-        for (const auto& led : leds) {
+-            std::string lower = led;
+-            lower = helix::text_io::to_lower(lower);
+-            if (lower.find("chamber") != std::string::npos ||
+-                lower.find("case") != std::string::npos ||
+-                lower.find("light") != std::string::npos) {
+-                suggested = led;
+-                break;
+-            }
+-        }
+-        if (suggested.empty() && !leds.empty()) {
+-            suggested = leds[0];
+-        }
+-
+-        if (!suggested.empty() && !contains_name(expected_hardware, suggested)) {
+-            result.newly_discovered.push_back(HardwareIssue::info(
+-                suggested, HardwareType::LED,
+-                TR_NOOP("LED strip available. Add to config for lighting control?")));
+-        }
+-    }
++    // No LED suggestion here: the chamber LED is declared for every printer, so
++    // this prompt would show on all of them. A strip is set up in Settings > LED Settings.
+ 
+     // Check for fans not assigned to any role
+     const auto& discovered_fans = hardware.fans();
+--- a/src/ui/ui_wizard_led_select.cpp
++++ b/src/ui/ui_wizard_led_select.cpp
+@@ -190,20 +190,7 @@
+ // ============================================================================
+ 
+ bool WizardLedSelectStep::should_skip() const {
+-    IMoonrakerAPI* api = get_moonraker_api();
+-    if (!api) {
+-        spdlog::debug("[{}] No IMoonrakerAPI, skipping LED step", get_name());
+-        return true;
+-    }
+-
+-    const auto& leds = api->hardware().leds();
+-    bool should_skip = leds.empty();
+-
+-    if (should_skip) {
+-        spdlog::info("[{}] No LEDs discovered, skipping step", get_name());
+-    } else {
+-        spdlog::debug("[{}] Found {} LED(s), showing step", get_name(), leds.size());
+-    }
+-
+-    return should_skip;
++    // Not shown: the chamber LED is declared for every printer, so the step
++    // would ask everyone. Strips are set up in Settings > LED Settings.
++    return true;
+ }
