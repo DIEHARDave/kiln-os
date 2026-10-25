@@ -41,8 +41,13 @@
 # UPDATE_PLUGIN pulls it, REMOVE_PLUGIN disables and deletes it; git runs
 # in the background (printer.ad5x_plugins.job). When a switch changes what
 # Moonraker loads, the root update agent (S68ad5x-update-agent) restarts
-# Moonraker. HelixScreen's Settings > Plugins uses these. See
-# docs/plugins.md and docs/plugin-api.md.
+# Moonraker. HelixScreen's Settings > Plugins uses these.
+#
+# Root hooks (plugin API 1.5): a plugin that needs root for a small part
+# ships a hook that root installs as /data/ad5x/plugin-hooks/<name>.sh.
+# S67ad5x-plugin-hooks runs it at boot while the plugin is enabled; when
+# such a plugin is switched, the root update agent starts or stops it.
+# Nothing here runs it. See docs/plugins.md and docs/plugin-api.md.
 #
 # Copyright (C) 2026  ad5x-open contributors
 #
@@ -59,7 +64,7 @@ import sys
 # The plugin API this system offers (docs/plugin-api.md): major.minor.
 # Minor: additions only. Major: something plugins may use changed or went.
 # post-build.sh copies it to /usr/lib/os-release as AD5X_PLUGIN_API.
-PLUGIN_API_VERSION = "1.4"
+PLUGIN_API_VERSION = "1.5"
 
 CONFIG_DIR = "/home/klipper/printer_data/config"
 SHIPPED_DIR = "/usr/share/ad5x/plugins"
@@ -67,6 +72,10 @@ USER_DIR = "/data/ad5x/plugins"
 CATALOG_FILE = "/usr/share/ad5x/plugin-catalog.json"
 # Picked up by S68ad5x-update-agent (root), which restarts Moonraker
 MOONRAKER_RESTART_FILE = "/data/ad5x/kiln-update/restart-moonraker"
+# Root hooks, installed by root (S67ad5x-plugin-hooks runs them), and the
+# request S68ad5x-update-agent picks up to start or stop them
+HOOK_DIR = "/data/ad5x/plugin-hooks"
+HOOKS_REQUEST_FILE = "/data/ad5x/kiln-update/plugin-hooks"
 GIT_TIMEOUT = 600.
 
 NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,47}$")
@@ -139,7 +148,7 @@ def read_metadata(plugin_dir, name):
             meta['requires_os'],)
     return meta
 
-def scan(shipped_dir=SHIPPED_DIR, user_dir=USER_DIR):
+def scan(shipped_dir=SHIPPED_DIR, user_dir=USER_DIR, hook_dir=HOOK_DIR):
     """name -> info for every directory holding a plugin.cfg; user plugins
     replace shipped ones of the same name."""
     found = {}
@@ -162,7 +171,9 @@ def scan(shipped_dir=SHIPPED_DIR, user_dir=USER_DIR):
                                                          'moonraker.conf')),
                 'python': os.path.isdir(os.path.join(d, 'python')),
                 'components': os.path.isdir(os.path.join(
-                    d, 'moonraker', 'components'))})
+                    d, 'moonraker', 'components')),
+                'root_hook': os.path.isfile(os.path.join(hook_dir,
+                                                         name + '.sh'))})
             found[name] = info
     return found
 
@@ -283,6 +294,9 @@ class AD5XPlugins:
         self.catalog_file = config.get('catalog_file', CATALOG_FILE)
         self.restart_file = config.get('moonraker_restart_file',
                                        MOONRAKER_RESTART_FILE)
+        self.hook_dir = config.get('hook_dir', HOOK_DIR)
+        self.hooks_request_file = config.get('hooks_request_file',
+                                             HOOKS_REQUEST_FILE)
         self.catalog = read_catalog(self.catalog_file)
         # The last install/update/remove result survives the Klipper restart
         # that enabling a plugin makes (the screen shows it after)
@@ -299,7 +313,7 @@ class AD5XPlugins:
         except (OSError, ValueError):
             pass
         self.proc = None
-        self.found = scan(self.shipped_dir, self.user_dir)
+        self.found = scan(self.shipped_dir, self.user_dir, self.hook_dir)
         # Enabled at this start (plugins.cfg as Klipper read it)
         self.loaded = read_enabled(self.plugins_file)[0]
         self.warnings = []
@@ -449,6 +463,7 @@ class AD5XPlugins:
         if changed or any(touches_moonraker(self.found.get(n))
                           for n in list(enable) + list(disable)):
             self._restart_moonraker(gcmd)
+        self._sync_hooks(gcmd, list(enable) + list(disable))
         if gcmd.get_int('RESTART', 1):
             gcmd.respond_info("Restarting Klipper")
             self.gcode.run_script_from_command("RESTART")
@@ -468,6 +483,21 @@ class AD5XPlugins:
             gcmd.respond_info(msg)
         else:
             self.gcode.respond_info(msg)
+    def _sync_hooks(self, gcmd, names):
+        """Ask the root update agent to start or stop the root hooks of
+        the switched plugins that have one."""
+        hooks = [n for n in names if self.found.get(n, {}).get('root_hook')]
+        if not hooks:
+            return
+        try:
+            with open(self.hooks_request_file, "w") as f:
+                f.write("plugins\n")
+            msg = "Root hook of %s starts or stops" % (", ".join(hooks),)
+        except OSError as e:
+            logging.info("ad5x_plugins: %s: %s", self.hooks_request_file, e)
+            msg = "Root hook of %s changes at the next reboot" % (
+                ", ".join(hooks),)
+        gcmd.respond_info(msg)
     # Catalog plugins: git in the background
     def _catalog_entry(self, gcmd):
         name = gcmd.get('NAME').strip().lower()
@@ -558,7 +588,7 @@ class AD5XPlugins:
                 shutil.rmtree(tmp, ignore_errors=True)
                 raise Exception("not a valid plugin: %s" % (meta['error'],))
             os.rename(tmp, dest)
-            self.found = scan(self.shipped_dir, self.user_dir)
+            self.found = scan(self.shipped_dir, self.user_dir, self.hook_dir)
             if enable:
                 # Saved first: enabling restarts Klipper
                 self.job.update({'state': 'done',
@@ -595,7 +625,7 @@ class AD5XPlugins:
             if rc != 0:
                 raise Exception("git pull failed: %s" % (out[-300:],))
             after = head()
-            self.found = scan(self.shipped_dir, self.user_dir)
+            self.found = scan(self.shipped_dir, self.user_dir, self.hook_dir)
             if after == before:
                 return "up to date (%s)" % (after,)
             msg = "updated %s -> %s" % (before, after)
@@ -606,7 +636,7 @@ class AD5XPlugins:
                         ["git", "-C", d, "pull", "-q", "--ff-only"], done)
     cmd_REMOVE_PLUGIN_help = "Disable and delete an installed plugin: NAME="
     def cmd_REMOVE_PLUGIN(self, gcmd):
-        self.found = scan(self.shipped_dir, self.user_dir)
+        self.found = scan(self.shipped_dir, self.user_dir, self.hook_dir)
         name = gcmd.get('NAME').strip().lower()
         info = self.found.get(name)
         d = os.path.join(self.user_dir, name)
@@ -626,8 +656,10 @@ class AD5XPlugins:
         if on:
             self._check_idle(gcmd)
             names = self._write_enabled(disable=[name])
+            # Its root hook stops; root's copy of it stays
+            self._sync_hooks(gcmd, [name])
         shutil.rmtree(d)
-        self.found = scan(self.shipped_dir, self.user_dir)
+        self.found = scan(self.shipped_dir, self.user_dir, self.hook_dir)
         self.job = {'name': name, 'action': 'remove', 'state': 'done',
                     'message': 'removed'}
         self._save_job()
@@ -640,7 +672,7 @@ class AD5XPlugins:
     cmd_ENABLE_PLUGIN_help = ("Enable a plugin and restart Klipper: NAME= "
                               "[RESTART=0]")
     def cmd_ENABLE_PLUGIN(self, gcmd):
-        self.found = scan(self.shipped_dir, self.user_dir)
+        self.found = scan(self.shipped_dir, self.user_dir, self.hook_dir)
         name = gcmd.get('NAME').strip().lower()
         info = self.found.get(name)
         if info is None:
@@ -672,7 +704,7 @@ class AD5XPlugins:
     cmd_DISABLE_PLUGIN_help = ("Disable a plugin and restart Klipper: NAME= "
                                "[RESTART=0]")
     def cmd_DISABLE_PLUGIN(self, gcmd):
-        self.found = scan(self.shipped_dir, self.user_dir)
+        self.found = scan(self.shipped_dir, self.user_dir, self.hook_dir)
         name = gcmd.get('NAME').strip().lower()
         enabled = read_enabled(self.plugins_file)[0]
         if name not in enabled:
@@ -690,7 +722,7 @@ class AD5XPlugins:
         self._apply(gcmd, disable=[name])
     cmd_LIST_PLUGINS_help = "List the plugins (shipped and own) and which are on"
     def cmd_LIST_PLUGINS(self, gcmd):
-        self.found = scan(self.shipped_dir, self.user_dir)
+        self.found = scan(self.shipped_dir, self.user_dir, self.hook_dir)
         enabled = read_enabled(self.plugins_file)[0]
         lines = ["Plugin API %s" % (PLUGIN_API_VERSION,)]
         for name in sorted(set(self.found) | set(enabled)):
@@ -708,6 +740,8 @@ class AD5XPlugins:
                 notes.append("requires " + ", ".join(info['requires']))
             if info['conflicts']:
                 notes.append("conflicts with " + ", ".join(info['conflicts']))
+            if info['root_hook']:
+                notes.append("root hook")
             if on != (name in self.loaded):
                 notes.append("until RESTART")
             lines.append("%s %s %s (%s%s): %s%s" % (
@@ -724,7 +758,7 @@ class AD5XPlugins:
             'available': {
                 n: {k: i[k] for k in ('source', 'description', 'version',
                                       'author', 'url', 'requires_os',
-                                      'compatible')}
+                                      'compatible', 'root_hook')}
                 for n, i in self.found.items()},
             'catalog': {
                 n: dict(e, compatible=api_compatible(e['requires_os']),

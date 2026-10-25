@@ -6,6 +6,17 @@ the release has no section of its own yet (rename it after the release).
 
 ## Unreleased
 
+### Added
+- **Root hooks for plugins** (plugin API 1.5): a plugin that needs root for
+  a small part (USB device access, a second web port, camera restarts)
+  can have its install step, run as root, put a hook script in
+  `/data/ad5x/plugin-hooks/<name>.sh`. The new `S67ad5x-plugin-hooks` runs
+  it at boot while the plugin is enabled, and `ENABLE_PLUGIN` /
+  `DISABLE_PLUGIN` start and stop it. Only hooks root owns and only root
+  can change are run; nothing in a plugin's own directory runs as root.
+  This replaces the `camera.conf` line such plugins used before v0.0.24
+  (`docs/plugins.md`, "Root hooks").
+
 ### Fixed
 - **Print start loads the tool you chose** (issue #12): a `TOOL=` value that is not a number, such as an unexpanded `[initial_tool]`, used to load tool 0 (spool 1). Now no tool is loaded and the console shows an error. Use the number from your slicer's start G-code (`macros/print_start.cfg`).
 

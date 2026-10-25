@@ -6,7 +6,11 @@ update.
 
 ## Version
 
-Current: **1.4** (1.4, 2026-10-20: additions only: the plugin catalog
+Current: **1.5** (1.5, 2026-10-25: additions only: root hooks
+(`/data/ad5x/plugin-hooks/<name>.sh`, run by `S67ad5x-plugin-hooks` while
+the plugin is enabled; "Root hooks" below), `printer.ad5x_plugins`
+`available` `root_hook`.
+1.4, 2026-10-20: additions only: the plugin catalog
 and `INSTALL_PLUGIN`, `UPDATE_PLUGIN`, `REMOVE_PLUGIN`;
 `printer.ad5x_plugins` `catalog`, `job`; Moonraker restarts by itself when
 a switch changes its plugin parts; the bed heat soak: `BED_SOAK_CALIBRATE`,
@@ -159,7 +163,8 @@ Rules for plugins:
   Prefer new commands of your own over replacing listed macros; a plugin
   that replaces one takes over its upkeep.
 - Don't redefine sections the user owns (`[gcode_macro _AD5X_UNIT]`) or
-  write to files outside the config directory.
+  write to files outside the config directory (a root hook may, for its
+  own part: "Root hooks" below).
 - A module name can't be the name of a Klipper module or another
   plugin's module (refused at startup).
 
@@ -198,6 +203,7 @@ printer` before calling one.
 | `.../config/variables.cfg` | `[save_variables]` file |
 | `.../config/macros/*.cfg` | The printer's editable macros (refreshed by updates; `docs/config-layout.md`) |
 | `/home/klipper/printer_data/gcodes` | G-code files (`virtual_sdcard`) |
+| `/data/ad5x/plugin-hooks/<name>.sh` | A plugin's root hook (1.5; root owns the directory and the files) |
 
 ## G-code commands and macros
 
@@ -295,7 +301,7 @@ save variable: 0 or 2 = prime only, other = purge; else purge.
 | `printer.ifs_materials` | `available`, `channel_count`, `slots` (`"1"`-`"4"`: `type`, `color`, `temp`), `loaded`, `temperatures` |
 | `printer.ad5x_setup` | `step`, `state`, `message`, `progress`, `results`, `checks`, `pending_save`, `zoffset` |
 | `printer.ad5x_config` | `notices` (lines of `config-updates.txt`), `backups` (`macros/*.bak-*`) |
-| `printer.ad5x_plugins` | `api_version`, `enabled`, `available` (per plugin: `source`, `description`, `version`, `author`, `url`, `requires_os`, `compatible`), `catalog` (1.4, per plugin: `title`, `description`, `url`, `requires_os`, `compatible`, `installed`), `job` (1.4: `name`, `action`, `state` idle/running/done/failed, `message`), `warnings` |
+| `printer.ad5x_plugins` | `api_version`, `enabled`, `available` (per plugin: `source`, `description`, `version`, `author`, `url`, `requires_os`, `compatible`, `root_hook` (1.5: a hook is installed for it)), `catalog` (1.4, per plugin: `title`, `description`, `url`, `requires_os`, `compatible`, `installed`), `job` (1.4: `name`, `action`, `state` idle/running/done/failed, `message`), `warnings` |
 | `printer.ad5x_weight` | `connected`, `weight` |
 | `printer['gcode_macro _AD5X_UNIT']` | `z_offset`, `cut_x_offset`, `cut_y_offset`, `x_offset`, `y_offset` (purge box at X 52.5 + `x_offset`, Y 229 + `y_offset`; cut at X `cut_x_offset` - 2.5, Y `cut_y_offset` - 7.5) |
 | `printer['filament_switch_sensor toolhead']` | Klipper's runout fields (`enabled`, `filament_detected`); also `adc_filament_sensor toolhead`; `SET_FILAMENT_SENSOR SENSOR=toolhead` |
@@ -325,6 +331,52 @@ Read them; write only your own (prefixed) variables, except
 - Events (`printer.register_event_handler`): `"ifs:loaded"` (1.2), with
   the slot now in the nozzle (1-4, 0 = emptied), after every load,
   unload, swap and `IFS_SET_CHANNEL`.
+
+## Root hooks
+
+(1.5) Klipper and Moonraker run as user `klipper`. For the small part of a
+plugin that needs root (device node permissions, a second nginx server,
+restarting the cameras), the plugin ships a shell script, and the
+plugin's install step, run as root over SSH, copies it to:
+
+```
+/data/ad5x/plugin-hooks/<name>.sh     <name> as in plugin.json; root:root, 0755
+```
+
+`S67ad5x-plugin-hooks` (root, at boot after `S63nginx`, `S64ad5x-camera`
+and `S65ad5x-screen`) runs the hooks of the plugins enabled in
+`plugins.cfg`:
+
+| Call | When |
+|---|---|
+| `sh <hook> start` | At boot; when the plugin is enabled (`ENABLE_PLUGIN`, `INSTALL_PLUGIN ENABLE=1`) |
+| `sh <hook> stop` | At shutdown; when the plugin is disabled (`DISABLE_PLUGIN`, `REMOVE_PLUGIN`) |
+
+- A hook runs only when it is a plain file (not a link) owned by root
+  that group and others can't write. A hook that isn't is skipped with a
+  boot log line. Nothing is ever run from the plugin's own directory:
+  that belongs to `klipper`, and a hook copied by root is what root
+  agreed to run. Updating the plugin doesn't update the hook; ship a
+  version number in it and ask for the install step again when it
+  changes.
+- Each call runs in its own background shell from `/`, stdin from
+  `/dev/null`, output to syslog (`/var/log/messages`, tag
+  `ad5x-plugin-hook`, `<name>: ` in front). Boot doesn't wait for `start`; shutdown and `DISABLE_PLUGIN`
+  wait up to 10 s for `stop`. Start long-running helpers with
+  `start-stop-daemon -b` and a pid file in `/run`, and stop them in
+  `stop`.
+- `start` may run again in one boot (disable, then enable): make it
+  idempotent. Unknown arguments: do nothing.
+- Switching a plugin reaches the hooks through the root update agent
+  (`S68ad5x-update-agent`, a few seconds later): Klipper writes
+  `/data/ad5x/kiln-update/plugin-hooks`, the agent runs
+  `S67ad5x-plugin-hooks sync`.
+- Read settings the user changes from Klipper (`variables.cfg`, ...) as
+  data: parse and check them, never source them.
+- The plugin's uninstall step stops its hook
+  (`/etc/init.d/S67ad5x-plugin-hooks stop <name>`) before deleting it.
+- Check `AD5X_PLUGIN_API` in `/etc/os-release` (1.5 or newer) before
+  installing a hook; on older systems there is none.
 
 ## Moonraker
 

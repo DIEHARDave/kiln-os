@@ -1,0 +1,128 @@
+#!/bin/sh
+# Root hooks of plugins (docs/plugins.md, "Root hooks"). Plugins run as
+# user klipper; one that needs root for a small part (device permissions,
+# a second nginx port, restarting the cameras) ships a hook script, and
+# root installs it once, from the plugin's install step over SSH:
+#   /data/ad5x/plugin-hooks/<name>.sh     <name> as in plugins.cfg
+# Only root can put a hook there: the directory is made root's (755) at
+# each start, and a hook runs only when it is a plain file owned by root
+# that group and others can't write. Nothing is run from a plugin's own
+# directory (it belongs to klipper), and plugins.cfg is read as text. A
+# hook runs only while its plugin is enabled:
+#   <hook> start   at boot (after nginx, the cameras and the screen), and
+#                  when the plugin is enabled
+#   <hook> stop    at shutdown, and when the plugin is disabled or removed
+# Each runs in its own background shell from /, so a slow hook doesn't
+# hold up the boot; output goes to syslog (tag ad5x-plugin-hook). A hook
+# starts long-running helpers with start-stop-daemon -b.
+#   start|stop [NAME...]   all hooks, or the named ones
+#   sync                   start the hooks of enabled plugins not started
+#                          yet, stop those of plugins no longer enabled
+#                          (S68ad5x-update-agent, after ENABLE_PLUGIN,
+#                          DISABLE_PLUGIN or REMOVE_PLUGIN)
+DIR=/data/ad5x/plugin-hooks
+RUN=/run/ad5x-plugin-hooks
+PLUGINS=/home/klipper/printer_data/config/plugins.cfg
+# Seconds a hook gets to stop before shutdown goes on without it
+STOP_WAIT=10
+
+# Enabled plugins, from plugins.cfg's include lines (the same lines
+# ad5x_plugins.py reads), names checked like its NAME_RE
+enabled() {
+	[ -f $PLUGINS ] || return 0
+	sed -n -E 's#^[[:space:]]*\[include[[:space:]]+[^[:space:]]*/([A-Za-z0-9_.-]+)/plugi(n|\[n\])\.cfg[[:space:]]*\][[:space:]]*$#\1#p' \
+		$PLUGINS | grep -x '[a-z0-9][a-z0-9_-]\{0,47\}' | awk '!seen[$0]++'
+}
+
+is_enabled() {
+	enabled | grep -qx "$1"
+}
+
+# hook_ok NAME: the hook exists and only root can change it
+hook_ok() {
+	case "$1" in ''|*[!a-z0-9_-]*) return 1 ;; esac
+	[ -d $DIR ] && [ ! -L $DIR ] || return 1
+	[ -n "$(find "$DIR/$1.sh" -maxdepth 0 -type f -user 0 \
+		! -perm -g=w ! -perm -o=w 2>/dev/null)" ] && return 0
+	[ -e "$DIR/$1.sh" ] && echo "plugin hook $1: not a plain file of root's that only root can write, not run"
+	return 1
+}
+
+# run_hook NAME ACTION: in the background; returns its pid in $hook_pid
+run_hook() {
+	(
+		cd / && /bin/sh "$DIR/$1.sh" $2 </dev/null 2>&1 |
+			while IFS= read -r line; do
+				logger -t ad5x-plugin-hook "$1: $line"
+			done
+	) &
+	hook_pid=$!
+}
+
+start_one() {
+	is_enabled "$1" || return 0
+	hook_ok "$1" || return 0
+	echo "plugin hook $1: start"
+	run_hook "$1" start
+	touch $RUN/$1
+}
+
+stop_one() {
+	case "$1" in ''|*[!a-z0-9_-]*) return 0 ;; esac
+	[ -f $RUN/$1 ] || return 0
+	rm -f $RUN/$1
+	hook_ok "$1" || return 0
+	echo "plugin hook $1: stop"
+	run_hook "$1" stop
+	w=0
+	while [ $w -lt $STOP_WAIT ] && kill -0 $hook_pid 2>/dev/null; do
+		w=$((w + 1))
+		sleep 1
+	done
+}
+
+started() {
+	for m in $RUN/*; do
+		[ -f "$m" ] && basename "$m"
+	done
+}
+
+prepare() {
+	if [ -L $DIR ]; then
+		echo "plugin hooks: $DIR is a link, no hooks run"
+		return 1
+	fi
+	mkdir -p $DIR $RUN
+	chown root:root $DIR
+	chmod 755 $DIR
+}
+
+case "$1" in
+start)
+	prepare || exit 0
+	shift
+	for n in ${*:-$(enabled)}; do
+		[ -f "$RUN/$n" ] || start_one "$n"
+	done
+	;;
+stop)
+	shift
+	for n in ${*:-$(started)}; do
+		stop_one "$n"
+	done
+	;;
+restart)
+	$0 stop; $0 start
+	;;
+sync)
+	prepare || exit 0
+	on=$(enabled)
+	for n in $(started); do
+		echo "$on" | grep -qx "$n" || stop_one "$n"
+	done
+	for n in $on; do
+		[ -f $RUN/$n ] || start_one "$n"
+	done
+	;;
+esac
+exit 0

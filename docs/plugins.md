@@ -14,6 +14,7 @@ The interface plugins may rely on is in `docs/plugin-api.md`.
 | Which plugins are on | `printer_data/config/plugins.cfg` | `ENABLE_PLUGIN` / `DISABLE_PLUGIN`, or you |
 | Moonraker parts of the enabled plugins | `printer_data/config/moonraker-plugins.conf` (generated) | Klipper and `S62moonraker`; don't edit |
 | Plugin manager | `klipper/extras/ad5x_plugins.py`, `[ad5x_plugins]` in `ad5x.cfg` | System updates |
+| Root hooks of plugins | `/data/ad5x/plugin-hooks/<name>.sh` (owned by root), run by `S67ad5x-plugin-hooks` | A plugin's install step, as root |
 
 `printer_data/config` is `/home/klipper/printer_data/config`, the same as
 `/data/ad5x/printer_data/config`.
@@ -215,6 +216,31 @@ the plugin, with `plugin.json`, `plugin.cfg`, `README.md`, and optionally
 `extras/*.py` and `moonraker.conf`. Put it in `/data/ad5x/plugins/<name>`
 (as user `klipper`, or `chown -R klipper:klipper` it), then
 `ENABLE_PLUGIN NAME=<name>`.
+
+### Root hooks
+
+Everything above runs as user `klipper`. Some plugins need root for one
+small part: giving `klipper` access to a USB device node, a second nginx
+server, restarting the cameras with new settings. Such a plugin ships a
+hook script, and its install step (run as root over SSH, once) copies it
+to `/data/ad5x/plugin-hooks/<name>.sh`. At each boot, after nginx, the
+cameras and the screen, `S67ad5x-plugin-hooks` runs `<hook> start` for
+each enabled plugin that has one, and `<hook> stop` at shutdown.
+`ENABLE_PLUGIN` and `DISABLE_PLUGIN` (and `REMOVE_PLUGIN`) start and stop
+the plugin's hook a few seconds later, through the root update agent.
+`LIST_PLUGINS` notes "root hook" for a plugin that has one.
+
+Only root can add a hook: the directory and the files are root's, and a
+hook that someone else owns or can write is not run. A plugin's own
+directory, which `klipper` (and so Moonraker's updates) can change, is
+never run as root. So installing or updating a plugin from Fluidd or the
+catalog never adds or changes root code; that takes the plugin's install
+step, run by you. To see what runs: `ls /data/ad5x/plugin-hooks`, and
+`grep ad5x-plugin-hook /var/log/messages` for their output. To take one away:
+`/etc/init.d/S67ad5x-plugin-hooks stop <name>`, then delete the file.
+
+The hook's contract (arguments, environment, rules) is in
+`docs/plugin-api.md`, "Root hooks".
 
 ### Installing from the catalog
 

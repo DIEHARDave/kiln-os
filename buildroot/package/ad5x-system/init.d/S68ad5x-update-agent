@@ -11,7 +11,9 @@
 # Result for Moonraker in "status", log in /data/ad5x/kiln-update/agent.log.
 # Also: "restart-moonraker" (written by Klipper's ad5x_plugins when a
 # plugin switch changes what Moonraker loads): Moonraker is restarted, so it
-# reads the plugins' parts again (not while printing).
+# reads the plugins' parts again (not while printing). And "plugin-hooks"
+# (written by ad5x_plugins when a plugin with a root hook is switched):
+# S67ad5x-plugin-hooks sync starts or stops those hooks.
 D=/data/ad5x/kiln-update
 PID=/run/ad5x-update-agent.pid
 LOG=$D/agent.log
@@ -69,6 +71,11 @@ agent() {
 				log "restarting Moonraker (plugins changed)"
 				/etc/init.d/S62moonraker restart >> $LOG 2>&1
 			fi
+		fi
+		if [ -f $D/plugin-hooks ]; then
+			rm -f $D/plugin-hooks
+			log "plugin root hooks: plugins changed"
+			/etc/init.d/S67ad5x-plugin-hooks sync >> $LOG 2>&1
 		fi
 		if [ -f $D/install ]; then
 			f=$(sed -n 1p $D/install)
