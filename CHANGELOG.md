@@ -7,6 +7,11 @@ the release has no section of its own yet (rename it after the release).
 ## Unreleased
 
 ### Fixed
+- **Camera settings are read again**: since v0.0.24 the camera service
+  checked `/data/ad5x/camera.conf`'s owner with `stat`, which the image
+  doesn't have, so every file was skipped as "not owned by root" and
+  `RESOLUTION`, `FPS` and `CAMERA=off` had no effect. The same checks now
+  use `find`.
 - **Print start loads the tool you chose** (issue #12): a `TOOL=` value that is not a number, such as an unexpanded `[initial_tool]`, used to load tool 0 (spool 1). Now no tool is loaded and the console shows an error. Use the number from your slicer's start G-code (`macros/print_start.cfg`).
 
 ## v0.0.24
