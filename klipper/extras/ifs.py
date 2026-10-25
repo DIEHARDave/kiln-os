@@ -1656,13 +1656,16 @@ class IFS:
         purge); else purge."""
         purge = gcmd.get_int('PURGE', None, minval=0, maxval=1)
         if self.first_swap_pending and self._in_print():
-            # The first tool load of a print purges in full at the box
-            # whatever the mode says: the prime tower doesn't exist yet,
-            # so the colour left in the nozzle would go into the first
-            # layer (zMod purges it too).
             self.first_swap_pending = False
-            if purge is not None or self._purge_mode_says_slicer():
-                logging.info("ifs: first tool load of the print: purging")
+            if purge is None and self._purge_mode_says_slicer():
+                # The slicer's prime tower on the bed does the purge, so the
+                # first load only primes (no purge at the box). The colour
+                # left in the nozzle goes into the bed purge instead.
+                return False
+            # Otherwise the first tool load purges in full at the box: the
+            # prime tower doesn't exist yet, so the colour left in the nozzle
+            # would go into the first layer (zMod purges it too).
+            logging.info("ifs: first tool load of the print: purging")
             return True
         if purge is not None:
             return bool(purge)

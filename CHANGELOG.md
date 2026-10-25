@@ -6,6 +6,9 @@ the release has no section of its own yet (rename it after the release).
 
 ## Unreleased
 
+### Changed
+- **First tool load of a print primes only when the slicer purges on the bed**: with `use_trash_on_print` 0 or 2, the first colour no longer purges at the purge box; the bed prime tower purges it. Trash mode still purges at the box (`klipper/extras/ifs.py`, `tools/test_ifs.py`). Needs a printer check: the first layer after the first colour, and that the prime fills the nozzle.
+
 ### Fixed
 - **Print start loads the tool you chose** (issue #12): a `TOOL=` value that is not a number, such as an unexpanded `[initial_tool]`, used to load tool 0 (spool 1). Now no tool is loaded and the console shows an error. Use the number from your slicer's start G-code (`macros/print_start.cfg`).
 

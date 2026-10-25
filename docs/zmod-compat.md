@@ -127,9 +127,11 @@ retract_length: 0.8
 
 ## First tool load of a print
 
-Whatever the purge mode, the first tool change after a print starts purges
-in full at the box (blob), because the prime tower doesn't exist yet: on
-2026-10-17 a nopoop print started with the previous colour in its first
-layer. Later changes follow `use_trash_on_print`. A resume from pause is not
+With the slicer's prime tower on (`use_trash_on_print` 0 or 2), the first tool
+change after a print starts only primes (the nozzle is filled), and the bed
+prime tower purges it. On 2026-10-17 a nopoop print started with the previous
+colour in its first layer, which is why the box purge existed; in trash mode
+(`use_trash_on_print` 1) that box purge still runs. Later changes follow
+`use_trash_on_print`. A resume from pause is not
 a new print; a first tool that is already loaded needs no purge (PRINT_START
 purged the nozzle).

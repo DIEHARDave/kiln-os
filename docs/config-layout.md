@@ -93,8 +93,8 @@ that file: a `local.cfg` with only `variable_*` lines for it and no
 | `.ad5x-templates.json` | config dir | written at boot | sha256 of the template each `macros/` file was copied from | Tells an unedited file from an edited one |
 | `moonraker.conf` | config dir | RW, never replaced | Moonraker | The printer's own |
 
-Kept where they are: the first tool load of a print purging in full
-(`ifs.py`, code), nopoop modes (plugin), firmware retraction values and
+Kept where they are: the first tool load of a print purging in full at
+the box in trash mode (`ifs.py`, code), nopoop modes (plugin), firmware retraction values and
 bed `smooth_time` (factory), the bed `TEMPERATURE_WAIT MINIMUM` heating
 (both `PRINT_START`s).
 
