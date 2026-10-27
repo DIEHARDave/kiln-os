@@ -236,7 +236,7 @@ printer` before calling one.
 
 | Command | Parameters |
 |---|---|
-| `T0`-`T3` | Load the slot the tool map names (macros in `ifs.cfg`) |
+| `T0`-`T3` | Load the slot the tool map names (macros in `ifs.cfg`); with more channels (`[ifs] channels`), `T4` up to `T<n-1>` are the module's commands and work the same |
 | `IFS_SWAP` | `CHANNEL=` `[TEMP=]` `[FLUSH=mm]` `[ROUNDS=]` `[PURGE=0|1]` |
 | `IFS_LOAD` | `SLOT=` `[TEMP=]` `[PURGE=0|1]` |
 | `IFS_UNLOAD` | `[SLOT=]` `[TEMP=]` |
@@ -287,12 +287,12 @@ save variable: 0 or 2 = prime only, other = purge; else purge.
 
 | Object | Fields |
 |---|---|
-| `printer.ifs` | `connected`, `version`, `busy`, `channel` (loaded, 0 none), `state`, `selected`, `inserted[4]`, `colors[4]`, `channel_count`, `active_channel`, `loaded_channels`, `pending_insert_channels`, `activity`, `activity_channel`, `error`, `tool_map` (`"0"`-`"3"` -> slot), `tune`, `auto_refill`, `refill` (1.2: last auto-refill message), `refill_match`, `refill_backups` (`"1"`-`"4"` -> the slots that would take over, nearest colour first; `[]` none), `refill_notice` (a print loaded a slot with no backup; "" otherwise) (1.4) |
+| `printer.ifs` | `connected`, `version`, `busy`, `channel` (loaded, 0 none), `state`, `selected`, `inserted[n]`, `colors[n]`, `channel_count` (n: 4, or what a splitter reports), `board_channels` (the splitter's count, null for a plain IFS), `active_channel`, `loaded_channels`, `pending_insert_channels`, `activity`, `activity_channel`, `error`, `tool_map` (`"0"`-`"n-1"` -> slot), `tune`, `auto_refill`, `refill` (1.2: last auto-refill message), `refill_match`, `refill_backups` (`"1"`-`"n"` -> the slots that would take over, nearest colour first; `[]` none), `refill_notice` (a print loaded a slot with no backup; "" otherwise) (1.4) |
 | `printer.ad5x_nozzle` | `size` (running), `saved` (nozzle.cfg, null), `local` (local.cfg sets it), `sizes` (1.4) |
 | `printer.ad5x_sound` | `speaker`, `enabled`, `volume`, `events` (event -> file, "" off), `files`, `playing` (1.4) |
 | `printer.ad5x_soak` | `enabled`, `calibration` (1.4: per bed temperature `settle`, `drift`, `warp`, `points`, `from`, `stable`, `date`), `running`, `soak`, `last` |
 | `printer.ad5x_resume` | `available`, `file`, `z`, `time` (1.2: an interrupted print) |
-| `printer.ifs_materials` | `available`, `channel_count`, `slots` (`"1"`-`"4"`: `type`, `color`, `temp`), `loaded`, `temperatures` |
+| `printer.ifs_materials` | `available`, `channel_count`, `slots` (`"1"`-`"n"`: `type`, `color`, `temp`), `loaded`, `temperatures` |
 | `printer.ad5x_setup` | `step`, `state`, `message`, `progress`, `results`, `checks`, `pending_save`, `zoffset` |
 | `printer.ad5x_config` | `notices` (lines of `config-updates.txt`), `backups` (`macros/*.bak-*`) |
 | `printer.ad5x_plugins` | `api_version`, `enabled`, `available` (per plugin: `source`, `description`, `version`, `author`, `url`, `requires_os`, `compatible`), `catalog` (1.4, per plugin: `title`, `description`, `url`, `requires_os`, `compatible`, `installed`), `job` (1.4: `name`, `action`, `state` idle/running/done/failed, `message`), `warnings` |
@@ -323,7 +323,7 @@ Read them; write only your own (prefixed) variables, except
 - Our modules' Python classes (`ifs.IFS`, ...) are internal: use their
   commands and status fields.
 - Events (`printer.register_event_handler`): `"ifs:loaded"` (1.2), with
-  the slot now in the nozzle (1-4, 0 = emptied), after every load,
+  the slot now in the nozzle (1-n, 0 = emptied), after every load,
   unload, swap and `IFS_SET_CHANNEL`.
 
 ## Moonraker

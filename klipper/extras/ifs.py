@@ -1,4 +1,5 @@
-# Support for the Flashforge AD5X IFS (4-channel filament switcher)
+# Support for the Flashforge AD5X IFS (4-channel filament switcher), and
+# boards that chain several IFS units into one link of 4 x n channels
 #
 # Written from docs/ifs-protocol.md and docs/ifs-swap-sequence.md, which
 # describe the IFS controller's behavior. No vendor code is used.
@@ -20,7 +21,14 @@ import os
 import re
 import termios
 
-CHANNELS = (1, 2, 3, 4)
+# Channels on one IFS unit. A splitter board (IFS Jacker,
+# github.com/ninjamida/ifs-jacker; protocol only, no code used) puts up to
+# four units on one link and shows them as one IFS with channels 1-16: it
+# sends a command for channel c to unit (c - 1) // 4 as channel
+# (c - 1) % 4 + 1, merges the units' F13 bitmasks 4 bits per unit, and adds
+# "channel_count: n" to F13. Commands without C go to the unit used last.
+UNIT_CHANNELS = 4
+MAX_CHANNELS = 16
 
 # IFS controller state byte (F13 "FFS_state"). The controller accepts
 # F10/F11/F39 only in STATE_READY and returns to it when a move finishes.
@@ -54,13 +62,11 @@ CHANNEL_ACTIVITY = {7: "clamped", 10: "loading", 11: "loading",
 MATERIAL_TEMPS = {"PLA": 220., "PLA-CF": 220., "SILK": 230., "TPU": 230.,
                   "ABS": 250., "PETG": 250., "PETG-CF": 250.}
 
-# Tool map keys: slicer tools T0..T3.
-TOOLS = (0, 1, 2, 3)
-
 # Auto-refill colour matching (IFS_AUTO_REFILL MATCH=)
 REFILL_MATCHES = ("exact", "similar", "any")
-# Tool map: "fixed" = T0-T3 -> slots 1-4; "loaded" = tools use the slots that
-# have filament, in slot order (one loaded slot: every tool uses it)
+# Tool map (one slicer tool per channel, T0..T<n-1>): "fixed" = tool t ->
+# slot t + 1; "loaded" = tools use the slots that have filament, in slot
+# order (one loaded slot: every tool uses it)
 MAP_MODES = ("fixed", "loaded")
 
 # print_stats states that end a print (and the tool map with it). Not
@@ -80,15 +86,20 @@ TUNE_SPEEDS = (300., 600., 900., 1200., 1500., 1800., 2100., 2400., 2700.,
 # sensor clears), from stock's 70 down.
 TUNE_TUBE_STEPS = (70., 50., 35., 25.)
 # Save variables holding the tuned values (variables.cfg).
-TUNE_VARS = ("ifs_speed", "ifs_unload_dist", "ifs_tube_unload",
-             "ifs_flush") + tuple(
-    "ifs_load_dist_%d" % (c,) for c in CHANNELS)
+# (ifs_load_dist_<n> per channel, see load_dist_var)
+TUNE_VARS = ("ifs_speed", "ifs_unload_dist", "ifs_tube_unload", "ifs_flush")
+
+def load_dist_var(chan):
+    return "ifs_load_dist_%d" % (chan,)
 
 class IfsError(Exception):
     pass
 
-def decode_activity(state):
-    """FFS_state -> (activity name, channel or 0); (None, None) if unknown."""
+def decode_activity(state, count=UNIT_CHANNELS, active=0):
+    """FFS_state -> (activity name, channel or 0); (None, None) if unknown.
+    A splitter passes the active unit's state on, shifted to its channels
+    for some states only (IFS Jacker: 7, 11, 12, 15), so a channel move is
+    put on the unit of the active channel (F13 chan) when there is one."""
     if state is None:
         return None, None
     if state in WHOLE_BOARD_ACTIVITY:
@@ -96,13 +107,17 @@ def decode_activity(state):
     for base, name in CHANNEL_ACTIVITY.items():
         off = state - base
         if off >= 0 and off % ACTIVITY_STRIDE == 0 \
-                and off // ACTIVITY_STRIDE < len(CHANNELS):
-            return name, off // ACTIVITY_STRIDE + 1
+                and off // ACTIVITY_STRIDE < count:
+            chan = off // ACTIVITY_STRIDE + 1
+            if active and active <= count:
+                chan = ((chan - 1) % UNIT_CHANNELS + 1
+                        + (active - 1) // UNIT_CHANNELS * UNIT_CHANNELS)
+            return name, chan
     return "unknown(%d)" % (state,), 0
 
-def mask_channels(mask):
+def mask_channels(mask, count=UNIT_CHANNELS):
     """Bitmask (bit 0 = channel 1) -> list of 1-based channels."""
-    return [c for c in CHANNELS if (mask or 0) >> (c - 1) & 1]
+    return [c for c in range(1, count + 1) if (mask or 0) >> (c - 1) & 1]
 
 def parse_color(text):
     """'#RRGGBB', 'RRGGBB', '#RGB' or 'RGB' -> (r, g, b) 0..255, or None."""
@@ -181,7 +196,8 @@ def parse_fields(reply):
     return fields
 
 def parse_counts(reply, key):
-    """Parse 'key: a b c d' (four per-channel numbers) from a reply."""
+    """Parse 'key: a b c d' (four per-channel numbers, of one unit) from a
+    reply."""
     m = re.search(key + r":\s*(-?\d+)\s+(-?\d+)\s+(-?\d+)\s+(-?\d+)", reply)
     return [int(v) for v in m.groups()] if m else None
 
@@ -200,6 +216,21 @@ class IFS:
         self.poll_interval = config.getfloat('poll_interval', .5, above=0.)
         self.status_interval = config.getfloat('status_interval', 5.,
                                                minval=0.)
+        # Channels: auto = what the board reports in F13 (channel_count, a
+        # splitter of several units), else 4; or a number, 1-16, for a
+        # splitter that doesn't report it. Slicer tools T0..T<n-1> follow.
+        channels = config.get('channels', 'auto').strip().lower()
+        if channels == 'auto':
+            self.channels_fixed = None
+        else:
+            try:
+                self.channels_fixed = int(channels)
+            except ValueError:
+                self.channels_fixed = 0
+            if not 1 <= self.channels_fixed <= MAX_CHANNELS:
+                raise config.error("ifs: channels must be auto or 1-%d"
+                                   % (MAX_CHANNELS,))
+        self.board_channels = None    # channel_count in F13, None = absent
         # Moves (lengths and speeds in IFS units, see docs/ifs-protocol.md)
         self.load_length = config.getfloat('load_length', 1000., above=0.)
         self.load_speed = config.getfloat('load_speed', 1200., above=0.)
@@ -356,14 +387,21 @@ class IFS:
         self.retry_timer = None
         self.version = None
         self.channel = 0          # channel loaded to the toolhead, 0 = none
+        # Channels in use (1-based) and slicer tools (0-based); see
+        # _set_channel_count. Per-slot lists below hold MAX_CHANNELS, so
+        # a count change keeps the slots' materials and tuning.
+        self.channels = tuple(range(1, (self.channels_fixed or UNIT_CHANNELS)
+                                    + 1))
+        self.tools = tuple(c - 1 for c in self.channels)
         # Per slot: material type, colour '#RRGGBB', temperature override
         self.materials = [{'type': None, 'color': None, 'temp': None}
-                          for c in CHANNELS]
-        self.tool_map = [c for c in CHANNELS]   # slicer tool n -> channel
+                          for c in range(MAX_CHANNELS)]
+        self.tool_map = list(self.channels)     # slicer tool n -> channel
         self.map_mode = "fixed"                 # see MAP_MODES
         self.last_status = {}
-        self.silk = [0, 0, 0, 0]
-        self.stall = [0, 0, 0, 0]
+        self.last_reply = ""      # the last F13 reply, as the board sent it
+        self.silk = [0] * MAX_CHANNELS
+        self.stall = [0] * MAX_CHANNELS
         self.busy = False
         self.error = None         # last failure, for printer.ifs.error
         self.stop_requested = False
@@ -374,7 +412,7 @@ class IFS:
         # Tuned values (None = use the [ifs] option) and tuning progress
         self.tuned = {'speed': None, 'unload_dist': None, 'tube_unload': None,
                       'flush': None,
-                      'load_dist': [None for c in CHANNELS]}
+                      'load_dist': [None for c in range(MAX_CHANNELS)]}
         self.tune_progress = None     # 0..1 while IFS_TUNE runs
         self.first_swap_pending = False  # next swap in a print is its first
         self.tune_unloaded = 0        # lane the last IFS_TUNE cut out of the head
@@ -401,8 +439,59 @@ class IFS:
                     "IFS_AUTO_REFILL", "IFS_MAP_MODE"):
             self.gcode.register_command(cmd, getattr(self, "cmd_" + cmd),
                                         desc=getattr(self, "cmd_%s_help" % cmd))
+    def _register_tools(self):
+        """T4..T15 for a splitter (T0-T3 are macros in ifs.cfg). At connect,
+        when every config section has registered its commands: a T<n> a
+        macro or plugin already defines is left alone. A tool beyond the
+        channel count is refused when it runs."""
+        for tool in range(UNIT_CHANNELS, MAX_CHANNELS):
+            name = "T%d" % (tool,)
+            if name in self.gcode.ready_gcode_handlers:
+                continue
+            self.gcode.register_command(
+                name, lambda gcmd, t=tool: self._cmd_tool(gcmd, t),
+                desc="Load the slot the tool map names for T%d" % (tool,))
+    def _cmd_tool(self, gcmd, tool):
+        if tool not in self.tools:
+            raise gcmd.error("T%d: the IFS has %d channels (T0-T%d)" % (
+                tool, len(self.channels), self.tools[-1]))
+        self._tool_change(gcmd, self.tool_map[tool])
+    def _set_channel_count(self, count):
+        """Channels in use: 1..count, tools T0..T<count-1>. The tool map
+        keeps the tools it has; new tools map to their own slot, and a tool
+        aimed at a slot that is gone goes back to its own."""
+        if count == len(self.channels):
+            return
+        logging.info("ifs: %d channels", count)
+        self.channels = tuple(range(1, count + 1))
+        self.tools = tuple(c - 1 for c in self.channels)
+        self.tool_map = [
+            self.tool_map[t] if t < len(self.tool_map)
+            and self.tool_map[t] <= count else t + 1 for t in self.tools]
+        if self.channel > count:
+            # Loaded from a unit that is not on the link now: keep the
+            # record (ifs_loaded) for when it comes back
+            logging.warning("ifs: loaded channel %d is beyond the %d "
+                            "channels", self.channel, count)
+    def _update_channel_count(self, st):
+        """From an F13 reply: the board's channel_count (splitter), unless
+        the count is set in [ifs]."""
+        reported = st.get('channel_count')
+        if reported is not None and not 1 <= reported <= MAX_CHANNELS:
+            reported = None
+        if reported != self.board_channels:
+            self.board_channels = reported
+            if reported is not None:
+                logging.info("ifs: the board reports %d channels", reported)
+        if self.channels_fixed:
+            if reported is not None and reported != self.channels_fixed:
+                logging.warning("ifs: [ifs] channels is %d but the board "
+                                "reports %d", self.channels_fixed, reported)
+            return
+        self._set_channel_count(reported or UNIT_CHANNELS)
     # Serial link
     def _handle_connect(self):
+        self._register_tools()
         self._load_variables()
         try:
             reply = self._connect_now()
@@ -421,7 +510,10 @@ class IFS:
         self._open()
         with self.mutex:
             reply = self._request("F19")
-        self.version = reply.split("version:")[-1].strip(" .")
+            self.version = reply.split("version:")[-1].strip(" .")
+            # The channel count (a splitter's channel_count) before anything
+            # else uses it
+            self._query_status()
         return reply
     def _start_status(self):
         if self.status_interval and self.status_timer is None:
@@ -461,11 +553,12 @@ class IFS:
             self.channel = int(v.get('ifs_loaded', v.get('ifs_channel', 0)))
         except (TypeError, ValueError):
             self.channel = 0
-        if self.channel not in CHANNELS:
+        if not 0 <= self.channel <= MAX_CHANNELS:
             self.channel = 0
         mats = v.get('ifs_materials')
         colors = v.get('ifs_colors')
-        if isinstance(mats, (list, tuple)) and len(mats) == len(CHANNELS):
+        # One entry per slot: 4, or as many as a splitter had
+        if isinstance(mats, (list, tuple)) and 1 <= len(mats) <= MAX_CHANNELS:
             for slot, m in zip(self.materials, mats):
                 if not isinstance(m, dict):
                     continue
@@ -501,7 +594,8 @@ class IFS:
             'unload_dist': num('ifs_unload_dist'),
             'tube_unload': num('ifs_tube_unload'),
             'flush': num('ifs_flush'),
-            'load_dist': [num('ifs_load_dist_%d' % (c,)) for c in CHANNELS]}
+            'load_dist': [num(load_dist_var(c))
+                          for c in range(1, MAX_CHANNELS + 1)]}
     def _save_variable(self, name, value):
         if self.printer.lookup_object('save_variables', None) is not None:
             self.gcode.run_script_from_command(
@@ -611,19 +705,35 @@ class IFS:
         return reply
     # Status
     def _query_status(self):
-        st = parse_fields(self._request("F13"))
+        reply = self._request("F13")
+        st = parse_fields(reply)
         if 'FFS_state' not in st:
             raise IfsError("bad F13 reply")
         self.last_status = st
+        # For plugins: a splitter adds its own fields (docs/plugin-api.md)
+        self.last_reply = reply
+        self._update_channel_count(st)
         return st
+    def _active_unit(self):
+        """0-based unit of the selected channel (F13 chan; a splitter sends
+        commands without C, as F21, to that unit)."""
+        chan = self.last_status.get('chan') or 0
+        return (chan - 1) // UNIT_CHANNELS if 1 <= chan <= MAX_CHANNELS else 0
+    def _read_counts(self):
+        """F21's silk and stall counters: four numbers, of the active unit
+        on a splitter, stored at that unit's slots."""
+        reply = self._request("F21")
+        first = self._active_unit() * UNIT_CHANNELS
+        for key, store in (("silk", self.silk), ("stall", self.stall)):
+            counts = parse_counts(reply, key)
+            if counts:
+                store[first:first + UNIT_CHANNELS] = counts
     def _status_event(self, eventtime):
         if not self.busy and not self.mutex.test():
             with self.mutex:
                 try:
                     self._query_status()
-                    reply = self._request("F21")
-                    self.silk = parse_counts(reply, "silk") or self.silk
-                    self.stall = parse_counts(reply, "stall") or self.stall
+                    self._read_counts()
                 except IfsError as e:
                     logging.info("ifs: status poll failed: %s", e)
             self._prefeed_inserted(eventtime)
@@ -652,8 +762,8 @@ class IFS:
             if self.map_mode == "loaded":
                 self._map_loaded()
         self.print_state = state
-        if ended and self.tool_map != list(CHANNELS):
-            self.tool_map = list(CHANNELS)
+        if ended and self.tool_map != list(self.channels):
+            self.tool_map = list(self.channels)
             self.gcode.respond_info("IFS: print ended, tool map reset")
     def _ready_prefeed(self, eventtime):
         with self.mutex:
@@ -673,8 +783,7 @@ class IFS:
         if (not self.prefeed or self.fd is None or self.busy
                 or self.printer.is_shutdown() or self._printing(eventtime)):
             return
-        inserted = self.last_status.get('ffs_channels_insert', 0)
-        chans = [c for c in CHANNELS if inserted >> (c - 1) & 1]
+        chans = self._mask(self.last_status.get('ffs_channels_insert', 0))
         if not chans:
             return
         self.busy = True
@@ -721,11 +830,17 @@ class IFS:
             return IfsError("%s: IFS homing error (E0114)" % (what,))
         return IfsError("%s timed out (state %d, stall %d)" % (
             what, st['FFS_state'], st.get('stall_state', 0)))
+    def _mask(self, mask):
+        return mask_channels(mask, len(self.channels))
+    def _activity(self, st):
+        return decode_activity(st.get('FFS_state'), len(self.channels),
+                               st.get('chan') or 0)
     def get_status(self, eventtime):
         # Cached values only: never touches the serial link or the toolhead.
         st = self.last_status
         inserted = st.get('ffs_channels_insert', 0)
-        activity, activity_channel = decode_activity(st.get('FFS_state'))
+        activity, activity_channel = self._activity(st)
+        count = len(self.channels)
         return {
             'connected': self.fd is not None,
             'version': self.version,
@@ -733,15 +848,17 @@ class IFS:
             'channel': self.channel,
             'state': st.get('FFS_state'),
             'selected': st.get('chan'),
-            'inserted': [bool(inserted >> (c - 1) & 1) for c in CHANNELS],
-            'silk': list(self.silk),
-            'stall': list(self.stall),
+            'inserted': [bool(inserted >> (c - 1) & 1) for c in self.channels],
+            'silk': self.silk[:count],
+            'stall': self.stall[:count],
             'colors': self.colors,
             # FX "module" contract, read by HelixScreen
-            'channel_count': len(CHANNELS),
+            'channel_count': count,
+            # Reported by a splitter in F13, None for a plain IFS
+            'board_channels': self.board_channels,
             'active_channel': st.get('chan'),
-            'loaded_channels': mask_channels(st.get('silk_state')),
-            'pending_insert_channels': mask_channels(inserted),
+            'loaded_channels': self._mask(st.get('silk_state')),
+            'pending_insert_channels': self._mask(inserted),
             'activity': activity,
             'activity_channel': activity_channel,
             'error': self.error,
@@ -751,13 +868,13 @@ class IFS:
             'refill_match': self.refill_match,
             'refill_backups': self._refill_backups(),
             'refill_notice': self.refill_notice,
-            'tool_map': {str(t): self.tool_map[t] for t in TOOLS},
+            'tool_map': {str(t): self.tool_map[t] for t in self.tools},
             # Swap tuning (not part of FX's contract): tuned values, None
             # where the [ifs] defaults apply; progress while IFS_TUNE runs
             'tune': {
                 'speed': self.tuned['speed'],
                 'load_dist': {str(c): self.tuned['load_dist'][c - 1]
-                              for c in CHANNELS},
+                              for c in self.channels},
                 'unload_dist': self.tuned['unload_dist'],
                 'tube_unload': self.tuned['tube_unload'],
                 'running': self.tune_progress is not None,
@@ -767,7 +884,7 @@ class IFS:
         }
     @property
     def colors(self):
-        return [m['color'] for m in self.materials]
+        return [self.materials[c - 1]['color'] for c in self.channels]
     def _slot_temp(self, chan):
         m = self.materials[chan - 1]
         if m['temp']:
@@ -780,17 +897,31 @@ class IFS:
     def materials_status(self):
         return {
             'available': True,
-            'channel_count': len(CHANNELS),
-            'slots': {str(c): self._slot_status(c) for c in CHANNELS},
+            'channel_count': len(self.channels),
+            'slots': {str(c): self._slot_status(c) for c in self.channels},
             'loaded': self._slot_status(self.channel) if self.channel
                       else None,
             'temperatures': dict(self.material_temps),
         }
     def _save_materials(self):
-        self._save_variable('ifs_materials', [dict(m) for m in self.materials])
+        # The slots in use, and any set slot beyond them (a unit that is
+        # off the link now keeps its spools)
+        used = [i for i, m in enumerate(self.materials) if any(m.values())]
+        count = max([len(self.channels)] + [i + 1 for i in used])
+        self._save_variable('ifs_materials',
+                            [dict(m) for m in self.materials[:count]])
     # Operations (caller holds the mutex)
     def _fmt(self, v):
         return "%g" % (v,)
+    def _fmt_move(self, v):
+        """L and S of an IFS move. A splitter (IFS Jacker 3.2) reads them as
+        whole numbers and drops both when either has a decimal point, so
+        with one (it reports channel_count, or [ifs] channels is over 4)
+        they go as integers of at least 1."""
+        if self.board_channels is None \
+                and len(self.channels) <= UNIT_CHANNELS:
+            return self._fmt(v)
+        return "%d" % (max(1, int(round(v))),)
     def _select(self, chan):
         self._command("F24 C%d" % (chan,))
         self._wait_ready(self.select_timeout, "select channel %d" % (chan,))
@@ -843,7 +974,7 @@ class IFS:
                 if self._fast_load(chan):
                     return self.last_status
                 self._command("F10 C%d L%s S%s" % (
-                    chan, self._fmt(length), self._fmt(speed)))
+                    chan, self._fmt_move(length), self._fmt_move(speed)))
                 return self._wait_loaded(chan)
             except IfsError as e:
                 if attempt >= self.load_retries:
@@ -852,8 +983,8 @@ class IFS:
                 logging.info("ifs: load retry after: %s", e)
                 self._request("F15")
                 self._command("F11 C%d L%s S%s" % (
-                    chan, self._fmt(self.backoff_length),
-                    self._fmt(self.unload_speed)))
+                    chan, self._fmt_move(self.backoff_length),
+                    self._fmt_move(self.unload_speed)))
                 self._wait_ready(self.unload_timeout,
                                  "back off channel %d" % (chan,))
     def _fast_load(self, chan):
@@ -877,7 +1008,7 @@ class IFS:
         start = self.reactor.monotonic()
         self.last_feed = 0.
         self._command("F10 C%d L%s S%s" % (
-            chan, self._fmt(length), self._fmt(speed)))
+            chan, self._fmt_move(length), self._fmt_move(speed)))
         end = start + self.load_timeout
         next_query = start
         while True:
@@ -939,7 +1070,7 @@ class IFS:
         return self.tuned['speed'] or self.retract_speed
     def _unload_start(self, chan, length, speed):
         self._command("F11 C%d L%s S%s" % (
-            chan, self._fmt(length), self._fmt(speed)))
+            chan, self._fmt_move(length), self._fmt_move(speed)))
     def _release(self, chan):
         self._command("F39 C%d" % (chan,))
         self._wait_ready(self.release_timeout, "release channel %d" % (chan,))
@@ -956,7 +1087,7 @@ class IFS:
         self.gcode.run_script_from_command("M83\nG1 E%s F%s" % (
             self._fmt(length), self._fmt(self.push_speed)))
         self._command("F10 C%d L%s S%s" % (
-            chan, self._fmt(length), self._fmt(self.push_speed)))
+            chan, self._fmt_move(length), self._fmt_move(self.push_speed)))
         toolhead.wait_moves()
         self._wait_ready(self.load_timeout, "purge push channel %d" % (chan,))
         self._request("F112")       # stock stops the feed after the push
@@ -1029,8 +1160,8 @@ class IFS:
         use_head = self._head_has_filament() is False
         self._select(chan)
         self._command("F10 C%d L%s S%s" % (
-            chan, self._fmt(self.prefeed_length),
-            self._fmt(self.prefeed_speed)))
+            chan, self._fmt_move(self.prefeed_length),
+            self._fmt_move(self.prefeed_speed)))
         reached = False
         end = self.reactor.monotonic() + self.load_timeout
         while True:
@@ -1052,8 +1183,8 @@ class IFS:
         self._wait_ready(self.select_timeout, what)
         if reached and self.prefeed_backoff:
             self._command("F11 C%d L%s S%s" % (
-                chan, self._fmt(self.prefeed_backoff),
-                self._fmt(self.prefeed_speed)))
+                chan, self._fmt_move(self.prefeed_backoff),
+                self._fmt_move(self.prefeed_speed)))
             self._wait_ready(self.unload_timeout, what)
         self._clear_inserted(chan)
         self._release(chan)
@@ -1173,7 +1304,8 @@ class IFS:
         finally:
             self._restore_heat(restore)
     def _get_channel(self, gcmd, name='CHANNEL'):
-        return gcmd.get_int(name, minval=CHANNELS[0], maxval=CHANNELS[-1])
+        return gcmd.get_int(name, minval=self.channels[0],
+                            maxval=self.channels[-1])
     # G-code commands
     cmd_IFS_SEND_help = "Send a raw command to the IFS and show the reply"
     def cmd_IFS_SEND(self, gcmd):
@@ -1200,9 +1332,9 @@ class IFS:
         gcmd.respond_info("IFS %s: state %d (%s), selected %d, loaded %d, "
                           "filament in %s, inserted mask %d, stall %d" % (
                               self.version, st['FFS_state'],
-                              decode_activity(st['FFS_state'])[0],
+                              self._activity(st)[0],
                               st.get('chan', 0), self.channel,
-                              mask_channels(st.get('silk_state')),
+                              self._mask(st.get('silk_state')),
                               st.get('ffs_channels_insert', 0),
                               st.get('stall_state', 0)))
     cmd_IFS_SELECT_help = "Point the IFS switch at a channel"
@@ -1256,7 +1388,7 @@ class IFS:
     cmd_IFS_SET_CHANNEL_help = "Tell the module which channel is loaded"
     def cmd_IFS_SET_CHANNEL(self, gcmd):
         self._set_channel(gcmd.get_int('CHANNEL', minval=0,
-                                       maxval=CHANNELS[-1]))
+                                       maxval=self.channels[-1]))
     # Slot materials
     cmd_IFS_SET_COLOR_help = "Set a channel's spool colour (#RRGGBB)"
     def cmd_IFS_SET_COLOR(self, gcmd):
@@ -1270,7 +1402,7 @@ class IFS:
                                  "(bare hex) TEMP=; absent = keep, "
                                  "empty = clear")
     def cmd_IFS_SET_MATERIAL(self, gcmd):
-        slot = gcmd.get_int('SLOT', minval=CHANNELS[0], maxval=CHANNELS[-1])
+        slot = self._get_channel(gcmd, 'SLOT')
         mtype = gcmd.get('TYPE', None)
         color = gcmd.get('COLOR', None)
         temp = gcmd.get('TEMP', None)
@@ -1304,7 +1436,7 @@ class IFS:
     cmd_IFS_MATERIALS_help = "Report each slot's material"
     def cmd_IFS_MATERIALS(self, gcmd):
         lines = []
-        for c in CHANNELS:
+        for c in self.channels:
             st = self._slot_status(c)
             lines.append("slot %d: %s %s%s%s" % (
                 c, st['type'] or "-", st['color'] or "-",
@@ -1320,7 +1452,7 @@ class IFS:
             return []
         rgb = parse_color(m['color'])
         found = []
-        for c in CHANNELS:
+        for c in self.channels:
             if c == chan or c not in present:
                 continue
             o = self.materials[c - 1]
@@ -1348,17 +1480,17 @@ class IFS:
     def _refill_backups(self):
         """Per slot with filament: the slots that would take over if it
         ran out (printer.ifs.refill_backups, for the screen)."""
-        present = mask_channels(self.last_status.get('silk_state'))
+        present = self._mask(self.last_status.get('silk_state'))
         return {str(c): self._refill_candidates(c, present) if c in present
-                else [] for c in CHANNELS}
+                else [] for c in self.channels}
     def _refill_check_backup(self, chan):
         """A print loaded chan with auto-refill on and no backup for it:
         say so once per slot and print (printer.ifs.refill_notice). The
         print carries on; it pauses only if the slot really runs out."""
-        if (not self.auto_refill or chan not in CHANNELS
+        if (not self.auto_refill or chan not in self.channels
                 or chan in self.refill_noticed or not self._in_print()):
             return
-        present = mask_channels(self.last_status.get('silk_state'))
+        present = self._mask(self.last_status.get('silk_state'))
         if self._refill_candidates(chan, present):
             return
         self.refill_noticed.add(chan)
@@ -1375,7 +1507,7 @@ class IFS:
         if (not self.auto_refill or not chan or self.refill_busy
                 or self.busy or 'silk_state' not in self.last_status):
             return
-        present = mask_channels(self.last_status['silk_state'])
+        present = self._mask(self.last_status['silk_state'])
         if chan in present:
             self.refill_warned = 0
             return
@@ -1413,7 +1545,7 @@ class IFS:
                     >> (new - 1) & 1:
                 script.append("IFS_PREFEED CHANNEL=%d" % (new,))
             script.append("IFS_SWAP CHANNEL=%d" % (new,))
-            for t in TOOLS:
+            for t in self.tools:
                 if self.tool_map[t] == old:
                     script.append("IFS_MAP_TOOL TOOL=%d SLOT=%d" % (t, new))
             script.append("RESUME")
@@ -1460,15 +1592,17 @@ class IFS:
                              "TOOL= SLOT=, or RESET=1")
     def cmd_IFS_MAP_TOOL(self, gcmd):
         if gcmd.get_int('RESET', 0):
-            self.tool_map = list(CHANNELS)
-            gcmd.respond_info("IFS: tool map reset (T0-T3 -> slots 1-4)")
+            self.tool_map = list(self.channels)
+            gcmd.respond_info("IFS: tool map reset (T0-T%d -> slots 1-%d)" % (
+                self.tools[-1], self.channels[-1]))
             return
-        tool = gcmd.get_int('TOOL', minval=TOOLS[0], maxval=TOOLS[-1])
-        slot = gcmd.get_int('SLOT', minval=CHANNELS[0], maxval=CHANNELS[-1])
+        tool = gcmd.get_int('TOOL', minval=self.tools[0],
+                            maxval=self.tools[-1])
+        slot = self._get_channel(gcmd, 'SLOT')
         if 'silk_state' not in self.last_status:
             raise gcmd.error("IFS_MAP_TOOL: no IFS reading yet, can't check "
                              "slot %d for filament" % (slot,))
-        if slot not in mask_channels(self.last_status['silk_state']):
+        if slot not in self._mask(self.last_status['silk_state']):
             raise gcmd.error("IFS_MAP_TOOL: slot %d has no filament" % (slot,))
         self.tool_map[tool] = slot
         gcmd.respond_info("IFS: T%d -> slot %d" % (tool, slot))
@@ -1516,12 +1650,12 @@ class IFS:
         filament in the file (material, then nearest colour). Without file
         colours, tool t uses the (t mod n)th loaded slot in slot order. Returns
         the loaded slots; none loaded leaves the map as it is."""
-        loaded = mask_channels(self.last_status.get('silk_state', 0))
+        loaded = self._mask(self.last_status.get('silk_state', 0))
         if not loaded:
             return loaded
         types, colours = self._file_filaments()
         new = []
-        for t in TOOLS:
+        for t in self.tools:
             fallback = loaded[t % len(loaded)]
             if t >= len(colours) and t >= len(types):
                 new.append(fallback)
@@ -1534,7 +1668,7 @@ class IFS:
             new.append(self._match_slot(mtype, color, loaded) or fallback)
         self.tool_map = new
         return loaded
-    cmd_IFS_MAP_MODE_help = ("Tool map mode: fixed (T0-T3 -> slots 1-4) or "
+    cmd_IFS_MAP_MODE_help = ("Tool map mode: fixed (tool n -> slot n + 1) or "
                              "loaded (tools use the slots with filament)")
     def cmd_IFS_MAP_MODE(self, gcmd):
         mode = gcmd.get('MODE', None)
@@ -1546,12 +1680,13 @@ class IFS:
             self.map_mode = mode
             self._save_variable('ifs_map_mode', mode)
             if mode == "fixed":
-                self.tool_map = list(CHANNELS)
+                self.tool_map = list(self.channels)
             elif not self._map_loaded():
                 gcmd.respond_info("IFS: no slot has filament; the map is "
                                   "applied at the next print")
-        gcmd.respond_info("IFS: map mode %s; T0-T3 -> slots %s" % (
-            self.map_mode, ",".join(str(c) for c in self.tool_map)))
+        gcmd.respond_info("IFS: map mode %s; T0-T%d -> slots %s" % (
+            self.map_mode, self.tools[-1],
+            ",".join(str(c) for c in self.tool_map)))
     cmd_IFS_PREFEED_help = ("Feed a channel's new spool up to the IFS "
                             "(as stock does for a new spool)")
     def cmd_IFS_PREFEED(self, gcmd):
@@ -1735,7 +1870,7 @@ class IFS:
                            "the lane stays threaded: [SLOT=] [TEMP=]")
     def cmd_IFS_UNLOAD(self, gcmd):
         slot = gcmd.get_int('SLOT', self.channel, minval=0,
-                            maxval=CHANNELS[-1])
+                            maxval=self.channels[-1])
         if not slot:
             raise gcmd.error("IFS_UNLOAD: nothing loaded; give SLOT=")
         if self.channel and slot != self.channel:
@@ -1769,7 +1904,7 @@ class IFS:
         logging.info("ifs: tune: %s", msg)
     def _save_tuned(self, key, var, value):
         if key == 'load_dist':
-            self.tuned['load_dist'][int(var[-1]) - 1] = value
+            self.tuned['load_dist'][int(var.rsplit('_', 1)[1]) - 1] = value
         else:
             self.tuned[key] = value
         self._save_variable(var, value)
@@ -1945,7 +2080,7 @@ class IFS:
                                     % (chan,))
                     dist = self._tune_load(chan, speed, settle=not (
                         do_speed and chan == first))
-                    self._save_tuned('load_dist', 'ifs_load_dist_%d' % (chan,),
+                    self._save_tuned('load_dist', load_dist_var(chan),
                                      round(dist, 1))
             if do_tube and len(chans) >= 2:
                 self._tune_note(.85, "tube test with slots %d and %d"
@@ -1959,7 +2094,8 @@ class IFS:
             self.tune_progress = None
     def _tune_summary(self):
         t = self.tuned
-        dists = ["%d: %.0f mm" % (c, t['load_dist'][c - 1]) for c in CHANNELS
+        dists = ["%d: %.0f mm" % (c, t['load_dist'][c - 1])
+                 for c in self.channels
                  if t['load_dist'][c - 1]]
         return ("speed %s; load %s; unload %s; tube pull-back %s; "
                 "flush %s" % (
@@ -1980,8 +2116,8 @@ class IFS:
                 'state') in ("printing", "paused"):
             raise gcmd.error("IFS tuning: not during a print")
         st = self._run(self._query_status, wait=False)
-        loaded = mask_channels(st.get('silk_state'))
-        chan = gcmd.get_int('CHANNEL', 0, minval=0, maxval=CHANNELS[-1])
+        loaded = self._mask(st.get('silk_state'))
+        chan = gcmd.get_int('CHANNEL', 0, minval=0, maxval=self.channels[-1])
         if chan:
             if chan not in loaded:
                 raise gcmd.error("IFS tuning: slot %d has no filament"
@@ -2028,7 +2164,7 @@ class IFS:
                                 "loaded, loads it first); TUBE=1 also tests "
                                 "the tube pull-back with two slots")
     def cmd_IFS_TUNE_UNLOAD(self, gcmd):
-        chan = gcmd.get_int('CHANNEL', 0, minval=0, maxval=CHANNELS[-1])
+        chan = gcmd.get_int('CHANNEL', 0, minval=0, maxval=self.channels[-1])
         tube = gcmd.get_int('TUBE', 0)
         if not self.channel or self._head_has_filament() is False:
             if not chan:
@@ -2058,8 +2194,13 @@ class IFS:
     def cmd_IFS_TUNE_RESET(self, gcmd):
         for key in ('speed', 'unload_dist', 'tube_unload', 'flush'):
             self.tuned[key] = None
-        self.tuned['load_dist'] = [None for c in CHANNELS]
-        for var in TUNE_VARS:
+        # Load distances of the channels in use and of any other saved one
+        sv = self.printer.lookup_object('save_variables', None)
+        saved = sv.allVariables if sv is not None else {}
+        dists = [load_dist_var(c) for c in range(1, MAX_CHANNELS + 1)
+                 if c in self.channels or load_dist_var(c) in saved]
+        self.tuned['load_dist'] = [None for c in range(MAX_CHANNELS)]
+        for var in TUNE_VARS + tuple(dists):
             self._save_variable(var, None)
         gcmd.respond_info("IFS: tuning reset, swaps use the [ifs] values")
 

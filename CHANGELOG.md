@@ -6,6 +6,9 @@ the release has no section of its own yet (rename it after the release).
 
 ## Unreleased
 
+### Added
+- **More than four IFS channels**: an IFS splitter such as the [IFS Jacker](https://github.com/ninjamida/ifs-jacker) (two to four IFS units on the one IFS port) works as one IFS with 8, 12 or 16 slots. `[ifs] channels: auto` (new, the default) uses the channel count the splitter reports, else 4; a number (1-16) sets it. Slots, tool map, materials, auto-refill and pre-feed cover all of them, `T4`-`T15` are added for the extra slots, and IFS move lengths go as whole numbers when a splitter is attached (the IFS Jacker drops decimal ones). A plain IFS works as before (`klipper/extras/ifs.py`, `klipper/ifs.cfg`). Tested against an emulator of the IFS Jacker, not on hardware. HelixScreen's IFS lanes still show slots 1-4.
+
 ### Changed
 - **First tool load of a print primes only when the slicer purges on the bed**: with `use_trash_on_print` 0 or 2, the first colour no longer purges at the purge box; the bed prime tower purges it. Trash mode still purges at the box (`klipper/extras/ifs.py`, `tools/test_ifs.py`). Needs a printer check: the first layer after the first colour, and that the prime fills the nozzle.
 
