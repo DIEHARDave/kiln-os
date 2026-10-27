@@ -174,7 +174,8 @@ class Ad5xResume:
         if ifs is not None:
             s = ifs.get_status(eventtime)
             ifs_st = {'channel': ifs.channel,
-                      'tool_map': [s['tool_map'][str(t)] for t in range(4)]}
+                      'tool_map': [s['tool_map'][str(t)]
+                                   for t in range(len(s['tool_map']))]}
         return {
             'format': FORMAT,
             'time': time.time(),

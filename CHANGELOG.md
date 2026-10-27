@@ -10,6 +10,7 @@ the issue: it is closed by hand after the release.
 
 ## Unreleased
 
+- **More than four IFS channels**: an IFS splitter such as the [IFS Jacker](https://github.com/ninjamida/ifs-jacker) (two to four IFS units on the one IFS port) works as one IFS with 8, 12 or 16 slots. `[ifs] channels: auto` (new, the default) uses the channel count the splitter reports, else 4; a number (1-16) sets it. Slots, tool map, materials, auto-refill and pre-feed cover all of them, `T4`-`T15` are added for the extra slots, and IFS move lengths go as whole numbers when a splitter is attached (the IFS Jacker drops decimal ones). A plain IFS, and an IFS in MCU mode (always four slots), works as before (`klipper/extras/ifs.py`, `klipper/ifs.cfg`). Tested against an emulator of the IFS Jacker, not on hardware. HelixScreen's IFS lanes still show slots 1-4.
 - **Part Fan tile**: on the print screen, the Part Fan tile could read 100% at the start of a print while the part fan was off (it showed the board fan until the part fan had run once). It now shows the part fan from the start.
 - **No part fan during the bed heat soak**: the part fan now switches off after the nozzle brushing at the start of a print, so it no longer blows on the bed while the bed heat soak waits.
 - **No second splash**: the touch screen no longer shows HelixScreen's own logo after the Kiln logo; the Kiln logo stays until the home screen (or the setup wizard) appears, about 2 seconds sooner.
